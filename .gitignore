@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Editors/IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Lua
+luac.out
+
+# Rust build artifacts
+**/target/
+
+# Cargo package metadata (keep Cargo.lock tracked for binaries)
+# !Cargo.lock
+
+# Test/coverage caches (if any)
+coverage/
+*.lcov
+
