@@ -48,31 +48,58 @@ jobs:
 
       - name: Package artifact
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
-          set -euo pipefail
+          set -e
           TAG="${{ github.event.release.tag_name || github.ref_name }}"
           VERSION="${TAG#v}"
           BIN_NAME="k8pk"
           TARGET="${{ matrix.target }}"
           OUT_DIR="rust/k8pk/target/${TARGET}/release"
           BIN_PATH="${OUT_DIR}/${BIN_NAME}${{ matrix.ext }}"
+          
+          echo "Working directory: $(pwd)"
+          echo "Checking for binary at: ${BIN_PATH}"
           if [ ! -f "${BIN_PATH}" ]; then
             echo "Binary not found: ${BIN_PATH}"
+            echo "Listing directory contents:"
             ls -la "${OUT_DIR}" || true
             exit 1
           fi
+          
           PKG_DIR="${BIN_NAME}-v${VERSION}-${TARGET}"
+          echo "Creating package directory: ${PKG_DIR}"
           mkdir -p "${PKG_DIR}"
+          
+          echo "Copying binary..."
           cp "${BIN_PATH}" "${PKG_DIR}/"
-          cp README.md "${PKG_DIR}/" || true
-          cp CONFIG_FILE.md "${PKG_DIR}/" || true
-          # Include shell helper scripts
-          mkdir -p "${PKG_DIR}/shell"
-          cp shell/k8pk.sh "${PKG_DIR}/shell/" || true
-          cp shell/k8pk.fish "${PKG_DIR}/shell/" || true
+          
+          echo "Copying documentation..."
+          if [ -f README.md ]; then
+            cp README.md "${PKG_DIR}/"
+          fi
+          if [ -f CONFIG_FILE.md ]; then
+            cp CONFIG_FILE.md "${PKG_DIR}/"
+          fi
+          
+          echo "Copying shell scripts..."
+          if [ -d shell ]; then
+            mkdir -p "${PKG_DIR}/shell"
+            if [ -f shell/k8pk.sh ]; then
+              cp shell/k8pk.sh "${PKG_DIR}/shell/"
+            fi
+            if [ -f shell/k8pk.fish ]; then
+              cp shell/k8pk.fish "${PKG_DIR}/shell/"
+            fi
+          fi
+          
+          echo "Creating archive..."
           ARCHIVE="${PKG_DIR}.tar.gz"
           tar -czf "${ARCHIVE}" "${PKG_DIR}"
+          
           echo "ASSET=${ARCHIVE}" >> $GITHUB_ENV
+          echo "Created archive: ${ARCHIVE}"
+          ls -lh "${ARCHIVE}" || true
 
       - name: Determine tag name
         id: tag
