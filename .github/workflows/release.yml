@@ -1,5 +1,8 @@
 name: Release
 
+permissions:
+  contents: write
+
 on:
   push:
     tags:
@@ -16,19 +19,15 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive: tar.gz
             ext: ""
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
-            archive: tar.gz
             ext: ""
-          - os: macos-14
+          - os: macos-latest
             target: aarch64-apple-darwin
-            archive: tar.gz
             ext: ""
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive: zip
             ext: ".exe"
 
     steps:
@@ -65,12 +64,8 @@ jobs:
           cp "${BIN_PATH}" "${PKG_DIR}/"
           cp README.md "${PKG_DIR}/" || true
           cp CONFIG_FILE.md "${PKG_DIR}/" || true
-          ARCHIVE="${PKG_DIR}.${{ matrix.archive }}"
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            7z a "${ARCHIVE}" "${PKG_DIR}" >/dev/null
-          else
-            tar -czf "${ARCHIVE}" "${PKG_DIR}"
-          fi
+          ARCHIVE="${PKG_DIR}.tar.gz"
+          tar -czf "${ARCHIVE}" "${PKG_DIR}"
           echo "ASSET=${ARCHIVE}" >> $GITHUB_ENV
 
       - name: Upload release asset
