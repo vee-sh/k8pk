@@ -1,0 +1,10 @@
+{
+  "packages": {
+    "rust/k8pk": {
+      "release-type": "rust",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false
+    }
+  }
+}
+
