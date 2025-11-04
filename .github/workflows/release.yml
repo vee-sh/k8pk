@@ -70,12 +70,25 @@ jobs:
           tar -czf "${ARCHIVE}" "${PKG_DIR}"
           echo "ASSET=${ARCHIVE}" >> $GITHUB_ENV
 
+      - name: Determine tag name
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ASSET }}
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          make_latest: true
           generate_release_notes: true
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
