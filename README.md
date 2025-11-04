@@ -16,26 +16,50 @@ Cross-terminal Kubernetes context/namespace switcher. Works in any terminal via 
 
 ### Install k8pk
 
+**Download from GitHub Releases** (recommended):
+```bash
+# Download the latest release for your platform from:
+# https://github.com/a1ex-var1amov/wez-k8s-helper/releases
+
+# Example for Linux x86_64:
+VERSION="0.2.0"
+PLATFORM="x86_64-unknown-linux-gnu"
+wget https://github.com/a1ex-var1amov/wez-k8s-helper/releases/download/v${VERSION}/k8pk-v${VERSION}-${PLATFORM}.tar.gz
+tar -xzf k8pk-v${VERSION}-${PLATFORM}.tar.gz
+sudo install -m 0755 k8pk-v${VERSION}-${PLATFORM}/k8pk /usr/local/bin/k8pk
+```
+
+**Build from source**:
 ```bash
 cd rust/k8pk
 cargo build --release
 sudo install -m 0755 target/release/k8pk /usr/local/bin/k8pk
 ```
 
-Or via Homebrew:
+**Homebrew** (coming soon):
 ```bash
-brew install --build-from-source /path/to/wezterm-k8s-power/homebrew/Formula/k8pk.rb
+brew install k8pk
 ```
 
 ### Shell Integration (Any Terminal)
 
+The release packages include helper scripts. After extracting a release tarball, add to your shell config:
+
 **bash/zsh** - Add to `~/.bashrc` or `~/.zshrc`:
 ```bash
+# If using release package:
+source /path/to/k8pk-v*/shell/k8pk.sh
+
+# Or if building from source:
 source /path/to/wezterm-k8s-power/shell/k8pk.sh
 ```
 
 **fish** - Add to `~/.config/fish/config.fish`:
 ```fish
+# If using release package:
+source /path/to/k8pk-v*/shell/k8pk.fish
+
+# Or if building from source:
 source /path/to/wezterm-k8s-power/shell/k8pk.fish
 ```
 
@@ -188,8 +212,17 @@ Just use `kpick` or `kswitch` - they work in any terminal that runs your shell.
 ## Architecture
 
 - **`k8pk` CLI**: Core Rust binary, works everywhere
-- **Shell functions**: `kpick`/`kswitch` wrappers for convenience
+- **Shell functions**: `kpick`/`kswitch` wrappers for convenience (included in releases)
 - **WezTerm plugin**: Native integration with WezTerm's UI (optional, uses `k8pk` when available)
+
+## Releases
+
+See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
+
+GitHub Releases include:
+- Pre-built binaries for Linux, macOS (Intel + Apple Silicon), and Windows
+- Shell helper scripts (`k8pk.sh` and `k8pk.fish`)
+- README and configuration documentation
 
 ## Requirements
 
@@ -236,7 +269,7 @@ See [TESTING.md](TESTING.md) for comprehensive test plan including OC CLI tests.
 - **Safer writes**: Atomic writes via temp file + rename; file locking to avoid concurrent edits; timestamped backups; enforce 0600 permissions on generated files.
 - **Consistent output and verbosity**: Global `-q/--quiet`, `-v/--verbose` levels; `--no-color`; standardized `--output json|yaml|text` across commands.
 - **Shell completions**: `k8pk completions bash|zsh|fish` and installation docs.
-- **Homebrew + releases**: GitHub Actions with `cargo-dist`/`cargo-release`; create/update Homebrew formula for `k8pk` and publish artifacts.
+- **Homebrew formula**: Create/update Homebrew formula for `k8pk` to enable `brew install k8pk`.
 
 ### Medium priority
 

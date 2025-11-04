@@ -66,6 +66,10 @@ jobs:
           cp "${BIN_PATH}" "${PKG_DIR}/"
           cp README.md "${PKG_DIR}/" || true
           cp CONFIG_FILE.md "${PKG_DIR}/" || true
+          # Include shell helper scripts
+          mkdir -p "${PKG_DIR}/shell"
+          cp shell/k8pk.sh "${PKG_DIR}/shell/" || true
+          cp shell/k8pk.fish "${PKG_DIR}/shell/" || true
           ARCHIVE="${PKG_DIR}.tar.gz"
           tar -czf "${ARCHIVE}" "${PKG_DIR}"
           echo "ASSET=${ARCHIVE}" >> $GITHUB_ENV
