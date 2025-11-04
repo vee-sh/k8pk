@@ -1,196 +1,262 @@
-# wezterm-k8s-power
+# k8pk - Kubernetes Context Picker
 
-Per-tab Kubernetes context isolation for WezTerm. Choose a context and open a new tab whose environment is bound to that context via `KUBECONFIG`, without affecting other tabs.
+Cross-terminal Kubernetes context/namespace switcher. Works in any terminal via shell integration, with native WezTerm plugin for the best UX.
 
 ## Features
-- Pick a k8s context using an in-terminal selector
-- Optionally pick a namespace (kubie-like). If the Rust helper is present, the namespace is embedded into the generated kubeconfig; otherwise `kubectl` is used to set it.
-- New tab is spawned with a per-context kubeconfig (helper-preferred; falls back to `kubectl config view --raw --minify --context=...`)
-- Works with tools that respect `KUBECONFIG` (kubectl, helm, k9s, etc.)
-- Optional default keybinding: `CTRL+SHIFT+K`
-- Pretty labels: EKS ARNs like `arn:aws:eks:us-east-1:...:cluster/my-cluster` are shown as `aws:us-east-1/my-cluster`
-- Remembers last namespace per context (stored at `~/.local/share/wezterm-k8s-power/ns.json`)
-- Shows `⎈ context[:namespace]` on tab title and Right Status
 
-## Requirements
-- WezTerm (recent build with `InputSelector` support)
-- Either:
-  - `wezterm-k8s-helper` on PATH (recommended), or
-  - `kubectl` on PATH with your contexts configured
+- **Cross-terminal**: Works in bash, zsh, fish, tmux, kitty, Alacritty, iTerm2, and more
+- **WezTerm integration**: Native plugin with in-terminal selectors and per-tab isolation
+- **Interactive picker**: Built-in UI with arrow key navigation and type-to-search (no external dependencies needed)
+- **Namespace support**: Pick context and namespace (kubie-like)
+- **Pretty labels**: EKS ARNs like `arn:aws:eks:us-east-1:...:cluster/my-cluster` shown as `aws:us-east-1/my-cluster`
+- **Remembers selections**: Last namespace per context stored in `~/.local/share/k8pk/ns.json`
+- **Shell exports**: Output `export` statements for easy integration
 
-## Install
-Add this plugin to your WezTerm config. Prefer a local path to avoid network pulls on startup:
+## Quick Start
+
+### Install k8pk
+
+```bash
+cd rust/k8pk
+cargo build --release
+sudo install -m 0755 target/release/k8pk /usr/local/bin/k8pk
+```
+
+Or via Homebrew:
+```bash
+brew install --build-from-source /path/to/wezterm-k8s-power/homebrew/Formula/k8pk.rb
+```
+
+### Shell Integration (Any Terminal)
+
+**bash/zsh** - Add to `~/.bashrc` or `~/.zshrc`:
+```bash
+source /path/to/wezterm-k8s-power/shell/k8pk.sh
+```
+
+**fish** - Add to `~/.config/fish/config.fish`:
+```fish
+source /path/to/wezterm-k8s-power/shell/k8pk.fish
+```
+
+**Usage:**
+```bash
+kpick              # Interactive picker (evals exports in current shell)
+kswitch dev        # Switch to context 'dev'
+kswitch dev prod   # Switch to context 'dev', namespace 'prod'
+```
+
+### WezTerm Plugin (Recommended for WezTerm users)
+
+The WezTerm plugin is a thin wrapper that uses `k8pk` for all Kubernetes operations. It provides a native WezTerm UI for selecting contexts and namespaces.
+
+Add to your WezTerm config:
 
 ```lua
 local wezterm = require 'wezterm'
 local config = wezterm.config_builder and wezterm.config_builder() or {}
 
--- Use LOCAL path to avoid cloning/pulling at startup
--- Example: replace with your local absolute path
-local k8s_power = wezterm.plugin.require('file:///path/to/wez-k8s-helper')
-
--- Apply with default options (adds CTRL+SHIFT+K keybinding)
+local k8s_power = wezterm.plugin.require('https://github.com/a1ex-var1amov/wez-k8s-helper')
 k8s_power.apply_to_config(config)
 
 return config
 ```
 
-If you prefer without the default keybinding:
+**Usage:** Press `CTRL+SHIFT+K` to open the picker. New tabs show `⎈ context[:namespace]` in the title.
 
-```lua
-k8s_power.apply_to_config(config, { enable_default_keybinding = false })
-```
+**Note:** The plugin requires `k8pk` to be installed and in your PATH. It delegates all Kubernetes operations to `k8pk`, so all features (OC CLI support, config file discovery, etc.) work automatically.
 
-Then bind the action yourself:
-
-```lua
-local action = k8s_power.create_action()
-config.keys = config.keys or {}
- table.insert(config.keys, {
-   key = 'K',
-   mods = 'CTRL|SHIFT',
-   action = action,
- })
-```
-
-### Options
-You can pass options to control helper usage and debugging:
-
-```lua
-k8s_power.apply_to_config(config, {
-  -- Force a specific helper path (or set env WEZTERM_K8S_HELPER)
-  -- helper_path = '/usr/local/bin/wezterm-k8s-helper',
-
-  -- Force a specific kubectl path if needed
-  -- kubectl_path = '/opt/homebrew/bin/kubectl',
-
-  -- Show a toast with detected paths when opening the picker
-  -- debug = true,
-})
-```
-
-### Using the GitHub repo instead (optional)
-If you want to load from GitHub (will clone on first use):
-
-```lua
-local k8s_power = wezterm.plugin.require('https://github.com/a1ex-var1amov/wez-k8s-helper')
-k8s_power.apply_to_config(config)
-```
-
-Note: Your WezTerm config must return a table (e.g. `return config`). Returning a function is not supported and will prevent the plugin from loading.
-
-## Usage
-- Press `CTRL+SHIFT+K` (or your bound key) to open the context picker
-- Select a context; you will be prompted to select a namespace (or use the context default)
-- A new tab opens bound to that context/namespace; the tab title shows `⎈ <context>[:<namespace>]`
-
-## How it works
-- The Lua plugin handles WezTerm UI (selectors, keybindings, tab title) and process spawning with per-tab env.
-- The Rust helper (`wezterm-k8s-helper`) provides fast, robust kubeconfig handling and namespace embedding.
-- Flow:
-  1. Contexts are enumerated (helper preferred; fallback to `kubectl`).
-  2. Namespaces are enumerated (helper preferred; fallback to `kubectl`).
-  3. A minimal kubeconfig is generated per selection:
-     - Helper path: `wezterm-k8s-helper gen --context <ctx> [--namespace <ns>] --out <file>`
-     - Fallback path: `kubectl config view --raw --minify --context <ctx> > <file>`, then optionally `kubectl config set-context <ctx> --namespace <ns> --kubeconfig <file>`
-- The new tab is spawned with `KUBECONFIG=<file>` set only for that tab. No global changes.
-
-## Optional: Rust helper
-The Rust helper avoids shelling out to `kubectl`, handles multi-file `$KUBECONFIG` merging, and prunes a minimal kubeconfig for the chosen context.
-
-Build and install:
+## Core CLI Usage
 
 ```bash
-cd rust/wezterm-k8s-helper
-cargo build --release
-# Add to PATH (example for macOS):
-sudo install -m 0755 target/release/wezterm-k8s-helper /usr/local/bin/wezterm-k8s-helper
-command -v wezterm-k8s-helper
+# List contexts (works with kubectl and oc)
+k8pk contexts
+
+# List contexts with their kubeconfig file paths
+k8pk contexts --path
+
+# List contexts with paths in JSON format
+k8pk contexts --path --json
+
+# Interactive picker (outputs shell exports)
+k8pk pick
+
+# Interactive picker (outputs JSON)
+k8pk pick --output json
+
+# Interactive picker (spawns new shell)
+k8pk pick --output spawn
+
+# Output shell exports for a context/namespace
+k8pk env --context dev --namespace prod
+
+# Spawn a new shell with context set
+k8pk spawn --context dev --namespace prod
+
+# List namespaces/projects (auto-detects oc or kubectl)
+k8pk namespaces --context dev
+
+# Generate a kubeconfig file
+k8pk gen --context dev --namespace prod --out /tmp/dev-kube.yaml
+
+# Clean up old generated configs (older than 30 days)
+k8pk cleanup
+
+# Clean up configs older than 7 days
+k8pk cleanup --days 7
+
+# Remove configs for contexts that no longer exist
+k8pk cleanup --orphaned
+
+# Dry run - see what would be deleted
+k8pk cleanup --dry-run
+
+# Remove all generated configs
+k8pk cleanup --all
+
+# Clean up configs only for contexts from a specific source file
+k8pk cleanup --from-file /Users/a13x22/.kube/config
+
+# Combine with other flags: clean old configs from a specific file
+k8pk cleanup --from-file ~/.kube/configs/dev.yaml --days 7
+
+# Interactive mode: select which contexts to clean up (use spacebar to toggle, Enter to confirm)
+k8pk cleanup --from-file /Users/a13x22/.kube/config --interactive
+
+# Interactive mode without --from-file: select from all contexts
+k8pk cleanup --interactive
+
+# Remove contexts from a kubeconfig file (interactive selection)
+k8pk remove-context --from-file /Users/a13x22/.kube/config --interactive
+
+# Remove a specific context
+k8pk remove-context --from-file /Users/a13x22/.kube/config --context "my-context"
+
+# Remove contexts and also clean up orphaned clusters/users
+k8pk remove-context --from-file /Users/a13x22/.kube/config --interactive --remove-orphaned
+
+# Dry run to see what would be removed
+k8pk remove-context --from-file /Users/a13x22/.kube/config --interactive --dry-run
+
+# Rename a context
+k8pk rename-context --from-file ~/.kube/config --context "old-name" --new-name "new-name"
+
+# Copy a context from one file to another
+k8pk copy-context --from-file ~/.kube/configs/dev.yaml --to-file ~/.kube/config --context "dev-cluster"
+
+# Copy with a new name
+k8pk copy-context --from-file ~/.kube/configs/dev.yaml --to-file ~/.kube/config --context "dev-cluster" --new-name "dev-cluster-backup"
+
+# Merge multiple kubeconfig files
+k8pk merge --files ~/.kube/config1.yaml ~/.kube/config2.yaml --out ~/.kube/merged.yaml
+
+# Merge with overwrite (replace duplicates)
+k8pk merge --files ~/.kube/config1.yaml ~/.kube/config2.yaml --out ~/.kube/merged.yaml --overwrite
+
+# Compare two kubeconfig files
+k8pk diff --file1 ~/.kube/config --file2 ~/.kube/config.backup
+
+# Show only differences
+k8pk diff --file1 ~/.kube/config --file2 ~/.kube/config.backup --diff-only
 ```
 
-Usage (manual):
+**OpenShift:** When `oc` is available, `k8pk` automatically uses it. Generated kubeconfigs work with both `kubectl` and `oc`. The `env` command also sets `OC_NAMESPACE` for OpenShift compatibility.
+
+## Cross-Terminal Examples
+
+### tmux
 
 ```bash
-wezterm-k8s-helper contexts          # list contexts
-wezterm-k8s-helper current           # print current context
-wezterm-k8s-helper namespaces --context dev --json   # list namespaces for a context
-wezterm-k8s-helper gen --context dev --namespace default --out /tmp/dev-kube.yaml
+# New window with context
+eval "$(k8pk pick)"
+tmux new-window -n "⎈ $K8PK_CONTEXT:$K8PK_NAMESPACE" "$SHELL"
 ```
 
-## Why both Lua plugin and Rust helper exist
-- **Lua plugin**: Integrates natively with WezTerm (UI, keybindings, env, tab titles). It’s the glue and UX layer.
-- **Rust helper**: Speed, correctness, and independence from `kubectl`. It merges `$KUBECONFIG`, prunes to a single context, and can embed the namespace into the generated config.
-- Together: a smooth in-terminal picker with robust kubeconfig generation and no global side effects.
+### kitty
+
+```bash
+# New tab
+kitty @ launch --type=tab --tab-title "⎈ $(k8pk pick --output json | jq -r '.context')" \
+  --env=KUBECONFIG=$(k8pk env --context dev --namespace prod | grep KUBECONFIG | cut -d= -f2) \
+  $SHELL
+```
+
+### Standalone
+
+Just use `kpick` or `kswitch` - they work in any terminal that runs your shell.
+
+## Architecture
+
+- **`k8pk` CLI**: Core Rust binary, works everywhere
+- **Shell functions**: `kpick`/`kswitch` wrappers for convenience
+- **WezTerm plugin**: Native integration with WezTerm's UI (optional, uses `k8pk` when available)
+
+## Requirements
+
+- `kubectl` or `oc` (OpenShift CLI) on PATH with contexts configured
+- `k8pk` binary (optional but recommended)
+
+**OpenShift support:** `k8pk` automatically detects and uses `oc` when available. It also sets `OC_NAMESPACE` for OpenShift compatibility.
 
 ## Troubleshooting
-- On macOS, WezTerm started from Dock may have a minimal PATH. The plugin searches common locations for `wezterm-k8s-helper` and `kubectl` (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`). Installing the helper to `/usr/local/bin` is recommended.
-- If you still see a toast "No Kubernetes contexts found", verify:
-  - `kubectl config get-contexts -o name` prints contexts in your shell
-  - `command -v wezterm-k8s-helper` prints a path (if you installed it)
-  - Try launching WezTerm from a shell to inherit your PATH
-- You can safely delete generated files under `~/.local/share/wezterm-k8s-power/`
 
-- If the selected context/namespace doesn't apply in the new tab:
-  Your shell rc may be overriding `KUBECONFIG` (e.g., `export KUBECONFIG=~/.kube/config`). Change it to only set a default when not already set.
-
-  bash/zsh (`~/.bashrc` or `~/.zshrc`):
+- **k8pk not found**: Install it or add to PATH. Check with `command -v k8pk`
+- **No contexts found**: Verify `kubectl config get-contexts -o name` works
+- **Shell exports not working**: Make sure you `eval "$(k8pk pick)"` or use `kpick` function
+- **KUBECONFIG overridden**: Your shell rc may override it. Use:
   ```bash
-  export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
-  ```
-
-  fish (`~/.config/fish/config.fish`):
-  ```fish
-  set -x KUBECONFIG $KUBECONFIG; or set -x KUBECONFIG $HOME/.kube/config
-  ```
-
-  Then restart WezTerm and verify inside the spawned tab:
-  ```bash
-  echo "$KUBECONFIG" "$WEZTERM_K8S_CONTEXT" "$WEZTERM_K8S_NAMESPACE"
-  kubectl config current-context
-  kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}'; echo
-  ```
-
-## Verify helper integration
-- Enable a one-time debug toast to see detected paths when opening the picker:
-  ```lua
-  k8s_power.apply_to_config(config, { helper_path = '/usr/local/bin/wezterm-k8s-helper', debug = true })
-  ```
-  A toast like `helper=/usr/local/bin/wezterm-k8s-helper kubectl=/usr/local/bin/kubectl` confirms the helper is used.
-- In WezTerm Debug Overlay (Ctrl-Shift-L), run:
-  ```lua
-  local p = wezterm.plugin.require('https://github.com/a1ex-var1amov/wez-k8s-helper')
-  return p.diagnose()
+  export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}  # bash/zsh
+  set -x KUBECONFIG $KUBECONFIG; or set -x KUBECONFIG $HOME/.kube/config  # fish
   ```
 
 ## Testing
-- Rust helper unit tests:
-  ```bash
-  cd rust/wezterm-k8s-helper
-  cargo test
-  ```
-  These cover kubeconfig pruning, namespace embedding, and path joining.
 
-- Lua tests (with busted):
-  ```bash
-  # Install busted (choose one)
-  # macOS (brew):
-  brew install busted
-  # or LuaRocks:
-  luarocks install busted
-
-  # Run from repo root
-  busted spec/plugin_spec.lua
-  ```
-  These tests use a mocked `wezterm` module to validate plugin configuration and diagnostics.
-
-## Homebrew (optional)
-Install helper via a local formula from this repo:
-
+Quick test script:
 ```bash
-brew install --build-from-source /path/to/wezterm-k8s-power/homebrew/Formula/wezterm-k8s-helper.rb
+./tests/test.sh
 ```
 
-Or host the formula in a tap in your GitHub repo and `brew tap` it.
+Full test suite:
+```bash
+# Rust tests
+cd rust/k8pk
+cargo test
+
+# Lua tests (for WezTerm plugin)
+busted tests/plugin_spec.lua
+```
+
+See [TESTING.md](TESTING.md) for comprehensive test plan including OC CLI tests.
+
+## Next Steps
+
+### High priority (quick wins)
+
+- **Use/show context**: `k8pk use-context <name> [--namespace <ns>]` for non-interactive switching; `k8pk show-context [--format text|json]` to print the current context/namespace.
+- **Safer writes**: Atomic writes via temp file + rename; file locking to avoid concurrent edits; timestamped backups; enforce 0600 permissions on generated files.
+- **Consistent output and verbosity**: Global `-q/--quiet`, `-v/--verbose` levels; `--no-color`; standardized `--output json|yaml|text` across commands.
+- **Shell completions**: `k8pk completions bash|zsh|fish` and installation docs.
+- **Homebrew + releases**: GitHub Actions with `cargo-dist`/`cargo-release`; create/update Homebrew formula for `k8pk` and publish artifacts.
+
+### Medium priority
+
+- **Fast context discovery**: Cache indexed contexts keyed by file path + mtime; invalidate on change; parallel glob scanning.
+- **Config clarity**: `k8pk config path` and `k8pk config print`; config schema version + migration notice.
+- **Validation/doctor**: `k8pk doctor` to detect broken kubeconfigs, missing clusters/users, invalid cert/key refs.
+- **Merge conflict strategies**: `--prefer left|right`, `--rename-on-conflict`, and dry-run previews.
+- **Cleanup enhancements**: `--pattern <glob>`, size/age filters, `--keep N` per context, richer summary and confirmations in interactive mode.
+- **Diff UX**: Colorized unified diff, `--json` machine-readable diff, highlight renamed entries.
+- **Logging**: Switch to `tracing` with env control (`K8PK_LOG=debug`), structured logs behind verbosity flags.
+- **Security**: Redact tokens/certs in logs; enforce 0600 for generated files; warn on insecure permissions.
+- **Cross-platform**: Windows path handling and CI matrix builds; thorough path/home expansion tests.
+- **Smarter globbing**: Use `ignore` crate to honor .gitignore and platform-specific ignore rules.
+
+### WezTerm niceties
+
+- **Status bar**: Segment showing `context[:namespace]` with colorization.
+- **Keybinding**: Bind to `use-context` for fast switches.
+- **Minimal UI wrapper**: Picker wrapper that calls `k8pk use-context`; optional prompt search.
 
 ## License
+
 MIT

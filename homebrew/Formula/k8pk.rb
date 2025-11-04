@@ -1,5 +1,5 @@
-class WeztermK8sHelper < Formula
-  desc "Helper CLI for wezterm-k8s-power to manage kubeconfigs per tab"
+class K8pk < Formula
+  desc "Kubernetes context picker - cross-terminal k8s context/namespace switcher"
   homepage "https://github.com/a1ex-var1amov/wez-k8s-helper"
   url "https://github.com/a1ex-var1amov/wez-k8s-helper.git", :using => :git, :branch => "main"
   version "HEAD"
@@ -7,12 +7,12 @@ class WeztermK8sHelper < Formula
   depends_on "rust" => :build
 
   def install
-    system "cargo", "install", "--path", "rust/wezterm-k8s-helper", "--root", prefix
+    system "cargo", "install", "--path", "rust/k8pk", "--root", prefix
     # cargo installs into prefix/bin automatically
   end
 
   test do
-    system "#{bin}/wezterm-k8s-helper", "--help"
+    system "#{bin}/k8pk", "--help"
   end
 end
 

@@ -1,5 +1,6 @@
 -- Adjust package path so `require('wezterm')` returns our mock
-package.path = './spec/?.lua;./plugin/?.lua;' .. package.path
+-- Tests are run from project root, so paths are relative to root
+package.path = './tests/?.lua;./plugin/?.lua;' .. package.path
 
 -- Provide the wezterm mock via package.preload
 package.preload['wezterm'] = function()
@@ -26,11 +27,11 @@ describe('wezterm-k8s-power plugin', function()
 		assert.is_true(cfg.keys == nil or #cfg.keys == 0)
 	end)
 
-	it('diagnose reflects configured helper_path', function()
+	it('diagnose reflects configured k8pk_path', function()
 		local cfg = {}
-		plugin.apply_to_config(cfg, { helper_path = '/usr/local/bin/wezterm-k8s-helper', debug = true })
+		plugin.apply_to_config(cfg, { k8pk_path = '/usr/local/bin/k8pk', debug = true })
 		local info = plugin.diagnose()
-		assert.equals('/usr/local/bin/wezterm-k8s-helper', info.configured_helper_path)
+		assert.equals('/usr/local/bin/k8pk', info.configured_k8pk_path)
 		assert.equals(true, info.debug)
 	end)
 end)

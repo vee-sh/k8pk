@@ -1,0 +1,26 @@
+# k8pk configuration file
+# Place this at ~/.kube/k8pk.yaml
+#
+# Similar to kubie's config format: https://github.com/sbstp/kubie
+
+# Configure where to look for kubernetes config files
+configs:
+  # Include these glob patterns (kubie-style)
+  # Supports ~ expansion and glob patterns
+  include:
+    - ~/.kube/config
+    - ~/.kube/*.yml
+    - ~/.kube/*.yaml
+    - ~/.kube/configs/*.yml
+    - ~/.kube/configs/*.yaml
+    - ~/.kube/kubie/*.yml
+    - ~/.kube/kubie/*.yaml
+    # Add your custom directories
+    # - ~/projects/k8s-configs/*.yaml
+    # - ~/.config/kubeconfigs/*.yaml
+
+  # Exclude these glob patterns
+  # Note: k8pk's own config file is always excluded
+  exclude:
+    - ~/.kube/k8pk.yaml
+
