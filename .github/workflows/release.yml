@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and Upload ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            ext: ""
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            ext: ""
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            ext: ".exe"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build ${{ matrix.target }}
+        working-directory: rust/k8pk
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          BIN_NAME="k8pk"
+          TARGET="${{ matrix.target }}"
+          OUT_DIR="rust/k8pk/target/${TARGET}/release"
+          BIN_PATH="${OUT_DIR}/${BIN_NAME}${{ matrix.ext }}"
+          if [ ! -f "${BIN_PATH}" ]; then
+            echo "Binary not found: ${BIN_PATH}"
+            ls -la "${OUT_DIR}" || true
+            exit 1
+          fi
+          PKG_DIR="${BIN_NAME}-v${VERSION}-${TARGET}"
+          mkdir -p "${PKG_DIR}"
+          cp "${BIN_PATH}" "${PKG_DIR}/"
+          cp README.md "${PKG_DIR}/" || true
+          cp CONFIG_FILE.md "${PKG_DIR}/" || true
+          ARCHIVE="${PKG_DIR}.${{ matrix.archive }}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "${ARCHIVE}" "${PKG_DIR}" >/dev/null
+          else
+            tar -czf "${ARCHIVE}" "${PKG_DIR}"
+          fi
+          echo "ASSET=${ARCHIVE}" >> $GITHUB_ENV
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
