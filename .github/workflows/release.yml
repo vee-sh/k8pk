@@ -12,7 +12,34 @@ on:
   workflow_dispatch:
 
 jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Determine tag name
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build:
+    needs: create-release
     name: Build and Upload ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -46,7 +73,8 @@ jobs:
         run: |
           cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Package artifact
+      - name: Package artifact (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
@@ -101,25 +129,69 @@ jobs:
           echo "Created archive: ${ARCHIVE}"
           ls -lh "${ARCHIVE}" || true
 
-      - name: Determine tag name
-        id: tag
-        shell: bash
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          fi
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ github.event.release.tag_name }}"
+          if (-not $tag) { $tag = "${{ github.ref_name }}" }
+          $version = $tag -replace '^v', ''
+          $binName = "k8pk"
+          $target = "${{ matrix.target }}"
+          $outDir = "rust/k8pk/target/$target/release"
+          $binPath = "$outDir/${binName}.exe"
+          
+          Write-Host "Working directory: $(Get-Location)"
+          Write-Host "Checking for binary at: $binPath"
+          if (-not (Test-Path $binPath)) {
+            Write-Host "Binary not found: $binPath"
+            Write-Host "Listing directory contents:"
+            Get-ChildItem $outDir -ErrorAction SilentlyContinue | Format-Table
+            exit 1
+          }
+          
+          $pkgDir = "${binName}-v${version}-${target}"
+          Write-Host "Creating package directory: $pkgDir"
+          New-Item -ItemType Directory -Path $pkgDir -Force | Out-Null
+          
+          Write-Host "Copying binary..."
+          Copy-Item $binPath "$pkgDir/"
+          
+          Write-Host "Copying documentation..."
+          if (Test-Path README.md) {
+            Copy-Item README.md "$pkgDir/"
+          }
+          if (Test-Path CONFIG_FILE.md) {
+            Copy-Item CONFIG_FILE.md "$pkgDir/"
+          }
+          
+          Write-Host "Copying shell scripts..."
+          if (Test-Path shell) {
+            New-Item -ItemType Directory -Path "$pkgDir/shell" -Force | Out-Null
+            if (Test-Path shell/k8pk.sh) {
+              Copy-Item shell/k8pk.sh "$pkgDir/shell/"
+            }
+            if (Test-Path shell/k8pk.fish) {
+              Copy-Item shell/k8pk.fish "$pkgDir/shell/"
+            }
+          }
+          
+          Write-Host "Creating archive..."
+          $archive = "${pkgDir}.tar.gz"
+          # Use tar command available on Windows runners
+          tar -czf $archive $pkgDir
+          
+          Write-Host "ASSET=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Created archive: $archive"
+          Get-Item $archive | Format-List
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ASSET }}
-          tag_name: ${{ steps.tag.outputs.tag }}
-          make_latest: true
-          generate_release_notes: true
-          draft: false
-          prerelease: false
+          tag_name: ${{ needs.create-release.outputs.tag_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
