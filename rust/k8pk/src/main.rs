@@ -9,6 +9,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcCommand;
+
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
 #[derive(Parser)]
@@ -840,17 +842,38 @@ fn interactive_pick(cfg: &KubeConfig, kubeconfig_env: Option<&str>) -> Result<(S
 
 fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Result<()> {
     let kc_str = kubeconfig.to_string_lossy();
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut cmd = ProcCommand::new(&shell);
-    cmd.env("KUBECONFIG", kc_str.as_ref());
-    cmd.env("K8PK_CONTEXT", context);
-    if let Some(ns) = namespace {
-        cmd.env("K8PK_NAMESPACE", ns);
-        cmd.env("OC_NAMESPACE", ns);  // OpenShift compatibility
+    
+    #[cfg(unix)]
+    {
+        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let mut cmd = ProcCommand::new(&shell);
+        cmd.env("KUBECONFIG", kc_str.as_ref());
+        cmd.env("K8PK_CONTEXT", context);
+        if let Some(ns) = namespace {
+            cmd.env("K8PK_NAMESPACE", ns);
+            cmd.env("OC_NAMESPACE", ns);  // OpenShift compatibility
+        }
+        // exec the shell (replace current process) - Unix only
+        let err = cmd.exec();
+        Err(anyhow!("failed to exec shell: {}", err))
     }
-    // exec the shell (replace current process)
-    let err = cmd.exec();
-    Err(anyhow!("failed to exec shell: {}", err))
+    
+    #[cfg(windows)]
+    {
+        let shell = env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+        let mut cmd = ProcCommand::new(&shell);
+        cmd.env("KUBECONFIG", kc_str.as_ref());
+        cmd.env("K8PK_CONTEXT", context);
+        if let Some(ns) = namespace {
+            cmd.env("K8PK_NAMESPACE", ns);
+            cmd.env("OC_NAMESPACE", ns);  // OpenShift compatibility
+        }
+        // On Windows, we can't exec, so spawn and wait
+        cmd.spawn()
+            .and_then(|mut child| child.wait())
+            .map_err(|e| anyhow!("failed to spawn shell: {}", e))?;
+        Ok(())
+    }
 }
 
 fn cleanup_old_configs(
