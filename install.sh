@@ -165,14 +165,33 @@ install_binary() {
     trap "rm -rf $TEMP_DIR" EXIT
     
     if command -v curl >/dev/null 2>&1; then
-        curl -L -o "$TEMP_DIR/k8pk.tar.gz" "$DOWNLOAD_URL" || error "Failed to download k8pk"
+        HTTP_CODE=$(curl -L -w "%{http_code}" -o "$TEMP_DIR/k8pk.tar.gz" "$DOWNLOAD_URL" 2>/dev/null || echo "000")
+        if [ "$HTTP_CODE" != "200" ]; then
+            if [ "$HTTP_CODE" = "404" ]; then
+                error "Release asset not found. The release may still be building. Please try again in a few minutes.\nURL: $DOWNLOAD_URL"
+            else
+                error "Failed to download k8pk (HTTP $HTTP_CODE). URL: $DOWNLOAD_URL"
+            fi
+        fi
     elif command -v wget >/dev/null 2>&1; then
-        wget -O "$TEMP_DIR/k8pk.tar.gz" "$DOWNLOAD_URL" || error "Failed to download k8pk"
+        if ! wget -O "$TEMP_DIR/k8pk.tar.gz" "$DOWNLOAD_URL" 2>&1 | grep -q "200 OK"; then
+            error "Failed to download k8pk. The release may still be building. Please try again in a few minutes.\nURL: $DOWNLOAD_URL"
+        fi
     else
         error "Need curl or wget to download k8pk"
     fi
     
-    tar -xzf "$TEMP_DIR/k8pk.tar.gz" -C "$TEMP_DIR"
+    # Verify archive before extracting
+    if [ ! -s "$TEMP_DIR/k8pk.tar.gz" ]; then
+        error "Downloaded file is empty. The release may still be building. Please try again in a few minutes."
+    fi
+    
+    # Check if file is actually a tar.gz (starts with gzip magic bytes or tar signature)
+    if ! file "$TEMP_DIR/k8pk.tar.gz" | grep -qE "(gzip|tar|archive)"; then
+        error "Downloaded file is not a valid archive. This usually means the release is still building.\nPlease check: https://github.com/a1ex-var1amov/k8pk/releases/tag/$VERSION_TAG\nOr try again in a few minutes."
+    fi
+    
+    tar -xzf "$TEMP_DIR/k8pk.tar.gz" -C "$TEMP_DIR" || error "Failed to extract archive. The downloaded file may be corrupted or incomplete."
     
     # Find the extracted directory
     EXTRACTED_DIR=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "k8pk-*" | head -1)
