@@ -85,6 +85,20 @@ source /path/to/k8pk/shell/k8pk.fish
 kpick              # Interactive picker (evals exports in current shell)
 kswitch dev        # Switch to context 'dev'
 kswitch dev prod   # Switch to context 'dev', namespace 'prod'
+kctx dev           # Switch to context 'dev' (with history)
+kctx -             # Switch back to previous context
+kns prod           # Switch to namespace 'prod' (with history)
+kns -              # Switch back to previous namespace
+```
+
+**Prompt Integration:**
+Add to your shell prompt to show current context/namespace:
+```bash
+# For bash/zsh:
+export PS1='$(_k8pk_prompt) $ '
+
+# Or include in existing prompt:
+export PS1='[\u@\h $(_k8pk_prompt) \W]\$ '
 ```
 
 ### WezTerm Plugin (Recommended for WezTerm users)
@@ -127,6 +141,30 @@ k8pk pick --output json
 
 # Interactive picker (spawns new shell)
 k8pk pick --output spawn
+
+# Switch to context (with history support)
+k8pk ctx dev
+k8pk ctx dev --namespace prod
+k8pk ctx -  # Switch back to previous context
+k8pk ctx    # Interactive selection
+
+# Switch to namespace (with history support)
+k8pk ns prod
+k8pk ns -   # Switch back to previous namespace
+k8pk ns     # Interactive selection
+
+# Execute command in context/namespace (no shell spawn)
+k8pk exec dev prod -- kubectl get pods
+k8pk exec dev prod -- oc get pods -n prod
+k8pk exec "dev-*" prod -- kubectl get nodes  # Wildcard support
+k8pk exec "dev-*" prod --fail-early -- kubectl get pods  # Fail fast
+
+# Get current state information
+k8pk info ctx      # Current context name
+k8pk info ns       # Current namespace
+k8pk info depth    # Recursive shell depth
+k8pk info config   # Kubeconfig file path
+k8pk info all      # JSON with all info
 
 # Output shell exports for a context/namespace
 k8pk env --context dev --namespace prod

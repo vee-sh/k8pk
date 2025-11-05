@@ -40,3 +40,35 @@ function kswitch
   end
 end
 
+function kctx
+  if test (count $argv) -eq 0
+    k8pk ctx 2>/dev/null | source
+  else if test (count $argv) -eq 1
+    k8pk ctx $argv[1] 2>/dev/null | source
+  else
+    k8pk ctx $argv[1] --namespace $argv[2] 2>/dev/null | source
+  end
+end
+
+function kns
+  if test (count $argv) -eq 0
+    k8pk ns 2>/dev/null | source
+  else
+    k8pk ns $argv[1] 2>/dev/null | source
+  end
+end
+
+function _k8pk_prompt
+  if test -n "$K8PK_CONTEXT"
+    set -l prompt "[$K8PK_CONTEXT"
+    if test -n "$K8PK_NAMESPACE"
+      set prompt "$prompt:$K8PK_NAMESPACE"
+    end
+    if test -n "$K8PK_DEPTH"; and test "$K8PK_DEPTH" -gt 0
+      set prompt "$prompt:$K8PK_DEPTH"
+    end
+    set prompt "$prompt]"
+    echo "$prompt"
+  end
+end
+

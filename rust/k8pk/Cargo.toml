@@ -1,6 +1,6 @@
 [package]
 name = "k8pk"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 
@@ -16,6 +16,9 @@ which = "8.0"
 inquire = "0.7"
 globset = "0.4"
 atty = "0.2"
+
+[dev-dependencies]
+tempfile = "3.8"
 
 [profile.release]
 opt-level = 3

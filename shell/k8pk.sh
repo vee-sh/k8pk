@@ -57,6 +57,103 @@ kpick() {
   fi
 }
 
+# Quick context switch (supports history with "-")
+kctx() {
+  if ! command -v k8pk >/dev/null 2>&1; then
+    echo "k8pk not found. Install it first." >&2
+    return 1
+  fi
+  
+  local args=$(_k8pk_args)
+  local ctx="${1:-}"
+  local ns="${2:-}"
+  
+  if [ -z "$ctx" ]; then
+    # Interactive selection
+    local tmpfile=$(mktemp)
+    if k8pk $args ctx > "$tmpfile" 2>/dev/null; then
+      eval "$(cat "$tmpfile")"
+      rm -f "$tmpfile"
+    else
+      local exit_code=$?
+      rm -f "$tmpfile"
+      return $exit_code
+    fi
+  else
+    # Explicit context (with optional namespace)
+    local tmpfile=$(mktemp)
+    if [ -n "$ns" ]; then
+      if k8pk $args ctx "$ctx" --namespace "$ns" > "$tmpfile" 2>/dev/null; then
+        eval "$(cat "$tmpfile")"
+        rm -f "$tmpfile"
+      else
+        local exit_code=$?
+        rm -f "$tmpfile"
+        return $exit_code
+      fi
+    else
+      if k8pk $args ctx "$ctx" > "$tmpfile" 2>/dev/null; then
+        eval "$(cat "$tmpfile")"
+        rm -f "$tmpfile"
+      else
+        local exit_code=$?
+        rm -f "$tmpfile"
+        return $exit_code
+      fi
+    fi
+  fi
+}
+
+# Quick namespace switch (supports history with "-")
+kns() {
+  if ! command -v k8pk >/dev/null 2>&1; then
+    echo "k8pk not found. Install it first." >&2
+    return 1
+  fi
+  
+  local args=$(_k8pk_args)
+  local ns="${1:-}"
+  
+  if [ -z "$ns" ]; then
+    # Interactive selection
+    local tmpfile=$(mktemp)
+    if k8pk $args ns > "$tmpfile" 2>/dev/null; then
+      eval "$(cat "$tmpfile")"
+      rm -f "$tmpfile"
+    else
+      local exit_code=$?
+      rm -f "$tmpfile"
+      return $exit_code
+    fi
+  else
+    # Explicit namespace
+    local tmpfile=$(mktemp)
+    if k8pk $args ns "$ns" > "$tmpfile" 2>/dev/null; then
+      eval "$(cat "$tmpfile")"
+      rm -f "$tmpfile"
+    else
+      local exit_code=$?
+      rm -f "$tmpfile"
+      return $exit_code
+    fi
+  fi
+}
+
+# Prompt helper function
+_k8pk_prompt() {
+  if [ -n "${K8PK_CONTEXT:-}" ]; then
+    local prompt="[${K8PK_CONTEXT}"
+    if [ -n "${K8PK_NAMESPACE:-}" ]; then
+      prompt="${prompt}:${K8PK_NAMESPACE}"
+    fi
+    if [ -n "${K8PK_DEPTH:-}" ] && [ "${K8PK_DEPTH}" -gt 0 ]; then
+      prompt="${prompt}:${K8PK_DEPTH}"
+    fi
+    prompt="${prompt}]"
+    echo "$prompt"
+  fi
+}
+
 # Quick switch to a context (non-interactive)
 kswitch() {
   if [ $# -lt 1 ]; then

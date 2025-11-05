@@ -1691,9 +1691,183 @@ fn diff_kubeconfigs(
     Ok(())
 }
 
+#[derive(Deserialize, Serialize, Debug, Default)]
+pub struct History {
+    context_history: Vec<String>,
+    namespace_history: Vec<String>,
+}
+
+pub fn load_history() -> Result<History> {
+    let home = dirs_next::home_dir().ok_or_else(|| anyhow!("cannot resolve home dir"))?;
+    let history_file = home.join(".local/share/k8pk/history.json");
+    
+    if !history_file.exists() {
+        return Ok(History::default());
+    }
+    
+    let content = fs::read_to_string(&history_file)
+        .with_context(|| format!("reading history file '{}'", history_file.display()))?;
+    
+    let history: History = serde_json::from_str(&content)
+        .with_context(|| format!("parsing history file '{}'", history_file.display()))?;
+    
+    Ok(history)
+}
+
+pub fn save_history(history: &History) -> Result<()> {
+    let home = dirs_next::home_dir().ok_or_else(|| anyhow!("cannot resolve home dir"))?;
+    let base = home.join(".local/share/k8pk");
+    fs::create_dir_all(&base)?;
+    let history_file = base.join("history.json");
+    
+    let content = serde_json::to_string_pretty(history)
+        .with_context(|| format!("serializing history"))?;
+    
+    fs::write(&history_file, content)
+        .with_context(|| format!("writing history file '{}'", history_file.display()))?;
+    
+    Ok(())
+}
+
+pub fn push_context_history(context: &str) -> Result<()> {
+    let mut history = load_history()?;
+    
+    // Remove if already exists, then add to front
+    history.context_history.retain(|c| c != context);
+    history.context_history.insert(0, context.to_string());
+    
+    // Keep only last 10
+    if history.context_history.len() > 10 {
+        history.context_history.truncate(10);
+    }
+    
+    save_history(&history)
+}
+
+pub fn push_namespace_history(namespace: &str) -> Result<()> {
+    let mut history = load_history()?;
+    
+    // Remove if already exists, then add to front
+    history.namespace_history.retain(|n| n != namespace);
+    history.namespace_history.insert(0, namespace.to_string());
+    
+    // Keep only last 10
+    if history.namespace_history.len() > 10 {
+        history.namespace_history.truncate(10);
+    }
+    
+    save_history(&history)
+}
+
+fn get_previous_context() -> Result<Option<String>> {
+    let history = load_history()?;
+    Ok(history.context_history.get(1).cloned())
+}
+
+fn get_previous_namespace() -> Result<Option<String>> {
+    let history = load_history()?;
+    Ok(history.namespace_history.get(1).cloned())
+}
+
+pub fn get_current_state() -> Result<(Option<String>, Option<String>, u32, Option<PathBuf>)> {
+    let ctx = env::var("K8PK_CONTEXT").ok();
+    let ns = env::var("K8PK_NAMESPACE").ok();
+    
+    // Detect recursive depth from K8PK_DEPTH env var
+    let depth = env::var("K8PK_DEPTH")
+        .ok()
+        .and_then(|d| d.parse::<u32>().ok())
+        .unwrap_or(0);
+    
+    // Get kubeconfig path
+    let config_path = env::var("KUBECONFIG")
+        .ok()
+        .and_then(|k| {
+            let p = PathBuf::from(k.split(':').next()?);
+            if p.exists() { Some(p) } else { None }
+        });
+    
+    Ok((ctx, ns, depth, config_path))
+}
+
+pub fn match_contexts(pattern: &str, contexts: &[String]) -> Vec<String> {
+    if !pattern.contains('*') {
+        // Exact match
+        if contexts.contains(&pattern.to_string()) {
+            return vec![pattern.to_string()];
+        }
+        return vec![];
+    }
+    
+    // Wildcard match
+    let pattern_parts: Vec<&str> = pattern.split('*').collect();
+    contexts.iter()
+        .filter(|ctx| {
+            if pattern_parts.len() == 1 {
+                ctx.starts_with(pattern_parts[0])
+            } else if pattern_parts.len() == 2 {
+                ctx.starts_with(pattern_parts[0]) && ctx.ends_with(pattern_parts[1])
+            } else {
+                // More complex pattern - simple implementation
+                let mut pos = 0;
+                for part in &pattern_parts {
+                    if let Some(idx) = ctx[pos..].find(part) {
+                        pos += idx + part.len();
+                    } else {
+                        return false;
+                    }
+                }
+                true
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+fn exec_command_in_context(
+    context: &str,
+    namespace: &str,
+    command: &[String],
+    show_header: bool,
+) -> Result<i32> {
+    if command.is_empty() {
+        return Err(anyhow!("no command specified"));
+    }
+    
+    let home = dirs_next::home_dir().ok_or_else(|| anyhow!("cannot resolve home dir"))?;
+    let base = home.join(".local/share/k8pk");
+    fs::create_dir_all(&base)?;
+    
+    let config = load_k8pk_config()?;
+    let paths = resolve_kubeconfig_paths(None, &[], &config)?;
+    
+    let kubeconfig = ensure_kubeconfig_for_context(context, Some(namespace), &paths)?;
+    
+    // First element is the command, rest are args
+    let (cmd_name, args) = command.split_first()
+        .ok_or_else(|| anyhow!("empty command"))?;
+    
+    let mut cmd = ProcCommand::new(cmd_name);
+    cmd.args(args);
+    cmd.env("KUBECONFIG", kubeconfig.as_os_str());
+    cmd.env("K8PK_CONTEXT", context);
+    cmd.env("K8PK_NAMESPACE", namespace);
+    cmd.env("OC_NAMESPACE", namespace);
+    
+    if show_header && atty::is(atty::Stream::Stdout) {
+        eprintln!("CONTEXT => {} (namespace: {})", context, namespace);
+    }
+    
+    let status = cmd.status()
+        .with_context(|| format!("failed to execute command"))?;
+    
+    Ok(status.code().unwrap_or(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_join_paths_for_env() {
@@ -1749,5 +1923,109 @@ mod tests {
         assert_eq!(pruned.clusters.len(), 1);
         assert_eq!(pruned.users.len(), 1);
         assert_eq!(pruned.current_context.as_deref(), Some("stg"));
+    }
+
+    #[test]
+    fn test_match_contexts_exact() {
+        let contexts = vec!["dev".to_string(), "prod".to_string(), "staging".to_string()];
+        let matched = super::match_contexts("dev", &contexts);
+        assert_eq!(matched, vec!["dev".to_string()]);
+    }
+
+    #[test]
+    fn test_match_contexts_wildcard_prefix() {
+        let contexts = vec!["dev-1".to_string(), "dev-2".to_string(), "prod-1".to_string()];
+        let matched = super::match_contexts("dev-*", &contexts);
+        assert_eq!(matched.len(), 2);
+        assert!(matched.contains(&"dev-1".to_string()));
+        assert!(matched.contains(&"dev-2".to_string()));
+    }
+
+    #[test]
+    fn test_match_contexts_wildcard_suffix() {
+        let contexts = vec!["dev-1".to_string(), "dev-2".to_string(), "prod-1".to_string()];
+        let matched = super::match_contexts("*-1", &contexts);
+        assert_eq!(matched.len(), 2);
+        assert!(matched.contains(&"dev-1".to_string()));
+        assert!(matched.contains(&"prod-1".to_string()));
+    }
+
+    #[test]
+    fn test_match_contexts_no_match() {
+        let contexts = vec!["dev".to_string(), "prod".to_string()];
+        let matched = super::match_contexts("staging", &contexts);
+        assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn test_history_save_and_load() {
+        let temp_dir = TempDir::new().unwrap();
+        let home_backup = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp_dir.path());
+
+        let mut history = super::History::default();
+        history.context_history.push("dev".to_string());
+        history.context_history.push("prod".to_string());
+        history.namespace_history.push("default".to_string());
+
+        super::save_history(&history).unwrap();
+        let loaded = super::load_history().unwrap();
+        
+        assert_eq!(loaded.context_history.len(), 2);
+        assert_eq!(loaded.namespace_history.len(), 1);
+        assert_eq!(loaded.context_history[0], "dev");
+        assert_eq!(loaded.context_history[1], "prod");
+        assert_eq!(loaded.namespace_history[0], "default");
+
+        if let Some(home) = home_backup {
+            std::env::set_var("HOME", home);
+        }
+    }
+
+    #[test]
+    fn test_push_context_history() {
+        let temp_dir = TempDir::new().unwrap();
+        let home_backup = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp_dir.path());
+
+        super::push_context_history("dev").unwrap();
+        super::push_context_history("prod").unwrap();
+        super::push_context_history("dev").unwrap(); // Should move to front
+
+        let history = super::load_history().unwrap();
+        assert_eq!(history.context_history.len(), 2);
+        assert_eq!(history.context_history[0], "dev");
+        assert_eq!(history.context_history[1], "prod");
+
+        if let Some(home) = home_backup {
+            std::env::set_var("HOME", home);
+        }
+    }
+
+    #[test]
+    fn test_get_current_state() {
+        std::env::remove_var("K8PK_CONTEXT");
+        std::env::remove_var("K8PK_NAMESPACE");
+        std::env::remove_var("K8PK_DEPTH");
+        std::env::remove_var("KUBECONFIG");
+
+        let (ctx, ns, depth, config) = super::get_current_state().unwrap();
+        assert!(ctx.is_none());
+        assert!(ns.is_none());
+        assert_eq!(depth, 0);
+        assert!(config.is_none());
+
+        std::env::set_var("K8PK_CONTEXT", "test-ctx");
+        std::env::set_var("K8PK_NAMESPACE", "test-ns");
+        std::env::set_var("K8PK_DEPTH", "2");
+
+        let (ctx, ns, depth, _) = super::get_current_state().unwrap();
+        assert_eq!(ctx, Some("test-ctx".to_string()));
+        assert_eq!(ns, Some("test-ns".to_string()));
+        assert_eq!(depth, 2);
+
+        std::env::remove_var("K8PK_CONTEXT");
+        std::env::remove_var("K8PK_NAMESPACE");
+        std::env::remove_var("K8PK_DEPTH");
     }
 }

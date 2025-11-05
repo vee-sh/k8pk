@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.3.0] - 2025-01-27
+### Added
+- `exec` command to run kubectl/oc commands in context/namespace without spawning shell
+- Context history tracking with `-` flag to switch back to previous context/namespace
+- `info` command to get current context, namespace, depth, and config path
+- `ctx` and `ns` commands for quick context/namespace switching with history support
+- Wildcard support in `exec` command (e.g., `k8pk exec "dev-*" prod -- kubectl get pods`)
+- Prompt integration helper function `_k8pk_prompt()` for shell prompts
+- New shell functions `kctx` and `kns` for convenient context/namespace switching
+- Recursive shell depth tracking via `K8PK_DEPTH` environment variable
+- Comprehensive test coverage for all Phase 1 features
+
+### Changed
+- History is automatically tracked when switching contexts/namespaces
+- Shell scripts now include `kctx` and `kns` convenience functions
+- All context switching commands now update history automatically
+
+[0.3.0]: https://github.com/a1ex-var1amov/k8pk/releases/tag/v0.3.0
+
 ## [0.2.1] - 2025-01-27
 ### Added
 - GitHub Actions release workflow for automated multi-platform builds
