@@ -237,6 +237,29 @@ k8pk diff --file1 ~/.kube/config --file2 ~/.kube/config.backup
 
 # Show only differences
 k8pk diff --file1 ~/.kube/config --file2 ~/.kube/config.backup --diff-only
+
+# Export path to isolated kubeconfig file
+k8pk export dev prod
+
+# Update k8pk to latest version
+k8pk update
+k8pk update --check  # Check for updates without installing
+k8pk update --force   # Force reinstall even if up to date
+
+# Generate shell completion scripts
+k8pk completions bash > /etc/bash_completion.d/k8pk
+k8pk completions zsh > ~/.zsh/completions/_k8pk
+k8pk completions fish > ~/.config/fish/completions/k8pk.fish
+
+# Lint kubeconfig files for issues
+k8pk lint
+k8pk lint --file ~/.kube/config
+k8pk lint --strict  # Fail on warnings
+
+# Edit kubeconfig files
+k8pk edit           # Interactive menu to select context
+k8pk edit dev       # Edit file containing 'dev' context
+k8pk edit dev --editor nano  # Use specific editor
 ```
 
 **OpenShift:** When `oc` is available, `k8pk` automatically uses it. Generated kubeconfigs work with both `kubectl` and `oc`. The `env` command also sets `OC_NAMESPACE` for OpenShift compatibility.

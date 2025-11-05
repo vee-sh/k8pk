@@ -2,15 +2,15 @@
 
 ## What k8pk Already Has (Advantages)
 
-✅ **Native WezTerm Plugin** - No other tool has this
-✅ **Built-in Interactive UI** - No fzf dependency needed
-✅ **OpenShift Support** - Auto-detects `oc`, sets `OC_NAMESPACE`
-✅ **Config Management** - Merge, diff, copy, rename, remove contexts
-✅ **Cleanup Utilities** - Smart cleanup with multiple strategies
-✅ **Windows Support** - Works on Windows (kubie doesn't)
-✅ **Cross-terminal** - Works in any terminal, not just kubie shells
-✅ **Pretty Labels** - EKS ARN formatting, better UX
-✅ **Smart Installation** - Auto-detects environment and sets up everything
+- **Native WezTerm Plugin** - No other tool has this
+- **Built-in Interactive UI** - No fzf dependency needed
+- **OpenShift Support** - Auto-detects `oc`, sets `OC_NAMESPACE`
+- **Config Management** - Merge, diff, copy, rename, remove contexts
+- **Cleanup Utilities** - Smart cleanup with multiple strategies
+- **Windows Support** - Works on Windows (kubie doesn't)
+- **Cross-terminal** - Works in any terminal, not just kubie shells
+- **Pretty Labels** - EKS ARN formatting, better UX
+- **Smart Installation** - Auto-detects environment and sets up everything
 
 ## Key Features to Add (High Priority)
 
@@ -120,17 +120,19 @@ k8pk exec "*-prod" default -- kubectl get nodes
 ### 11. **Faster Context Switching**
 Cache context list, parallel namespace discovery, incremental updates.
 
-### 12. **Self-Update**
+### 12. **Self-Update** [COMPLETE]
 ```bash
 k8pk update  # Check and update to latest version
+k8pk update --check  # Check for updates without installing
+k8pk update --force  # Force reinstall even if up to date
 ```
 
-### 13. **Export Path Command** (from kubie)
+### 13. **Export Path Command** [COMPLETE] (from kubie)
 ```bash
 k8pk export dev prod  # Print path to isolated config file
 ```
 
-### 14. **Completion Scripts**
+### 14. **Completion Scripts** [COMPLETE]
 ```bash
 k8pk completions bash > /etc/bash_completion.d/k8pk
 k8pk completions zsh > ~/.zsh/completions/_k8pk
@@ -158,23 +160,24 @@ k8pk exec-all "dev-*" prod -- kubectl get pods
 
 ## Implementation Priority
 
-**Phase 1 (Core Workflow):** ✅ COMPLETE
-1. ✅ Exec command
-2. ✅ Context history (`-` flag)
-3. ✅ Info command
-4. ✅ Better prompt integration
+**Phase 1 (Core Workflow):** [COMPLETE]
+1. [COMPLETE] Exec command
+2. [COMPLETE] Context history (`-` flag)
+3. [COMPLETE] Info command
+4. [COMPLETE] Better prompt integration
 
-**Phase 2 (Power User):**
-5. Recursive shells
-6. Lint command
-7. Edit command
-8. Hooks support
+**Phase 2 (Power User):** [COMPLETE]
+5. [COMPLETE] Recursive shells
+6. [COMPLETE] Lint command
+7. [COMPLETE] Edit command
+8. [COMPLETE] Hooks support
 
-**Phase 3 (Polish):**
-9. Namespace partial matching
-10. Wildcard exec
-11. Completion scripts
-12. Self-update
+**Phase 3 (Polish):** [COMPLETE]
+9. [COMPLETE] Namespace partial matching
+10. [COMPLETE] Wildcard exec (already implemented in exec command)
+11. [COMPLETE] Completion scripts
+12. [COMPLETE] Self-update
+13. [COMPLETE] Context aliases
 
 ## What Makes k8pk Unique
 

@@ -190,12 +190,103 @@ enum Command {
         #[arg(long)]
         diff_only: bool,
     },
+    /// Execute a command in a context and namespace
+    Exec {
+        /// Context name (supports wildcards like "dev-*")
+        context: String,
+        /// Namespace name
+        namespace: String,
+        /// Command to execute (everything after --)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+        /// Fail early if any command returns non-zero exit code (for wildcard contexts)
+        #[arg(short = 'e', long)]
+        fail_early: bool,
+        /// Suppress context headers in output
+        #[arg(long)]
+        no_headers: bool,
+    },
+    /// Get information about current context/namespace
+    Info {
+        /// What to show: ctx, ns, depth, config, or all
+        #[arg(default_value = "all")]
+        what: String,
+    },
+    /// Switch to context (with history support)
+    Ctx {
+        /// Context name, or "-" to switch to previous context
+        context: Option<String>,
+        /// Optional namespace
+        #[arg(short = 'n', long)]
+        namespace: Option<String>,
+        /// Recursive shell (spawn nested shell)
+        #[arg(short = 'r', long)]
+        recursive: bool,
+    },
+    /// Switch to namespace (with history support)
+    Ns {
+        /// Namespace name, or "-" to switch to previous namespace
+        namespace: Option<String>,
+        /// Recursive shell (spawn nested shell)
+        #[arg(short = 'r', long)]
+        recursive: bool,
+    },
+    /// Update k8pk to the latest version
+    Update {
+        /// Check for updates without installing
+        #[arg(long)]
+        check: bool,
+        /// Force update even if already on latest version
+        #[arg(long)]
+        force: bool,
+    },
+    /// Export path to isolated kubeconfig file
+    Export {
+        /// Context name
+        context: String,
+        /// Namespace name
+        namespace: String,
+    },
+    /// Generate shell completion scripts
+    Completions {
+        /// Shell type: bash, zsh, or fish
+        shell: String,
+    },
+    /// Lint kubeconfig files for issues
+    Lint {
+        /// Specific kubeconfig file to lint (defaults to all configured files)
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Strict validation (fail on warnings)
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Edit kubeconfig files
+    Edit {
+        /// Specific context to edit (shows menu if not specified)
+        context: Option<String>,
+        /// Use a specific editor (defaults to $EDITOR or vim)
+        #[arg(long)]
+        editor: Option<String>,
+    },
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 struct K8pkConfig {
     #[serde(default)]
     configs: ConfigsSection,
+    #[serde(default)]
+    hooks: Option<HooksSection>,
+    #[serde(default)]
+    aliases: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+struct HooksSection {
+    #[serde(default)]
+    start_ctx: Option<String>,
+    #[serde(default)]
+    stop_ctx: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
@@ -239,6 +330,8 @@ fn load_k8pk_config() -> Result<K8pkConfig> {
                 include: default_include_patterns(),
                 exclude: default_exclude_patterns(),
             },
+            hooks: None,
+            aliases: None,
         });
     }
     
@@ -374,6 +467,9 @@ fn main() -> Result<()> {
     let kubeconfig_env = join_paths_for_env(&paths);
     let merged = load_merged_kubeconfig(&paths)?;
 
+    // Check if we should run hooks (before match consumes command)
+    let should_run_hook = matches!(&cli.command, Command::Ctx { .. } | Command::Ns { .. } | Command::Pick { .. } | Command::Spawn { .. } | Command::Env { .. });
+
     match cli.command {
         Command::Contexts { json, path } => {
             if path {
@@ -476,6 +572,282 @@ fn main() -> Result<()> {
         }
         Command::Diff { file1, file2, diff_only } => {
             diff_kubeconfigs(&file1, &file2, diff_only)?;
+        }
+        Command::Exec { context, namespace, command, fail_early, no_headers } => {
+            let contexts = list_context_names(&merged);
+            let matched = match_contexts(&context, &contexts);
+            
+            if matched.is_empty() {
+                return Err(anyhow!("no contexts matched pattern '{}'", context));
+            }
+            
+            let show_header = !no_headers && matched.len() > 1;
+            let mut failed = false;
+            
+            for ctx in &matched {
+                let exit_code = exec_command_in_context(ctx, &namespace, &command, show_header)?;
+                if exit_code != 0 {
+                    if fail_early {
+                        std::process::exit(exit_code);
+                    }
+                    failed = true;
+                }
+            }
+            
+            if failed {
+                std::process::exit(1);
+            }
+        }
+        Command::Info { what } => {
+            let (ctx, ns, depth, config_path) = get_current_state()?;
+            
+            match what.as_str() {
+                "ctx" | "context" => {
+                    if let Some(c) = ctx {
+                        println!("{}", c);
+                    }
+                }
+                "ns" | "namespace" => {
+                    if let Some(n) = ns {
+                        println!("{}", n);
+                    }
+                }
+                "depth" => {
+                    println!("{}", depth);
+                }
+                "config" => {
+                    if let Some(p) = config_path {
+                        println!("{}", p.display());
+                    }
+                }
+                "all" => {
+                    let mut result = serde_json::Map::new();
+                    if let Some(c) = ctx {
+                        result.insert("context".to_string(), serde_json::Value::String(c));
+                    }
+                    if let Some(n) = ns {
+                        result.insert("namespace".to_string(), serde_json::Value::String(n));
+                    }
+                    result.insert("depth".to_string(), serde_json::Value::Number(depth.into()));
+                    if let Some(p) = config_path {
+                        result.insert("config".to_string(), serde_json::Value::String(p.to_string_lossy().to_string()));
+                    }
+                    println!("{}", serde_json::to_string(&result)?);
+                }
+                _ => {
+                    return Err(anyhow!("unknown info type: {}. Use: ctx, ns, depth, config, or all", what));
+                }
+            }
+        }
+        Command::Ctx { context, namespace, recursive } => {
+            let context_name = if let Some(ref ctx) = context {
+                if ctx == "-" {
+                    get_previous_context()?
+                        .ok_or_else(|| anyhow!("no previous context in history"))?
+                } else {
+                    // Check for alias first
+                    let mut resolved_ctx = ctx.clone();
+                    if let Ok(config) = load_k8pk_config() {
+                        if let Some(ref aliases) = config.aliases {
+                            if let Some(aliased) = aliases.get(ctx) {
+                                resolved_ctx = aliased.clone();
+                            }
+                        }
+                    }
+                    
+                    // Validate context exists
+                    let all_contexts = list_context_names(&merged);
+                    if !all_contexts.contains(&resolved_ctx) {
+                        return Err(anyhow!("context '{}' not found", resolved_ctx));
+                    }
+                    
+                    resolved_ctx
+                }
+            } else {
+                // Interactive selection
+                let contexts = list_context_names(&merged);
+                if contexts.is_empty() {
+                    return Err(anyhow!("no contexts found"));
+                }
+                if atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stderr) {
+                    Select::new("Select Kubernetes context:", contexts.clone())
+                        .with_page_size(15)
+                        .prompt()
+                        .map_err(|e| anyhow!("context selection cancelled: {}", e))?
+                } else {
+                    return Err(anyhow!("interactive selection requires a TTY"));
+                }
+            };
+            
+            // Validate context exists
+            if !list_context_names(&merged).contains(&context_name) {
+                return Err(anyhow!("context '{}' not found", context_name));
+            }
+            
+            // Determine namespace
+            let namespace_name = if let Some(ref ns) = namespace {
+                Some(ns.clone())
+            } else {
+                None
+            };
+            
+            // Update history
+            push_context_history(&context_name)?;
+            if let Some(ref ns) = namespace_name {
+                push_namespace_history(ns)?;
+            }
+            
+            // Get current depth for recursive shells
+            let current_depth = env::var("K8PK_DEPTH")
+                .ok()
+                .and_then(|d| d.parse::<u32>().ok())
+                .unwrap_or(0);
+            let new_depth = if recursive { current_depth + 1 } else { 0 };
+            
+            // Generate kubeconfig
+            let kubeconfig = ensure_kubeconfig_for_context(&context_name, namespace_name.as_deref(), &paths)?;
+            
+            if recursive {
+                // Spawn recursive shell
+                spawn_shell(&context_name, namespace_name.as_deref(), &kubeconfig)?;
+            } else {
+                // Output env exports
+                print_env_exports(&context_name, namespace_name.as_deref(), &kubeconfig, "bash", false)?;
+            }
+        }
+        Command::Ns { namespace, recursive } => {
+            // Get current context from env or error
+            let current_ctx = env::var("K8PK_CONTEXT")
+                .ok()
+                .ok_or_else(|| anyhow!("not in a k8pk context. Use 'k8pk ctx <context>' first"))?;
+            
+            let namespace_name = if let Some(ref ns) = namespace {
+                if ns == "-" {
+                    get_previous_namespace()?
+                        .ok_or_else(|| anyhow!("no previous namespace in history"))?
+                } else {
+                    // Try partial matching
+                    let kubeconfig_env = join_paths_for_env(&paths);
+                    let namespaces = list_namespaces_via_k8s_cli(&current_ctx, kubeconfig_env.as_deref())
+                        .ok()
+                        .unwrap_or_default();
+                    
+                    // Check for exact match first
+                    if namespaces.contains(ns) {
+                        ns.clone()
+                    } else {
+                        // Try partial matching
+                        let matches: Vec<_> = namespaces.iter()
+                            .filter(|n| n.contains(ns) || ns.contains(n.as_str()))
+                            .collect();
+                        
+                        if matches.is_empty() {
+                            return Err(anyhow!("namespace '{}' not found", ns));
+                        } else if matches.len() == 1 {
+                            matches[0].clone()
+                        } else {
+                            // Multiple matches - show interactive picker
+                            if atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stderr) {
+                                let mut ns_options = vec!["Use context default namespace".to_string()];
+                                ns_options.extend(matches.iter().map(|s| (*s).clone()));
+                                
+                                let selected = Select::new(&format!("Multiple namespaces match '{}':", ns), ns_options)
+                                    .with_page_size(15)
+                                    .prompt()
+                                    .map_err(|_| anyhow!("namespace selection cancelled"))?;
+                                
+                                if selected == "Use context default namespace" {
+                                    return Ok(()); // No namespace change
+                                } else {
+                                    selected
+                                }
+                            } else {
+                                let matches_str: Vec<String> = matches.iter().map(|s| (*s).clone()).collect();
+                                return Err(anyhow!("multiple namespaces match '{}': {}. Use interactive mode to select", 
+                                    ns, matches_str.join(", ")));
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Interactive selection
+                let kubeconfig_env = join_paths_for_env(&paths);
+                let namespaces = list_namespaces_via_k8s_cli(&current_ctx, kubeconfig_env.as_deref())
+                    .ok()
+                    .unwrap_or_default();
+                
+                if namespaces.is_empty() {
+                    return Err(anyhow!("no namespaces found for context '{}'", current_ctx));
+                }
+                
+                if atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stderr) {
+                    let mut ns_options = vec!["Use context default namespace".to_string()];
+                    ns_options.extend(namespaces.clone());
+                    
+                    let selected = Select::new("Select namespace:", ns_options)
+                        .with_page_size(15)
+                        .prompt()
+                        .map_err(|_| anyhow!("namespace selection cancelled"))?;
+                    
+                    if selected == "Use context default namespace" {
+                        return Ok(()); // No namespace change
+                    } else {
+                        selected
+                    }
+                } else {
+                    return Err(anyhow!("interactive selection requires a TTY"));
+                }
+            };
+            
+            // Update history
+            push_namespace_history(&namespace_name)?;
+            
+            // Get current kubeconfig path
+            let kubeconfig_path = env::var("KUBECONFIG")
+                .ok()
+                .and_then(|k| {
+                    let p = PathBuf::from(k.split(':').next()?);
+                    if p.exists() { Some(p) } else { None }
+                })
+                .ok_or_else(|| anyhow!("KUBECONFIG not set"))?;
+            
+            // Regenerate kubeconfig with new namespace
+            let kubeconfig = ensure_kubeconfig_for_context(&current_ctx, Some(&namespace_name), &paths)?;
+            
+            if recursive {
+                // Spawn recursive shell
+                spawn_shell(&current_ctx, Some(&namespace_name), &kubeconfig)?;
+            } else {
+                // Output env exports
+                print_env_exports(&current_ctx, Some(&namespace_name), &kubeconfig, "bash", false)?;
+            }
+        }
+        Command::Update { check, force } => {
+            update_k8pk(check, force)?;
+        }
+        Command::Export { context, namespace } => {
+            let kubeconfig = ensure_kubeconfig_for_context(&context, Some(&namespace), &paths)?;
+            println!("{}", kubeconfig.display());
+        }
+        Command::Completions { shell } => {
+            generate_completions(&shell)?;
+        }
+        Command::Lint { file, strict } => {
+            lint_kubeconfigs(file.as_deref(), &paths, strict)?;
+        }
+        Command::Edit { context, editor } => {
+            edit_kubeconfig(context.as_deref(), editor.as_deref(), &merged, &paths)?;
+        }
+    }
+
+    // Run hooks when switching contexts
+    if should_run_hook {
+        if let Ok(config) = load_k8pk_config() {
+            if let Some(ref hooks) = config.hooks {
+                if let Some(ref start_ctx) = hooks.start_ctx {
+                    run_hook(start_ctx)?;
+                }
+            }
         }
     }
 
@@ -1862,6 +2234,390 @@ fn exec_command_in_context(
         .with_context(|| format!("failed to execute command"))?;
     
     Ok(status.code().unwrap_or(1))
+}
+
+fn update_k8pk(check_only: bool, force: bool) -> Result<()> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    
+    // Get latest version from GitHub API
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("k8pk-updater")
+        .build()
+        .context("failed to create HTTP client")?;
+    
+    let response = client
+        .get("https://api.github.com/repos/a1ex-var1amov/k8pk/releases/latest")
+        .send()
+        .context("failed to fetch latest release info")?;
+    
+    if !response.status().is_success() {
+        return Err(anyhow!("failed to fetch release info: HTTP {}", response.status()));
+    }
+    
+    let release: serde_json::Value = response.json()
+        .context("failed to parse release info")?;
+    
+    let latest_tag = release.get("tag_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("invalid release info"))?;
+    
+    let latest_version = latest_tag.trim_start_matches('v');
+    
+    if latest_version == current_version && !force {
+        if check_only {
+            println!("k8pk is already up to date (v{})", current_version);
+        } else {
+            println!("k8pk is already at the latest version (v{})", current_version);
+            println!("Use --force to reinstall anyway");
+        }
+        return Ok(());
+    }
+    
+    if check_only {
+        println!("Current version: v{}", current_version);
+        println!("Latest version:  {}", latest_tag);
+        println!("Update available!");
+        return Ok(());
+    }
+    
+    // Detect platform
+    let platform = if cfg!(target_os = "windows") {
+        "x86_64-pc-windows-msvc"
+    } else if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "x86_64") {
+            "x86_64-apple-darwin"
+        } else {
+            "aarch64-apple-darwin"
+        }
+    } else {
+        if cfg!(target_arch = "x86_64") {
+            "x86_64-unknown-linux-gnu"
+        } else {
+            "aarch64-unknown-linux-gnu"
+        }
+    };
+    
+    println!("Updating k8pk from v{} to {}...", current_version, latest_tag);
+    println!("Platform: {}", platform);
+    
+    // Download and install
+    let download_url = format!("https://github.com/a1ex-var1amov/k8pk/releases/download/{}/k8pk-{}-{}.tar.gz", 
+        latest_tag, latest_tag, platform);
+    
+    let temp_dir = std::env::temp_dir().join(format!("k8pk-update-{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir)
+        .context("failed to create temp directory")?;
+    
+    let archive_path = temp_dir.join("k8pk.tar.gz");
+    
+    println!("Downloading from {}...", download_url);
+    let mut resp = client.get(&download_url).send()
+        .context("failed to download release")?;
+    
+    if !resp.status().is_success() {
+        return Err(anyhow!("failed to download: HTTP {}", resp.status()));
+    }
+    
+    let mut file = std::fs::File::create(&archive_path)
+        .context("failed to create archive file")?;
+    std::io::copy(&mut resp, &mut file)
+        .context("failed to write archive")?;
+    
+    // Extract
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        Command::new("tar")
+            .args(&["-xzf", archive_path.to_str().unwrap(), "-C", temp_dir.to_str().unwrap()])
+            .status()
+            .context("failed to extract archive")?;
+    }
+    
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        Command::new("tar")
+            .args(&["-xzf", archive_path.to_str().unwrap(), "-C", temp_dir.to_str().unwrap()])
+            .status()
+            .context("failed to extract archive")?;
+    }
+    
+    // Find extracted binary
+    let extracted_dir = std::fs::read_dir(&temp_dir)?
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().is_dir() && e.file_name().to_string_lossy().starts_with("k8pk-"))
+        .ok_or_else(|| anyhow!("extracted directory not found"))?;
+    
+    let binary_name = if cfg!(target_os = "windows") { "k8pk.exe" } else { "k8pk" };
+    let new_binary = extracted_dir.path().join(binary_name);
+    
+    if !new_binary.exists() {
+        return Err(anyhow!("binary not found in archive"));
+    }
+    
+    // Find current binary location
+    let current_binary = std::env::current_exe()
+        .context("failed to get current executable path")?;
+    
+    // Copy to temp location first, then move (atomic on Unix)
+    let temp_target = current_binary.parent()
+        .ok_or_else(|| anyhow!("cannot determine binary directory"))?
+        .join(format!("{}.tmp", binary_name));
+    
+    std::fs::copy(&new_binary, &temp_target)
+        .context("failed to copy new binary")?;
+    
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp_target, std::fs::Permissions::from_mode(0o755))
+            .context("failed to set permissions")?;
+    }
+    
+    // On Unix, we can replace atomically
+    #[cfg(unix)]
+    {
+        std::fs::rename(&temp_target, &current_binary)
+            .context("failed to replace binary")?;
+    }
+    
+    #[cfg(windows)]
+    {
+        // On Windows, we need to move the old one first
+        let backup = current_binary.with_extension("old.exe");
+        if backup.exists() {
+            std::fs::remove_file(&backup).ok();
+        }
+        std::fs::rename(&current_binary, &backup)
+            .context("failed to backup old binary")?;
+        std::fs::rename(&temp_target, &current_binary)
+            .context("failed to replace binary")?;
+        std::fs::remove_file(&backup).ok();
+    }
+    
+    // Cleanup
+    std::fs::remove_dir_all(&temp_dir).ok();
+    
+    println!("Successfully updated k8pk to {}!", latest_tag);
+    Ok(())
+}
+
+fn generate_completions(shell: &str) -> Result<()> {
+    use clap::CommandFactory;
+    let mut cmd = crate::Cli::command();
+    
+    match shell {
+        "bash" => {
+            use clap_complete::Shell;
+            clap_complete::generate(Shell::Bash, &mut cmd, "k8pk", &mut std::io::stdout());
+        }
+        "zsh" => {
+            use clap_complete::Shell;
+            clap_complete::generate(Shell::Zsh, &mut cmd, "k8pk", &mut std::io::stdout());
+        }
+        "fish" => {
+            use clap_complete::Shell;
+            clap_complete::generate(Shell::Fish, &mut cmd, "k8pk", &mut std::io::stdout());
+        }
+        _ => {
+            return Err(anyhow!("unsupported shell: {}. Use: bash, zsh, or fish", shell));
+        }
+    }
+    
+    Ok(())
+}
+
+fn lint_kubeconfigs(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<()> {
+    let paths_to_check = if let Some(f) = file {
+        vec![f.to_path_buf()]
+    } else {
+        all_paths.to_vec()
+    };
+    
+    let mut has_errors = false;
+    let mut has_warnings = false;
+    
+    for path in &paths_to_check {
+        if !path.exists() {
+            eprintln!("Warning: File not found: {}", path.display());
+            has_warnings = true;
+            continue;
+        }
+        
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error: Cannot read {}: {}", path.display(), e);
+                has_errors = true;
+                continue;
+            }
+        };
+        
+        let cfg: Result<KubeConfig, _> = serde_yaml_ng::from_str(&content);
+        let cfg = match cfg {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error: Invalid YAML in {}: {}", path.display(), e);
+                has_errors = true;
+                continue;
+            }
+        };
+        
+        // Check contexts
+        for ctx in &cfg.contexts {
+            let (cluster_name, user_name) = match extract_ctx_refs(&ctx.rest) {
+                Ok((c, u)) => (c, u),
+                Err(e) => {
+                    eprintln!("Error: Invalid context '{}' in {}: {}", ctx.name, path.display(), e);
+                    has_errors = true;
+                    continue;
+                }
+            };
+            
+            // Check cluster reference
+            if !cfg.clusters.iter().any(|c| c.name == cluster_name) {
+                eprintln!("Warning: Context '{}' references missing cluster '{}' in {}", 
+                    ctx.name, cluster_name, path.display());
+                has_warnings = true;
+            }
+            
+            // Check user reference
+            if !cfg.users.iter().any(|u| u.name == user_name) {
+                eprintln!("Warning: Context '{}' references missing user '{}' in {}", 
+                    ctx.name, user_name, path.display());
+                has_warnings = true;
+            }
+        }
+        
+        // Check current_context
+        if let Some(ref current) = cfg.current_context {
+            if !cfg.contexts.iter().any(|c| c.name == *current) {
+                eprintln!("Warning: current-context '{}' does not exist in {}", 
+                    current, path.display());
+                has_warnings = true;
+            }
+        }
+        
+        // Check for duplicate context names
+        let mut seen = std::collections::HashSet::new();
+        for ctx in &cfg.contexts {
+            if seen.contains(&ctx.name) {
+                eprintln!("Warning: Duplicate context name '{}' in {}", 
+                    ctx.name, path.display());
+                has_warnings = true;
+            }
+            seen.insert(&ctx.name);
+        }
+    }
+    
+    if has_errors {
+        eprintln!("\nErrors found in kubeconfig files!");
+        std::process::exit(1);
+    }
+    
+    if has_warnings && strict {
+        eprintln!("\nWarnings found in kubeconfig files (--strict mode)!");
+        std::process::exit(1);
+    }
+    
+    if !has_errors && !has_warnings {
+        println!("All kubeconfig files are valid!");
+    }
+    
+    Ok(())
+}
+
+fn edit_kubeconfig(context: Option<&str>, editor: Option<&str>, merged: &KubeConfig, paths: &[PathBuf]) -> Result<()> {
+    let context_paths = list_contexts_with_paths(paths)?;
+    
+    let context_name = if let Some(ctx) = context {
+        ctx.to_string()
+    } else {
+        // Interactive selection
+        let contexts = list_context_names(merged);
+        if contexts.is_empty() {
+            return Err(anyhow!("no contexts found"));
+        }
+        if atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stderr) {
+            Select::new("Select context to edit:", contexts.clone())
+                .with_page_size(15)
+                .prompt()
+                .map_err(|e| anyhow!("context selection cancelled: {}", e))?
+        } else {
+            return Err(anyhow!("interactive selection requires a TTY"));
+        }
+    };
+    
+    let file_path = context_paths.get(&context_name)
+        .ok_or_else(|| anyhow!("context '{}' not found", context_name))?
+        .clone();
+    
+    // Determine editor
+    let editor_cmd = editor
+        .map(|s| s.to_string())
+        .or_else(|| env::var("EDITOR").ok())
+        .unwrap_or_else(|| "vim".to_string());
+    
+    // Spawn editor
+    let mut cmd = ProcCommand::new(&editor_cmd);
+    cmd.arg(&file_path);
+    
+    let status = cmd.status()
+        .with_context(|| format!("failed to execute editor '{}'", editor_cmd))?;
+    
+    if !status.success() {
+        return Err(anyhow!("editor exited with non-zero status"));
+    }
+    
+    Ok(())
+}
+
+fn run_hook(hook_command: &str) -> Result<()> {
+    // Expand info commands in hook
+    let mut expanded = hook_command.to_string();
+    
+    // Replace `k8pk info ctx` with actual context
+    if expanded.contains("k8pk info ctx") || expanded.contains("`k8pk info ctx`") {
+        if let Ok(ctx) = env::var("K8PK_CONTEXT") {
+            expanded = expanded.replace("`k8pk info ctx`", &ctx);
+            expanded = expanded.replace("$(k8pk info ctx)", &ctx);
+        }
+    }
+    
+    // Replace `k8pk info ns` with actual namespace
+    if expanded.contains("k8pk info ns") || expanded.contains("`k8pk info ns`") {
+        if let Ok(ns) = env::var("K8PK_NAMESPACE") {
+            expanded = expanded.replace("`k8pk info ns`", &ns);
+            expanded = expanded.replace("$(k8pk info ns)", &ns);
+        }
+    }
+    
+    // Replace $SHELL with actual shell
+    if expanded.contains("$SHELL") {
+        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        expanded = expanded.replace("$SHELL", &shell);
+    }
+    
+    // Execute hook via shell
+    #[cfg(unix)]
+    {
+        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let mut cmd = ProcCommand::new(&shell);
+        cmd.arg("-c");
+        cmd.arg(&expanded);
+        cmd.status()
+            .with_context(|| format!("failed to execute hook"))?;
+    }
+    
+    #[cfg(windows)]
+    {
+        let mut cmd = ProcCommand::new("cmd");
+        cmd.args(&["/C", &expanded]);
+        cmd.status()
+            .with_context(|| format!("failed to execute hook"))?;
+    }
+    
+    Ok(())
 }
 
 #[cfg(test)]

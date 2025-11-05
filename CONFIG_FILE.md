@@ -40,6 +40,17 @@ configs:
   # Exclude these glob patterns
   exclude:
     - ~/.kube/k8pk.yaml
+
+# Hooks to run when contexts start/stop
+hooks:
+  start_ctx: 'echo -en "\033]1; `k8pk info ctx`|`k8pk info ns` \007"'
+  stop_ctx: 'echo -en "\033]1; $SHELL \007"'
+
+# Context aliases (short names for long context names)
+aliases:
+  prod: "arn:aws:eks:us-east-1:123456:cluster/production"
+  dev: "dev-cluster"
+  staging: "arn:aws:eks:us-west-2:123456:cluster/staging"
 ```
 
 ## Defaults
