@@ -28,10 +28,13 @@ curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/k8pk/main/install.sh 
 The installation script will:
 - Detect your OS, architecture, shell, and terminal emulator
 - Download the correct binary for your platform
-- Install `k8pk` to your PATH
+- Install `k8pk` to `~/.local/bin` (or `/usr/local/bin` if run as root)
 - Automatically install shell completions (bash/zsh/fish)
 - Set up shell integration (`kpick` and `kswitch` commands)
 - Configure WezTerm plugin if WezTerm is detected
+- Provide instructions to add `~/.local/bin` to PATH if needed
+
+**Note:** If you use Homebrew, it handles PATH setup automatically - no manual configuration needed!
 
 **Manual Installation from GitHub Releases**:
 ```bash
@@ -54,10 +57,16 @@ cargo build --release
 sudo install -m 0755 target/release/k8pk /usr/local/bin/k8pk
 ```
 
-**Homebrew** (coming soon):
+**Homebrew**:
 ```bash
-brew install k8pk
+# Install from tap (when available)
+brew install a1ex-var1amov/k8pk/k8pk
+
+# Or install from local formula
+brew install --build-from-source /path/to/homebrew/Formula/k8pk.rb
 ```
+
+**Note:** Homebrew automatically handles PATH setup and completion installation. The binary will be available immediately after installation.
 
 ### Shell Integration (Any Terminal)
 
