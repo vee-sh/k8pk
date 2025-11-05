@@ -19,10 +19,10 @@ Cross-terminal Kubernetes context/namespace switcher. Works in any terminal via 
 **Automated Installation Script** (recommended):
 ```bash
 # Download and run the installation script
-curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/wez-k8s-helper/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/k8pk/main/install.sh | bash
 
 # Or with a specific version:
-curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/wez-k8s-helper/main/install.sh | bash -s v0.2.1
+curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/k8pk/main/install.sh | bash -s v0.2.1
 ```
 
 The installation script will:
@@ -35,12 +35,12 @@ The installation script will:
 **Manual Installation from GitHub Releases**:
 ```bash
 # Download the latest release for your platform from:
-# https://github.com/a1ex-var1amov/wez-k8s-helper/releases
+# https://github.com/a1ex-var1amov/k8pk/releases
 
 # Example for Linux x86_64:
 VERSION="0.2.1"
 PLATFORM="x86_64-unknown-linux-gnu"
-wget https://github.com/a1ex-var1amov/wez-k8s-helper/releases/download/v${VERSION}/k8pk-v${VERSION}-${PLATFORM}.tar.gz
+wget https://github.com/a1ex-var1amov/k8pk/releases/download/v${VERSION}/k8pk-v${VERSION}-${PLATFORM}.tar.gz
 tar -xzf k8pk-v${VERSION}-${PLATFORM}.tar.gz
 cd k8pk-v${VERSION}-${PLATFORM}
 ./install.sh  # Run the included installation script
