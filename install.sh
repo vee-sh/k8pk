@@ -250,17 +250,13 @@ install_binary() {
 
 # Install shell completions
 install_completions() {
-    if ! command -v k8pk >/dev/null 2>&1 && [ ! -x "$INSTALL_PATH" ]; then
-        warn "k8pk not found, skipping completion installation"
+    # Always use the newly installed binary, not whatever is in PATH
+    if [ ! -x "$INSTALL_PATH" ]; then
+        warn "k8pk binary not found at $INSTALL_PATH, skipping completion installation"
         return
     fi
     
-    local k8pk_bin
-    if command -v k8pk >/dev/null 2>&1; then
-        k8pk_bin="k8pk"
-    else
-        k8pk_bin="$INSTALL_PATH"
-    fi
+    local k8pk_bin="$INSTALL_PATH"
     
     info "Setting up shell completions for $SHELL_NAME..."
     
