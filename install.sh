@@ -143,9 +143,9 @@ install_binary() {
     if [ "$version" = "latest" ]; then
         # Get latest release tag
         if command -v curl >/dev/null 2>&1; then
-            VERSION=$(curl -s https://api.github.com/repos/a1ex-var1amov/wez-k8s-helper/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            VERSION=$(curl -s https://api.github.com/repos/a1ex-var1amov/k8pk/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         elif command -v wget >/dev/null 2>&1; then
-            VERSION=$(wget -qO- https://api.github.com/repos/a1ex-var1amov/wez-k8s-helper/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            VERSION=$(wget -qO- https://api.github.com/repos/a1ex-var1amov/k8pk/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         else
             error "Need curl or wget to download k8pk"
         fi
@@ -159,7 +159,7 @@ install_binary() {
     
     info "Downloading k8pk $VERSION_TAG for $TARGET..."
     
-    DOWNLOAD_URL="https://github.com/a1ex-var1amov/wez-k8s-helper/releases/download/${VERSION_TAG}/k8pk-${VERSION_TAG}-${TARGET}.tar.gz"
+    DOWNLOAD_URL="https://github.com/a1ex-var1amov/k8pk/releases/download/${VERSION_TAG}/k8pk-${VERSION_TAG}-${TARGET}.tar.gz"
     
     TEMP_DIR=$(mktemp -d)
     trap "rm -rf $TEMP_DIR" EXIT
@@ -308,12 +308,12 @@ EOF
     fi
     
     # Check if plugin is already configured
-    if grep -q "wez-k8s-helper\|k8pk" "$CONFIG_FILE" 2>/dev/null; then
+    if grep -q "k8pk\|k8s_power" "$CONFIG_FILE" 2>/dev/null; then
         info "WezTerm plugin already configured"
     else
         # Add plugin configuration
         PLUGIN_CONFIG=$(cat <<'PLUGIN'
-local k8s_power = wezterm.plugin.require('https://github.com/a1ex-var1amov/wez-k8s-helper')
+local k8s_power = wezterm.plugin.require('https://github.com/a1ex-var1amov/k8pk')
 k8s_power.apply_to_config(config)
 PLUGIN
 )

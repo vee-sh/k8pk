@@ -68,7 +68,7 @@ The release packages include helper scripts. After extracting a release tarball,
 source /path/to/k8pk-v*/shell/k8pk.sh
 
 # Or if building from source:
-source /path/to/wezterm-k8s-power/shell/k8pk.sh
+source /path/to/k8pk/shell/k8pk.sh
 ```
 
 **fish** - Add to `~/.config/fish/config.fish`:
@@ -77,7 +77,7 @@ source /path/to/wezterm-k8s-power/shell/k8pk.sh
 source /path/to/k8pk-v*/shell/k8pk.fish
 
 # Or if building from source:
-source /path/to/wezterm-k8s-power/shell/k8pk.fish
+source /path/to/k8pk/shell/k8pk.fish
 ```
 
 **Usage:**
@@ -97,7 +97,7 @@ Add to your WezTerm config:
 local wezterm = require 'wezterm'
 local config = wezterm.config_builder and wezterm.config_builder() or {}
 
-local k8s_power = wezterm.plugin.require('https://github.com/a1ex-var1amov/wez-k8s-helper')
+local k8s_power = wezterm.plugin.require('https://github.com/a1ex-var1amov/k8pk')
 k8s_power.apply_to_config(config)
 
 return config
@@ -239,7 +239,13 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 GitHub Releases include:
 - Pre-built binaries for Linux, macOS (Intel + Apple Silicon), and Windows
 - Shell helper scripts (`k8pk.sh` and `k8pk.fish`)
+- Smart installation script (`install.sh`) with automatic terminal detection
 - README and configuration documentation
+
+Installation is simple:
+```bash
+curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/k8pk/main/install.sh | bash
+```
 
 ## Requirements
 
