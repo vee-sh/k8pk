@@ -1,45 +1,19 @@
-name: Release
+name: Build Release Binaries
 
 permissions:
   contents: write
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.5.0)'
+        required: true
 
 jobs:
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    outputs:
-      tag_name: ${{ steps.tag.outputs.tag }}
-    steps:
-      - name: Determine tag name
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          fi
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Release ${{ steps.tag.outputs.tag }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   build:
-    needs: create-release
     name: Build and Upload ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -63,10 +37,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Determine tag name
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/k8pk/target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('rust/k8pk/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
 
       - name: Build ${{ matrix.target }}
         working-directory: rust/k8pk
@@ -79,7 +76,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -e
-          TAG="${{ github.event.release.tag_name || github.ref_name }}"
+          TAG="${{ steps.tag.outputs.tag }}"
           VERSION="${TAG#v}"
           BIN_NAME="k8pk"
           TARGET="${{ matrix.target }}"
@@ -99,6 +96,15 @@ jobs:
           echo "Creating package directory: ${PKG_DIR}"
           mkdir -p "${PKG_DIR}"
           
+          echo "Stripping binary (if possible)..."
+          if command -v strip >/dev/null 2>&1; then
+            # macOS strip differs; use -x to keep symbols needed by backtraces
+            if [[ "$(uname)" == "Darwin" ]]; then
+              strip -x "${BIN_PATH}" || true
+            else
+              strip "${BIN_PATH}" || true
+            fi
+          fi
           echo "Copying binary..."
           cp "${BIN_PATH}" "${PKG_DIR}/"
           
@@ -130,8 +136,11 @@ jobs:
           echo "Creating archive..."
           ARCHIVE="${PKG_DIR}.tar.gz"
           tar -czf "${ARCHIVE}" "${PKG_DIR}"
+          echo "Calculating checksum..."
+          shasum -a 256 "${ARCHIVE}" | tee "${ARCHIVE}.sha256"
           
           echo "ASSET=${ARCHIVE}" >> $GITHUB_ENV
+          echo "ASSET_SHA=${ARCHIVE}.sha256" >> $GITHUB_ENV
           echo "Created archive: ${ARCHIVE}"
           ls -lh "${ARCHIVE}" || true
 
@@ -141,8 +150,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           $ErrorActionPreference = "Stop"
-          $tag = "${{ github.event.release.tag_name }}"
-          if (-not $tag) { $tag = "${{ github.ref_name }}" }
+          $tag = "${{ steps.tag.outputs.tag }}"
           $version = $tag -replace '^v', ''
           $binName = "k8pk"
           $target = "${{ matrix.target }}"
@@ -193,16 +201,22 @@ jobs:
           $archive = "${pkgDir}.tar.gz"
           # Use tar command available on Windows runners
           tar -czf $archive $pkgDir
+          Write-Host "Calculating checksum..."
+          $sha = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+          "$sha  $archive" | Out-File -FilePath "$archive.sha256" -Encoding ascii
           
           Write-Host "ASSET=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "ASSET_SHA=$archive.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Created archive: $archive"
           Get-Item $archive | Format-List
 
-      - name: Upload release asset
+      - name: Upload release asset and checksum
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ASSET }}
-          tag_name: ${{ needs.create-release.outputs.tag_name }}
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET_SHA }}
+          tag_name: ${{ steps.tag.outputs.tag }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
