@@ -143,8 +143,11 @@ k8pk contexts --path
 # List contexts with paths in JSON format
 k8pk contexts --path --json
 
-# Interactive picker (outputs shell exports)
-k8pk pick
+# Interactive picker (outputs shell exports - MUST be evaluated!)
+eval $(k8pk pick)
+
+# Or use the shell function which handles this automatically:
+kpick
 
 # Interactive picker (outputs JSON)
 k8pk pick --output json
