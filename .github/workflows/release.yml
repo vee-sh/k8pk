@@ -121,6 +121,12 @@ jobs:
             fi
           fi
           
+          echo "Copying installation script..."
+          if [ -f install.sh ]; then
+            cp install.sh "${PKG_DIR}/"
+            chmod +x "${PKG_DIR}/install.sh"
+          fi
+          
           echo "Creating archive..."
           ARCHIVE="${PKG_DIR}.tar.gz"
           tar -czf "${ARCHIVE}" "${PKG_DIR}"
@@ -176,6 +182,11 @@ jobs:
             if (Test-Path shell/k8pk.fish) {
               Copy-Item shell/k8pk.fish "$pkgDir/shell/"
             }
+          }
+          
+          Write-Host "Copying installation script..."
+          if (Test-Path install.sh) {
+            Copy-Item install.sh "$pkgDir/"
           }
           
           Write-Host "Creating archive..."

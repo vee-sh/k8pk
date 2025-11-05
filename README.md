@@ -16,17 +16,34 @@ Cross-terminal Kubernetes context/namespace switcher. Works in any terminal via 
 
 ### Install k8pk
 
-**Download from GitHub Releases** (recommended):
+**Automated Installation Script** (recommended):
+```bash
+# Download and run the installation script
+curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/wez-k8s-helper/main/install.sh | bash
+
+# Or with a specific version:
+curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/wez-k8s-helper/main/install.sh | bash -s v0.2.1
+```
+
+The installation script will:
+- Detect your OS, architecture, shell, and terminal emulator
+- Download the correct binary for your platform
+- Install `k8pk` to your PATH
+- Set up shell integration (`kpick` and `kswitch` commands)
+- Configure WezTerm plugin if WezTerm is detected
+
+**Manual Installation from GitHub Releases**:
 ```bash
 # Download the latest release for your platform from:
 # https://github.com/a1ex-var1amov/wez-k8s-helper/releases
 
 # Example for Linux x86_64:
-VERSION="0.2.0"
+VERSION="0.2.1"
 PLATFORM="x86_64-unknown-linux-gnu"
 wget https://github.com/a1ex-var1amov/wez-k8s-helper/releases/download/v${VERSION}/k8pk-v${VERSION}-${PLATFORM}.tar.gz
 tar -xzf k8pk-v${VERSION}-${PLATFORM}.tar.gz
-sudo install -m 0755 k8pk-v${VERSION}-${PLATFORM}/k8pk /usr/local/bin/k8pk
+cd k8pk-v${VERSION}-${PLATFORM}
+./install.sh  # Run the included installation script
 ```
 
 **Build from source**:
