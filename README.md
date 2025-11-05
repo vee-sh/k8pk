@@ -29,6 +29,7 @@ The installation script will:
 - Detect your OS, architecture, shell, and terminal emulator
 - Download the correct binary for your platform
 - Install `k8pk` to your PATH
+- Automatically install shell completions (bash/zsh/fish)
 - Set up shell integration (`kpick` and `kswitch` commands)
 - Configure WezTerm plugin if WezTerm is detected
 
