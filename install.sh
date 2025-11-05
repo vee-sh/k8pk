@@ -248,6 +248,89 @@ install_binary() {
     fi
 }
 
+# Install shell completions
+install_completions() {
+    if ! command -v k8pk >/dev/null 2>&1 && [ ! -x "$INSTALL_PATH" ]; then
+        warn "k8pk not found, skipping completion installation"
+        return
+    fi
+    
+    local k8pk_bin
+    if command -v k8pk >/dev/null 2>&1; then
+        k8pk_bin="k8pk"
+    else
+        k8pk_bin="$INSTALL_PATH"
+    fi
+    
+    info "Setting up shell completions for $SHELL_NAME..."
+    
+    case "$SHELL_NAME" in
+        bash)
+            local completion_dir
+            if [ -d "/etc/bash_completion.d" ] && [ "$(id -u)" -eq 0 ]; then
+                completion_dir="/etc/bash_completion.d"
+            elif [ -d "$HOME/.local/share/bash-completion/completions" ]; then
+                completion_dir="$HOME/.local/share/bash-completion/completions"
+                mkdir -p "$completion_dir"
+            else
+                completion_dir="$HOME/.local/share/bash-completion/completions"
+                mkdir -p "$completion_dir"
+            fi
+            
+            if [ -w "$completion_dir" ]; then
+                "$k8pk_bin" completions bash > "$completion_dir/k8pk" 2>/dev/null
+                if [ $? -eq 0 ]; then
+                    success "Installed bash completions to $completion_dir/k8pk"
+                else
+                    warn "Failed to generate bash completions"
+                fi
+            else
+                warn "Cannot write to $completion_dir (requires sudo or user directory)"
+            fi
+            ;;
+        zsh)
+            local completion_dir="$HOME/.zsh/completions"
+            mkdir -p "$completion_dir"
+            
+            if "$k8pk_bin" completions zsh > "$completion_dir/_k8pk" 2>/dev/null; then
+                success "Installed zsh completions to $completion_dir/_k8pk"
+                
+                # Add to fpath if not already present
+                local zshrc_file
+                if [ -f "$HOME/.zshrc" ]; then
+                    zshrc_file="$HOME/.zshrc"
+                else
+                    zshrc_file="$HOME/.zshrc"
+                    touch "$zshrc_file"
+                fi
+                
+                if ! grep -q "fpath.*zsh/completions" "$zshrc_file" 2>/dev/null; then
+                    echo "" >> "$zshrc_file"
+                    echo "# k8pk completions" >> "$zshrc_file"
+                    echo "fpath=(\$HOME/.zsh/completions \$fpath)" >> "$zshrc_file"
+                    echo "autoload -U compinit && compinit" >> "$zshrc_file"
+                    info "Added fpath configuration to $zshrc_file"
+                fi
+            else
+                warn "Failed to generate zsh completions"
+            fi
+            ;;
+        fish)
+            local completion_dir="$HOME/.config/fish/completions"
+            mkdir -p "$completion_dir"
+            
+            if "$k8pk_bin" completions fish > "$completion_dir/k8pk.fish" 2>/dev/null; then
+                success "Installed fish completions to $completion_dir/k8pk.fish"
+            else
+                warn "Failed to generate fish completions"
+            fi
+            ;;
+        *)
+            warn "Completions not supported for $SHELL_NAME"
+            ;;
+    esac
+}
+
 # Install shell integration
 install_shell_integration() {
     if [ -z "${SHELL_SCRIPT_DIR:-}" ] || [ ! -d "${SHELL_SCRIPT_DIR}" ]; then
@@ -381,6 +464,9 @@ main() {
     echo ""
     
     install_binary "$VERSION"
+    echo ""
+    
+    install_completions
     echo ""
     
     install_shell_integration
