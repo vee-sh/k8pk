@@ -231,8 +231,9 @@ install_binary() {
 
 # Install shell integration
 install_shell_integration() {
-    if [ -z "${SHELL_SCRIPT_DIR:-}" ]; then
+    if [ -z "${SHELL_SCRIPT_DIR:-}" ] || [ ! -d "${SHELL_SCRIPT_DIR}" ]; then
         warn "Shell scripts not available, skipping shell integration"
+        info "You can manually set up shell integration later by sourcing the shell scripts"
         return
     fi
     
@@ -263,6 +264,8 @@ install_shell_integration() {
     
     if [ ! -f "$SCRIPT_FILE" ]; then
         warn "Shell script not found: $SCRIPT_FILE"
+        info "Available files in shell directory:"
+        ls -la "$SHELL_SCRIPT_DIR" 2>/dev/null || true
         return
     fi
     
