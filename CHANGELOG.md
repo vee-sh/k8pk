@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.4.1] - 2025-01-27
+### Added
+- Automatic shell completion installation in install script (bash/zsh/fish)
+- Improved install script error handling for missing release assets
+
+### Changed
+- Install script now automatically installs completions during installation
+- Better error messages when release assets are not yet available
+
+[0.4.1]: https://github.com/a1ex-var1amov/k8pk/releases/tag/v0.4.1
+
 ## [0.4.0] - 2025-01-27
 ### Added
 - `lint` command to validate kubeconfig files for broken references, duplicates, and invalid configurations
