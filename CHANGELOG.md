@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.4.0] - 2025-01-27
+### Added
+- `lint` command to validate kubeconfig files for broken references, duplicates, and invalid configurations
+- `edit` command to quickly edit kubeconfig files with editor selection
+- Hooks support in config file (`start_ctx` and `stop_ctx`) for running commands when contexts start/stop
+- Namespace partial matching - smart fuzzy search for namespaces (e.g., `k8pk ns prod` matches `production`)
+- Context aliases support in config file for short names (e.g., `prod` → `arn:aws:eks:...`)
+- `export` command to print path to isolated kubeconfig file
+- `update` command for self-updating k8pk from GitHub releases
+- `completions` command to generate shell completion scripts for bash, zsh, and fish
+- Comprehensive validation and error checking for kubeconfig files
+
+### Changed
+- Removed emojis from code and documentation (replaced with text labels)
+- Improved namespace matching with interactive picker for multiple matches
+- Enhanced context switching with alias resolution
+
+[0.4.0]: https://github.com/a1ex-var1amov/k8pk/releases/tag/v0.4.0
+
 ## [0.3.0] - 2025-01-27
 ### Added
 - `exec` command to run kubectl/oc commands in context/namespace without spawning shell
