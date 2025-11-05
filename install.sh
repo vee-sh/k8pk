@@ -241,6 +241,15 @@ install_binary() {
         success "k8pk is ready to use"
         if [ -n "${INSTALL_DIR:-}" ] && [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
             warn "Add $INSTALL_DIR to your PATH:"
+            echo ""
+            echo "  # For bash/zsh:"
+            echo "  echo 'export PATH=\"\$PATH:$INSTALL_DIR\"' >> ~/.${SHELL_NAME}rc"
+            echo "  source ~/.${SHELL_NAME}rc"
+            echo ""
+            echo "  # Or for fish:"
+            echo "  echo 'set -gx PATH \$PATH $INSTALL_DIR' >> ~/.config/fish/config.fish"
+            echo ""
+            echo "  # Or manually add to your shell config:"
             echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
         fi
     else
