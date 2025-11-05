@@ -9,6 +9,9 @@ class K8pk < Formula
   def install
     system "cargo", "install", "--path", "rust/k8pk", "--root", prefix
     # cargo installs into prefix/bin automatically
+    
+    # Install shell completions
+    generate_completions_from_executable(bin/"k8pk", "completions")
   end
 
   test do
