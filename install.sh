@@ -174,6 +174,14 @@ install_binary() {
     
     tar -xzf "$TEMP_DIR/k8pk.tar.gz" -C "$TEMP_DIR"
     
+    # Find the extracted directory
+    EXTRACTED_DIR=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "k8pk-*" | head -1)
+    if [ -z "$EXTRACTED_DIR" ]; then
+        error "Could not find extracted directory in archive"
+    fi
+    
+    info "Found extracted directory: $EXTRACTED_DIR"
+    
     # Determine install path
     if [ "$(id -u)" -eq 0 ]; then
         INSTALL_PATH="$install_dir/k8pk"
@@ -193,17 +201,20 @@ install_binary() {
     fi
     
     # Copy binary
-    if [ -f "$TEMP_DIR/k8pk-"*"/k8pk" ]; then
-        cp "$TEMP_DIR/k8pk-"*"/k8pk" "$INSTALL_PATH"
+    if [ -f "$EXTRACTED_DIR/k8pk" ]; then
+        cp "$EXTRACTED_DIR/k8pk" "$INSTALL_PATH"
         chmod +x "$INSTALL_PATH"
         success "Installed k8pk to $INSTALL_PATH"
     else
-        error "Binary not found in downloaded archive"
+        error "Binary not found in downloaded archive at $EXTRACTED_DIR/k8pk"
     fi
     
     # Extract shell scripts if available
-    if [ -d "$TEMP_DIR/k8pk-"*"/shell" ]; then
-        SHELL_SCRIPT_DIR="$TEMP_DIR/k8pk-"*"/shell"
+    if [ -d "$EXTRACTED_DIR/shell" ]; then
+        SHELL_SCRIPT_DIR="$EXTRACTED_DIR/shell"
+        info "Found shell scripts directory: $SHELL_SCRIPT_DIR"
+    else
+        warn "Shell scripts directory not found in archive"
     fi
     
     # Verify installation
