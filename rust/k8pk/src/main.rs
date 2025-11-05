@@ -78,9 +78,10 @@ enum Command {
     },
     /// Interactive picker for context and namespace
     Pick {
-        /// Output format: 'env' prints exports, 'json' prints JSON, 'spawn' execs shell
-        #[arg(long, default_value = "env")]
-        output: String,
+        /// Output format: 'env' prints exports (requires eval), 'json' prints JSON, 'spawn' execs shell
+        /// Default: auto-detects if TTY and spawns shell, otherwise prints exports
+        #[arg(long)]
+        output: Option<String>,
         /// Print exports to stderr when output=env (for debugging)
         #[arg(long)]
         verbose: bool,
@@ -532,7 +533,8 @@ fn main() -> Result<()> {
         }
         Command::Pick { output, verbose } => {
             let (ctx, ns) = interactive_pick(&merged, kubeconfig_env.as_deref())?;
-            match output.as_str() {
+            let output_mode = output.as_deref().unwrap_or("auto");
+            match output_mode {
                 "json" => {
                     let mut result = serde_json::Map::new();
                     result.insert("context".to_string(), serde_json::Value::String(ctx.clone()));
@@ -545,9 +547,19 @@ fn main() -> Result<()> {
                     let kubeconfig = ensure_kubeconfig_for_context(&ctx, ns.as_deref(), &paths)?;
                     spawn_shell(&ctx, ns.as_deref(), &kubeconfig)?;
                 }
-                _ => {
+                "env" => {
                     let kubeconfig = ensure_kubeconfig_for_context(&ctx, ns.as_deref(), &paths)?;
                     print_env_exports(&ctx, ns.as_deref(), &kubeconfig, "bash", verbose)?;
+                }
+                "auto" | _ => {
+                    // Default: if interactive TTY, spawn shell; otherwise print exports
+                    if atty::is(atty::Stream::Stdout) && atty::is(atty::Stream::Stdin) {
+                        let kubeconfig = ensure_kubeconfig_for_context(&ctx, ns.as_deref(), &paths)?;
+                        spawn_shell(&ctx, ns.as_deref(), &kubeconfig)?;
+                    } else {
+                        let kubeconfig = ensure_kubeconfig_for_context(&ctx, ns.as_deref(), &paths)?;
+                        print_env_exports(&ctx, ns.as_deref(), &kubeconfig, "bash", verbose)?;
+                    }
                 }
             }
         }
