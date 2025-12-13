@@ -6,6 +6,19 @@ set -e
 
 echo "Running pre-commit checks..."
 
+# Check if Cargo.toml is staged but Cargo.lock isn't
+if git diff --cached --name-only | grep -q "rust/k8pk/Cargo.toml"; then
+    if ! git diff --cached --name-only | grep -q "rust/k8pk/Cargo.lock"; then
+        # Check if Cargo.lock has changes
+        if git diff --name-only | grep -q "rust/k8pk/Cargo.lock"; then
+            echo ""
+            echo "ERROR: Cargo.toml is staged but Cargo.lock is not."
+            echo "Run: git add rust/k8pk/Cargo.lock"
+            exit 1
+        fi
+    fi
+fi
+
 cd rust/k8pk
 
 # Check formatting
