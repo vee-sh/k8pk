@@ -5,32 +5,39 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag for manual build (e.g., v0.5.0)'
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
 
+permissions:
+  contents: write
+  id-token: write  # For Sigstore OIDC signing
+
 jobs:
+  # ============================================
+  # Lint and Test (runs on all pushes and PRs)
+  # ============================================
   check:
     name: Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             rust/k8pk/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('rust/k8pk/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Check
         working-directory: rust/k8pk
         run: cargo check --locked
@@ -40,12 +47,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-
       - name: Check formatting
         working-directory: rust/k8pk
         run: cargo fmt --check
@@ -55,23 +59,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             rust/k8pk/target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('rust/k8pk/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
-
       - name: Clippy
         working-directory: rust/k8pk
         run: cargo clippy --locked -- -D warnings
@@ -81,22 +78,257 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             rust/k8pk/target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('rust/k8pk/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-
-
       - name: Run tests
         working-directory: rust/k8pk
         run: cargo test --locked
 
+  # ============================================
+  # Build Release Binaries (only on release)
+  # ============================================
+  build:
+    name: Build ${{ matrix.target }}
+    if: github.event_name == 'release' || github.event.inputs.tag != ''
+    needs: [check, fmt, clippy, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          elif [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: sigstore/cosign-installer@v3
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/k8pk/target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('rust/k8pk/Cargo.lock') }}
+
+      - name: Build
+        working-directory: rust/k8pk
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -e
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${TAG#v}"
+          TARGET="${{ matrix.target }}"
+          BIN_PATH="rust/k8pk/target/${TARGET}/release/k8pk"
+          PKG_DIR="k8pk-v${VERSION}-${TARGET}"
+          
+          mkdir -p "${PKG_DIR}/shell"
+          
+          # Strip and copy binary
+          if [[ "$(uname)" == "Darwin" ]]; then
+            strip -x "${BIN_PATH}" || true
+          else
+            strip "${BIN_PATH}" || true
+          fi
+          cp "${BIN_PATH}" "${PKG_DIR}/"
+          
+          # Copy assets
+          cp README.md "${PKG_DIR}/" || true
+          cp install.sh "${PKG_DIR}/" && chmod +x "${PKG_DIR}/install.sh" || true
+          cp shell/k8pk.sh "${PKG_DIR}/shell/" || true
+          cp shell/k8pk.fish "${PKG_DIR}/shell/" || true
+          
+          # Create archive
+          ARCHIVE="${PKG_DIR}.tar.gz"
+          tar -czf "${ARCHIVE}" "${PKG_DIR}"
+          shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          
+          # Sign with cosign
+          cosign sign-blob --yes \
+            --output-signature "${ARCHIVE}.sig" \
+            --output-certificate "${ARCHIVE}.pem" \
+            "${ARCHIVE}"
+          
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.tag.outputs.tag }}"
+          $version = $tag -replace '^v', ''
+          $target = "${{ matrix.target }}"
+          $binPath = "rust/k8pk/target/$target/release/k8pk.exe"
+          $pkgDir = "k8pk-v${version}-${target}"
+          
+          New-Item -ItemType Directory -Path "$pkgDir/shell" -Force | Out-Null
+          
+          Copy-Item $binPath "$pkgDir/"
+          Copy-Item README.md "$pkgDir/" -ErrorAction SilentlyContinue
+          Copy-Item install.sh "$pkgDir/" -ErrorAction SilentlyContinue
+          Copy-Item shell/k8pk.sh "$pkgDir/shell/" -ErrorAction SilentlyContinue
+          Copy-Item shell/k8pk.fish "$pkgDir/shell/" -ErrorAction SilentlyContinue
+          
+          $archive = "${pkgDir}.tar.gz"
+          tar -czf $archive $pkgDir
+          $sha = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+          "$sha  $archive" | Out-File -FilePath "$archive.sha256" -Encoding ascii
+          
+          # Sign with cosign
+          cosign sign-blob --yes `
+            --output-signature "$archive.sig" `
+            --output-certificate "$archive.pem" `
+            $archive
+          
+          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+            ${{ env.ARCHIVE }}.sig
+            ${{ env.ARCHIVE }}.pem
+
+  # ============================================
+  # Update Homebrew Tap (after all builds complete)
+  # ============================================
+  homebrew:
+    name: Update Homebrew
+    if: github.event_name == 'release'
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Wait for assets
+        run: sleep 30
+
+      - name: Download and calculate checksums
+        id: checksums
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          BASE_URL="https://github.com/vee-sh/k8pk/releases/download/${TAG}"
+          
+          for platform in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+            FILENAME="k8pk-v${VERSION}-${platform}.tar.gz"
+            for i in 1 2 3 4 5; do
+              curl -fsSL -o "/tmp/${FILENAME}" "${BASE_URL}/${FILENAME}" && break
+              sleep 20
+            done
+            SHA=$(sha256sum "/tmp/${FILENAME}" | cut -d' ' -f1)
+            echo "${platform}=${SHA}" >> $GITHUB_OUTPUT
+          done
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: vee-sh/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          
+          cat > homebrew-tap/Formula/k8pk.rb << 'FORMULA'
+          class K8pk < Formula
+            desc "Kubernetes context picker - cross-terminal k8s context/namespace switcher"
+            homepage "https://github.com/vee-sh/k8pk"
+            version "VERSION_PLACEHOLDER"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/vee-sh/k8pk/releases/download/vVERSION_PLACEHOLDER/k8pk-vVERSION_PLACEHOLDER-aarch64-apple-darwin.tar.gz"
+                sha256 "SHA_AARCH64_DARWIN"
+              end
+              on_intel do
+                url "https://github.com/vee-sh/k8pk/releases/download/vVERSION_PLACEHOLDER/k8pk-vVERSION_PLACEHOLDER-x86_64-apple-darwin.tar.gz"
+                sha256 "SHA_X86_64_DARWIN"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "https://github.com/vee-sh/k8pk/releases/download/vVERSION_PLACEHOLDER/k8pk-vVERSION_PLACEHOLDER-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "SHA_X86_64_LINUX"
+              end
+            end
+
+            def install
+              bin.install "k8pk"
+              (share/"k8pk/shell").install "shell/k8pk.sh" if File.exist?("shell/k8pk.sh")
+              (share/"k8pk/shell").install "shell/k8pk.fish" if File.exist?("shell/k8pk.fish")
+              generate_completions_from_executable(bin/"k8pk", "completions")
+            end
+
+            def caveats
+              <<~EOS
+                Add to your shell config:
+                  bash/zsh: source #{share}/k8pk/shell/k8pk.sh
+                  fish:     source #{share}/k8pk/shell/k8pk.fish
+              EOS
+            end
+
+            test do
+              assert_match "k8pk", shell_output("#{bin}/k8pk --version")
+            end
+          end
+          FORMULA
+          
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-tap/Formula/k8pk.rb
+          sed -i "s/SHA_AARCH64_DARWIN/${{ steps.checksums.outputs.aarch64-apple-darwin }}/g" homebrew-tap/Formula/k8pk.rb
+          sed -i "s/SHA_X86_64_DARWIN/${{ steps.checksums.outputs.x86_64-apple-darwin }}/g" homebrew-tap/Formula/k8pk.rb
+          sed -i "s/SHA_X86_64_LINUX/${{ steps.checksums.outputs.x86_64-unknown-linux-gnu }}/g" homebrew-tap/Formula/k8pk.rb
+
+      - name: Commit and push
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/k8pk.rb
+          git diff --staged --quiet || git commit -m "k8pk: update to ${{ steps.version.outputs.version }}"
+          git push
