@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+use tracing::warn;
 
 /// Merge multiple kubeconfig files
 pub fn merge_files(files: &[PathBuf], output: Option<&Path>, overwrite: bool) -> Result<()> {
@@ -22,7 +23,7 @@ pub fn merge_files(files: &[PathBuf], output: Option<&Path>, overwrite: bool) ->
 
     for file in files {
         if !file.exists() {
-            eprintln!("Warning: file not found: {}", file.display());
+            warn!(path = %file.display(), "file not found, skipping");
             continue;
         }
 
@@ -153,7 +154,7 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
 
         // Check for empty contexts
         if cfg.contexts.is_empty() {
-            eprintln!("Warning: {} has no contexts", path.display());
+            warn!(path = %path.display(), "file has no contexts");
             warnings += 1;
         }
 
@@ -180,10 +181,10 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
 
         for cluster in &cfg.clusters {
             if !referenced_clusters.contains(&cluster.name) {
-                eprintln!(
-                    "Warning: {} has orphaned cluster: {}",
-                    path.display(),
-                    cluster.name
+                warn!(
+                    path = %path.display(),
+                    cluster = %cluster.name,
+                    "orphaned cluster"
                 );
                 warnings += 1;
             }
@@ -191,10 +192,10 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
 
         for user in &cfg.users {
             if !referenced_users.contains(&user.name) {
-                eprintln!(
-                    "Warning: {} has orphaned user: {}",
-                    path.display(),
-                    user.name
+                warn!(
+                    path = %path.display(),
+                    user = %user.name,
+                    "orphaned user"
                 );
                 warnings += 1;
             }
@@ -203,10 +204,10 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
         // Check for current-context reference
         if let Some(ref current) = cfg.current_context {
             if !cfg.contexts.iter().any(|c| c.name == *current) {
-                eprintln!(
-                    "Error: {} current-context '{}' not found in contexts",
-                    path.display(),
-                    current
+                warn!(
+                    path = %path.display(),
+                    context = %current,
+                    "current-context not found in contexts"
                 );
                 errors += 1;
             }

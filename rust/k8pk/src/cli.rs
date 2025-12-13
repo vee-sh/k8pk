@@ -20,6 +20,10 @@ pub struct Cli {
     /// Additional directories to scan for kubeconfig files (kubie-style)
     #[arg(long, action = clap::ArgAction::Append)]
     pub kubeconfig_dir: Vec<PathBuf>,
+
+    /// Enable verbose output (can be repeated: -v, -vv, -vvv)
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    pub verbose: u8,
 }
 
 #[derive(Subcommand)]

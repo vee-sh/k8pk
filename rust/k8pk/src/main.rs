@@ -23,6 +23,7 @@ use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcCommand;
+use tracing::warn;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -34,8 +35,27 @@ fn default_kubeconfig_path() -> Result<PathBuf> {
         .join(".kube/config"))
 }
 
+/// Initialize tracing subscriber based on verbosity level
+fn init_tracing(verbosity: u8) {
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    let filter = match verbosity {
+        0 => EnvFilter::new("warn"),
+        1 => EnvFilter::new("info"),
+        2 => EnvFilter::new("debug"),
+        _ => EnvFilter::new("trace"),
+    };
+
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    init_tracing(cli.verbose);
     let k8pk_config = config::load()?;
 
     let paths =
@@ -557,7 +577,7 @@ fn run_hook(command: &str) -> Result<()> {
     let status = ProcCommand::new("sh").arg("-c").arg(command).status()?;
 
     if !status.success() {
-        eprintln!("Warning: hook command failed: {}", command);
+        warn!(command = %command, "hook command failed");
     }
 
     Ok(())

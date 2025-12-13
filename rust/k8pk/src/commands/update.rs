@@ -4,6 +4,7 @@ use crate::error::{K8pkError, Result};
 use std::fs;
 use std::io::Write;
 use std::process::Command;
+use tracing::info;
 
 /// Check for and optionally install k8pk updates
 pub fn check_and_update(check_only: bool, force: bool) -> Result<()> {
@@ -92,7 +93,7 @@ pub fn check_and_update(check_only: bool, force: bool) -> Result<()> {
         .and_then(|v| v.as_str())
         .unwrap_or("k8pk.tar.gz");
 
-    println!("Downloading {}...", asset_name);
+    info!(asset = %asset_name, "downloading");
 
     // Download
     let bytes = client
@@ -110,7 +111,7 @@ pub fn check_and_update(check_only: bool, force: bool) -> Result<()> {
     let mut file = fs::File::create(&archive_path)?;
     file.write_all(&bytes)?;
 
-    println!("Extracting...");
+    info!("extracting archive");
 
     // Extract using tar
     let status = Command::new("tar")
@@ -132,7 +133,7 @@ pub fn check_and_update(check_only: bool, force: bool) -> Result<()> {
     let install_path =
         std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/k8pk"));
 
-    println!("Installing to {}...", install_path.display());
+    info!(path = %install_path.display(), "installing");
 
     // Copy with proper permissions
     fs::copy(&binary_path, &install_path)?;
