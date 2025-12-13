@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.7.0](https://github.com/vee-sh/k8pk/compare/v0.6.0...v0.7.0) (2025-12-13)
+
+
+### Features
+
+* default to interactive picker when no command specified ([49fcbca](https://github.com/vee-sh/k8pk/commit/49fcbca957db1e79bf61d8ad7934757c15e89572))
+
 ## [0.6.0](https://github.com/vee-sh/k8pk/compare/v0.5.0...v0.6.0) (2025-12-13)
 
 
