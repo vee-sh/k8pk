@@ -89,7 +89,7 @@ jobs:
         run: cargo test --locked
 
   # ============================================
-  # Create Release (before builds upload to it)
+  # Create Release (runs first, before parallel builds)
   # ============================================
   create-release:
     name: Create Release
