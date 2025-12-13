@@ -94,7 +94,11 @@ pub enum Command {
     /// Interactive picker for context and namespace
     Pick {
         /// Output format: env, json, spawn (default: auto-detect)
-        #[arg(long, value_name = "FORMAT", help = "Output format: env | json | spawn")]
+        #[arg(
+            long,
+            value_name = "FORMAT",
+            help = "Output format: env | json | spawn"
+        )]
         output: Option<String>,
         /// Include additional info in output
         #[arg(long)]
@@ -269,7 +273,11 @@ pub enum Command {
         #[arg(short = 'n', long, value_name = "NS")]
         namespace: Option<String>,
         /// Spawn recursive subshell instead of modifying current
-        #[arg(short = 'r', long, help = "Spawn subshell instead of modifying current")]
+        #[arg(
+            short = 'r',
+            long,
+            help = "Spawn subshell instead of modifying current"
+        )]
         recursive: bool,
     },
 
@@ -283,7 +291,11 @@ pub enum Command {
         #[arg(value_name = "NAMESPACE")]
         namespace: Option<String>,
         /// Spawn recursive subshell instead of modifying current
-        #[arg(short = 'r', long, help = "Spawn subshell instead of modifying current")]
+        #[arg(
+            short = 'r',
+            long,
+            help = "Spawn subshell instead of modifying current"
+        )]
         recursive: bool,
     },
 
@@ -362,7 +374,11 @@ pub enum Command {
         #[arg(short = 'p', long, value_name = "PASS")]
         password: Option<String>,
         /// Custom name for this context
-        #[arg(long, value_name = "NAME", help = "Custom name for context (default: derived from server)")]
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "Custom name for context (default: derived from server)"
+        )]
         name: Option<String>,
         /// Directory to save kubeconfig (default: ~/.kube/k8pk/)
         #[arg(long, value_name = "DIR")]

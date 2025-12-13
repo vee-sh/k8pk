@@ -1,0 +1,36 @@
+#!/bin/sh
+# Pre-commit hook: run linter checks before committing
+# Install: git config core.hooksPath .githooks
+
+set -e
+
+echo "Running pre-commit checks..."
+
+cd rust/k8pk
+
+# Check formatting
+echo "Checking formatting..."
+if ! cargo fmt --check 2>/dev/null; then
+    echo ""
+    echo "Formatting check failed. Run 'cargo fmt' to fix."
+    exit 1
+fi
+
+# Run clippy
+echo "Running clippy..."
+if ! cargo clippy --quiet -- -D warnings 2>&1 | head -20; then
+    echo ""
+    echo "Clippy check failed. Fix warnings before committing."
+    exit 1
+fi
+
+# Quick compile check
+echo "Checking compilation..."
+if ! cargo check --quiet 2>&1 | head -20; then
+    echo ""
+    echo "Compilation failed."
+    exit 1
+fi
+
+echo "All checks passed!"
+

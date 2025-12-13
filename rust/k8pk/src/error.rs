@@ -33,10 +33,14 @@ pub enum K8pkError {
     #[error("not in a k8pk context\n\n  Switch to a context first:\n    k8pk ctx <context-name>\n\n  Or run interactively:\n    k8pk")]
     NotInContext,
 
-    #[error("no previous context in history\n\n  Use 'k8pk ctx -' only after switching at least once")]
+    #[error(
+        "no previous context in history\n\n  Use 'k8pk ctx -' only after switching at least once"
+    )]
     NoPreviousContext,
 
-    #[error("no previous namespace in history\n\n  Use 'k8pk ns -' only after switching at least once")]
+    #[error(
+        "no previous namespace in history\n\n  Use 'k8pk ns -' only after switching at least once"
+    )]
     NoPreviousNamespace,
 
     #[error("interactive selection requires a TTY\n\n  This command needs an interactive terminal.\n  For scripts, specify values directly:\n    k8pk ctx <context> -n <namespace>")]
