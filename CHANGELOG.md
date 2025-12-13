@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.6.0](https://github.com/vee-sh/k8pk/compare/v0.5.0...v0.6.0) (2025-12-13)
+
+
+### Features
+
+* add multi-cluster management (login, organize, which commands) ([ef24914](https://github.com/vee-sh/k8pk/commit/ef24914adfcdff169e643c6037a26ec19a63df2e))
+* add Sigstore cosign binary signing ([5f040b7](https://github.com/vee-sh/k8pk/commit/5f040b79619150f6b40d6195f85935422d837174))
+* add structured logging with tracing ([ded0d7e](https://github.com/vee-sh/k8pk/commit/ded0d7e6b4322a74d45d96fe65acf2d220616492))
+
+
+### Bug Fixes
+
+* depth tracking and orphaned config detection ([31649d4](https://github.com/vee-sh/k8pk/commit/31649d484f5d8fed29503633664579328ce18f82))
+* depth tracking and orphaned config detection ([cade266](https://github.com/vee-sh/k8pk/commit/cade266f13562234c0a8ad9c101be9f46f28528b))
+* release-please config to use root path ([4c3c938](https://github.com/vee-sh/k8pk/commit/4c3c938de725f94d6e9469488eefd1916396e07e))
+* remove trailing whitespace in context.rs ([f46c364](https://github.com/vee-sh/k8pk/commit/f46c3640af8ea78bc39c38b37002d6fb1e868705))
+* resolve merge conflict, update version refs ([1221d2b](https://github.com/vee-sh/k8pk/commit/1221d2bf6377efa835042a19b565491f534b2109))
+
 ## [Unreleased]
 ### Added
 - `k8pk login` - Safe OpenShift login that saves to separate files (not ~/.kube/config)
