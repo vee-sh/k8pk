@@ -115,6 +115,9 @@ pub fn ensure_isolated_kubeconfig(
 }
 
 /// Print environment exports for a context
+///
+/// This is used for non-recursive context switching (eval "$(k8pk ctx ...)").
+/// Depth is set to 1 if not already in a k8pk context, otherwise maintained.
 pub fn print_env_exports(
     context: &str,
     namespace: Option<&str>,
@@ -123,7 +126,8 @@ pub fn print_env_exports(
     verbose: bool,
 ) -> Result<()> {
     let state = CurrentState::from_env();
-    let new_depth = state.next_depth();
+    // For non-recursive switching: set to 1 if not in context, otherwise keep current
+    let new_depth = if state.depth == 0 { 1 } else { state.depth };
 
     let exports = match shell {
         "fish" => {

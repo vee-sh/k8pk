@@ -279,7 +279,10 @@ pub fn cleanup_generated(
 
             // Check orphaned if requested
             let is_orphaned = if orphaned {
-                let ctx_part = filename.trim_end_matches(".yaml").trim_end_matches(".yml");
+                // Filename format: {context}.yaml or {context}_{namespace}.yaml
+                // Extract context part (before first underscore or full name if no underscore)
+                let base = filename.trim_end_matches(".yaml").trim_end_matches(".yml");
+                let ctx_part = base.split('_').next().unwrap_or(base);
                 !allowed_contexts.iter().any(|ctx| {
                     let sanitized = kubeconfig::sanitize_filename(ctx);
                     sanitized == ctx_part
