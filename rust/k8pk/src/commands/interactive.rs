@@ -3,13 +3,14 @@
 use crate::error::{K8pkError, Result};
 use crate::kubeconfig::{self, KubeConfig};
 use inquire::Select;
+use std::io::{self, IsTerminal};
 
 /// Interactive context and namespace picker
 pub fn pick_context_namespace(
     cfg: &KubeConfig,
     kubeconfig_env: Option<&str>,
 ) -> Result<(String, Option<String>)> {
-    if !atty::is(atty::Stream::Stdin) {
+    if !io::stdin().is_terminal() {
         return Err(K8pkError::NoTty);
     }
 

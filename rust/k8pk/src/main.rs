@@ -20,12 +20,19 @@ use inquire::{MultiSelect, Select};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcCommand;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+
+/// Get default kubeconfig path (~/.kube/config)
+fn default_kubeconfig_path() -> Result<PathBuf> {
+    Ok(dirs_next::home_dir()
+        .ok_or(K8pkError::NoHomeDir)?
+        .join(".kube/config"))
+}
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -215,11 +222,10 @@ fn main() -> anyhow::Result<()> {
         }
 
         Command::RemoveContext { from_file, context, interactive, remove_orphaned, dry_run } => {
-            let file_path = from_file.unwrap_or_else(|| {
-                dirs_next::home_dir()
-                    .expect("cannot resolve home dir")
-                    .join(".kube/config")
-            });
+            let file_path = match from_file {
+                Some(p) => p,
+                None => default_kubeconfig_path()?,
+            };
 
             remove_contexts_from_file(
                 &file_path,
@@ -231,21 +237,19 @@ fn main() -> anyhow::Result<()> {
         }
 
         Command::RenameContext { from_file, context, new_name, dry_run } => {
-            let file_path = from_file.unwrap_or_else(|| {
-                dirs_next::home_dir()
-                    .expect("cannot resolve home dir")
-                    .join(".kube/config")
-            });
+            let file_path = match from_file {
+                Some(p) => p,
+                None => default_kubeconfig_path()?,
+            };
 
             rename_context_in_file(&file_path, &context, &new_name, dry_run)?;
         }
 
         Command::CopyContext { from_file, to_file, context, new_name, dry_run } => {
-            let dest_path = to_file.unwrap_or_else(|| {
-                dirs_next::home_dir()
-                    .expect("cannot resolve home dir")
-                    .join(".kube/config")
-            });
+            let dest_path = match to_file {
+                Some(p) => p,
+                None => default_kubeconfig_path()?,
+            };
 
             copy_context_between_files(
                 &from_file,
@@ -542,7 +546,7 @@ fn exec_command_in_context(
     cmd.env("K8PK_NAMESPACE", namespace);
     cmd.env("OC_NAMESPACE", namespace);
 
-    if show_header && atty::is(atty::Stream::Stdout) {
+    if show_header && io::stdout().is_terminal() {
         eprintln!("CONTEXT => {} (namespace: {})", context, namespace);
     }
 
