@@ -252,11 +252,23 @@ jobs:
           pattern: release-*
           merge-multiple: true
 
+      - name: List artifacts
+        run: ls -la artifacts/
+
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.create-release.outputs.tag }}
-          files: artifacts/*
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ needs.create-release.outputs.tag }}"
+          echo "Uploading to release $TAG..."
+          
+          # Upload each file (gh handles duplicates by overwriting)
+          for file in artifacts/*; do
+            echo "Uploading $file..."
+            gh release upload "$TAG" "$file" --repo ${{ github.repository }} --clobber || true
+          done
+          
+          echo "Done!"
 
   # ============================================
   # Update Homebrew Tap (after all builds complete)
