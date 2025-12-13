@@ -71,15 +71,6 @@ fn main() -> anyhow::Result<()> {
 
     match command {
         Command::Contexts { json, path } => {
-            // Get current context to mark it
-            let current_ctx = env::var("K8PK_CONTEXT")
-                .ok()
-                .or_else(|| {
-                    kubeconfig::load_merged(&paths)
-                        .ok()
-                        .and_then(|m| m.current_context.clone())
-                });
-
             if path {
                 let ctx_paths = kubeconfig::list_contexts_with_paths(&paths)?;
                 if json {
@@ -88,8 +79,7 @@ fn main() -> anyhow::Result<()> {
                     let mut names: Vec<_> = ctx_paths.keys().collect();
                     names.sort();
                     for name in names {
-                        let marker = if current_ctx.as_deref() == Some(name.as_str()) { "*" } else { " " };
-                        println!("{} {}\t{}", marker, name, ctx_paths[name].display());
+                        println!("{}\t{}", name, ctx_paths[name].display());
                     }
                 }
             } else {
@@ -98,9 +88,8 @@ fn main() -> anyhow::Result<()> {
                 if json {
                     println!("{}", serde_json::to_string(&names)?);
                 } else {
-                    for name in &names {
-                        let marker = if current_ctx.as_deref() == Some(name.as_str()) { "*" } else { " " };
-                        println!("{} {}", marker, name);
+                    for name in names {
+                        println!("{}", name);
                     }
                 }
             }
@@ -214,7 +203,6 @@ fn main() -> anyhow::Result<()> {
             all,
             from_file,
             interactive,
-            yes,
         } => {
             let merged = kubeconfig::load_merged(&paths)?;
             let allowed_contexts = merged.context_names();
@@ -255,19 +243,6 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
-            } else if all && !dry_run && !yes {
-                // Confirm before removing all
-                use inquire::Confirm;
-                let confirm = Confirm::new("Remove ALL generated kubeconfigs?")
-                    .with_default(false)
-                    .with_help_message("This cannot be undone. Use --dry-run to preview first.")
-                    .prompt()
-                    .unwrap_or(false);
-                if !confirm {
-                    println!("Cancelled");
-                    return Ok(());
-                }
-                commands::cleanup_generated(days, orphaned, dry_run, all, from_file.as_deref(), &allowed_contexts)?;
             } else {
                 commands::cleanup_generated(
                     days,
@@ -286,7 +261,6 @@ fn main() -> anyhow::Result<()> {
             interactive,
             remove_orphaned,
             dry_run,
-            yes: _yes, // TODO: implement confirmation prompt
         } => {
             let file_path = match from_file {
                 Some(p) => p,

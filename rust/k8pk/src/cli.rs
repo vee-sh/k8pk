@@ -116,7 +116,7 @@ pub enum Command {
         k8pk cleanup --dry-run          # Preview what would be deleted\n  \
         k8pk cleanup --days 7           # Remove files older than 7 days\n  \
         k8pk cleanup --orphaned         # Remove configs for deleted contexts\n  \
-        k8pk cleanup --all -y           # Remove all generated configs")]
+        k8pk cleanup --all              # Remove all generated configs")]
     Cleanup {
         /// Remove files older than N days
         #[arg(long, default_value = "30", value_name = "N")]
@@ -136,9 +136,6 @@ pub enum Command {
         /// Prompt before each deletion
         #[arg(long, short = 'i', help = "Prompt before each deletion")]
         interactive: bool,
-        /// Skip confirmation prompts
-        #[arg(long, short = 'y', help = "Skip confirmation prompts")]
-        yes: bool,
     },
 
     /// Remove contexts from a kubeconfig file
@@ -162,9 +159,6 @@ pub enum Command {
         /// Preview changes without making them
         #[arg(long, help = "Preview changes without making them")]
         dry_run: bool,
-        /// Skip confirmation prompts
-        #[arg(long, short = 'y', help = "Skip confirmation prompts")]
-        yes: bool,
     },
 
     /// Rename a context in a kubeconfig file
