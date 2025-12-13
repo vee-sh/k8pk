@@ -112,9 +112,6 @@ jobs:
           if [ -f README.md ]; then
             cp README.md "${PKG_DIR}/"
           fi
-          if [ -f CONFIG_FILE.md ]; then
-            cp CONFIG_FILE.md "${PKG_DIR}/"
-          fi
           
           echo "Copying shell scripts..."
           if [ -d shell ]; then
@@ -176,9 +173,6 @@ jobs:
           Write-Host "Copying documentation..."
           if (Test-Path README.md) {
             Copy-Item README.md "$pkgDir/"
-          }
-          if (Test-Path CONFIG_FILE.md) {
-            Copy-Item CONFIG_FILE.md "$pkgDir/"
           }
           
           Write-Host "Copying shell scripts..."
