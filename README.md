@@ -34,8 +34,6 @@ The installation script will:
 - Configure WezTerm plugin if WezTerm is detected
 - Provide instructions to add `~/.local/bin` to PATH if needed
 
-**Note:** If you use Homebrew, it handles PATH setup automatically - no manual configuration needed!
-
 **Manual Installation from GitHub Releases**:
 ```bash
 # Download the latest release for your platform from:
@@ -59,14 +57,10 @@ sudo install -m 0755 target/release/k8pk /usr/local/bin/k8pk
 
 **Homebrew**:
 ```bash
-# Install from tap (when available)
-brew install vee-sh/k8pk/k8pk
-
-# Or install from local formula
-brew install --build-from-source /path/to/homebrew/Formula/k8pk.rb
+brew install vee-sh/tap/k8pk
 ```
 
-**Note:** Homebrew automatically handles PATH setup and completion installation. The binary will be available immediately after installation.
+Homebrew automatically handles PATH setup and shell completions.
 
 ### Shell Integration (Any Terminal)
 
@@ -402,7 +396,6 @@ busted tests/plugin_spec.lua
 ### High priority
 
 - **Safer writes**: Atomic writes via temp file + rename; file locking to avoid concurrent edits; timestamped backups; enforce 0600 permissions on generated files.
-- **Consistent output and verbosity**: Global `-q/--quiet`, `-v/--verbose` levels; `--no-color`; standardized `--output json|yaml|text` across commands.
 
 ### Medium priority
 
@@ -412,7 +405,6 @@ busted tests/plugin_spec.lua
 - **Merge conflict strategies**: `--prefer left|right`, `--rename-on-conflict`, and dry-run previews.
 - **Cleanup enhancements**: `--pattern <glob>`, size/age filters, `--keep N` per context.
 - **Diff UX**: Colorized unified diff, `--json` machine-readable diff, highlight renamed entries.
-- **Logging**: Switch to `tracing` with env control (`K8PK_LOG=debug`), structured logs behind verbosity flags.
 - **Security**: Redact tokens/certs in logs; enforce 0600 for generated files; warn on insecure permissions.
 
 ### WezTerm plugin

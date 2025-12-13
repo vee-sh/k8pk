@@ -1,0 +1,61 @@
+# Copy this file to your homebrew-tap repo as Formula/k8pk.rb
+#
+# Usage: brew install vee-sh/tap/k8pk
+
+class K8pk < Formula
+  desc "Kubernetes context picker - cross-terminal k8s context/namespace switcher"
+  homepage "https://github.com/vee-sh/k8pk"
+  version "0.5.0"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/vee-sh/k8pk/releases/download/v#{version}/k8pk-v#{version}-aarch64-apple-darwin.tar.gz"
+      sha256 "REPLACE_WITH_ACTUAL_SHA256"
+    end
+    on_intel do
+      url "https://github.com/vee-sh/k8pk/releases/download/v#{version}/k8pk-v#{version}-x86_64-apple-darwin.tar.gz"
+      sha256 "REPLACE_WITH_ACTUAL_SHA256"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/vee-sh/k8pk/releases/download/v#{version}/k8pk-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "REPLACE_WITH_ACTUAL_SHA256"
+    end
+    on_intel do
+      url "https://github.com/vee-sh/k8pk/releases/download/v#{version}/k8pk-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "REPLACE_WITH_ACTUAL_SHA256"
+    end
+  end
+
+  def install
+    bin.install "k8pk"
+    
+    # Install shell integration scripts
+    (share/"k8pk/shell").install "shell/k8pk.sh" if File.exist?("shell/k8pk.sh")
+    (share/"k8pk/shell").install "shell/k8pk.fish" if File.exist?("shell/k8pk.fish")
+    
+    # Generate shell completions
+    generate_completions_from_executable(bin/"k8pk", "completions")
+  end
+
+  def caveats
+    <<~EOS
+      Shell integration scripts installed to:
+        #{share}/k8pk/shell/
+
+      Add to your shell config:
+        bash/zsh: source #{share}/k8pk/shell/k8pk.sh
+        fish:     source #{share}/k8pk/shell/k8pk.fish
+
+      This provides the `kpick`, `kswitch`, `kctx`, and `kns` commands.
+    EOS
+  end
+
+  test do
+    assert_match "k8pk", shell_output("#{bin}/k8pk --version")
+  end
+end
+
