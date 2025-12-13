@@ -2,6 +2,7 @@ name: Build Release Binaries
 
 permissions:
   contents: write
+  id-token: write  # Required for Sigstore OIDC signing
 
 on:
   release:
@@ -23,7 +24,7 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             ext: ""
-          - os: macos-15-intel
+          - os: macos-13
             target: x86_64-apple-darwin
             ext: ""
           - os: macos-latest
@@ -53,6 +54,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -204,13 +208,28 @@ jobs:
           Write-Host "Created archive: $archive"
           Get-Item $archive | Format-List
 
-      - name: Upload release asset and checksum
+      - name: Sign with Sigstore cosign
+        shell: bash
+        run: |
+          echo "Signing ${{ env.ASSET }} with Sigstore..."
+          cosign sign-blob \
+            --yes \
+            --output-signature "${{ env.ASSET }}.sig" \
+            --output-certificate "${{ env.ASSET }}.pem" \
+            "${{ env.ASSET }}"
+          
+          echo "ASSET_SIG=${{ env.ASSET }}.sig" >> $GITHUB_ENV
+          echo "ASSET_CERT=${{ env.ASSET }}.pem" >> $GITHUB_ENV
+          echo "Signature created successfully"
+
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ env.ASSET }}
             ${{ env.ASSET_SHA }}
+            ${{ env.ASSET_SIG }}
+            ${{ env.ASSET_CERT }}
           tag_name: ${{ steps.tag.outputs.tag }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

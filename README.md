@@ -351,9 +351,25 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 GitHub Releases include:
 - Pre-built binaries for Linux, macOS (Intel + Apple Silicon), and Windows
+- Sigstore cosign signatures (`.sig` and `.pem` files) for verification
+- SHA256 checksums (`.sha256` files)
 - Shell helper scripts (`k8pk.sh` and `k8pk.fish`)
 - Smart installation script (`install.sh`) with automatic terminal detection
-- README and configuration documentation
+
+### Verifying Signatures
+
+All release binaries are signed with [Sigstore cosign](https://docs.sigstore.dev/). To verify:
+
+```bash
+# Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/
+# Then verify the downloaded archive:
+cosign verify-blob \
+  --certificate k8pk-v0.5.0-aarch64-apple-darwin.tar.gz.pem \
+  --signature k8pk-v0.5.0-aarch64-apple-darwin.tar.gz.sig \
+  --certificate-identity-regexp "https://github.com/vee-sh/k8pk/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  k8pk-v0.5.0-aarch64-apple-darwin.tar.gz
+```
 
 Installation is simple:
 ```bash
