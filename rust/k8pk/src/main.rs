@@ -395,6 +395,7 @@ fn main() -> anyhow::Result<()> {
             context,
             namespace,
             recursive,
+            output,
         } => {
             let merged = kubeconfig::load_merged(&paths)?;
 
@@ -420,23 +421,44 @@ fn main() -> anyhow::Result<()> {
             let kubeconfig =
                 commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
 
+            // Handle output format (recursive takes precedence)
             if recursive {
                 spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
             } else {
-                // Print env exports for eval
-                commands::print_env_exports(
-                    &context,
-                    namespace.as_deref(),
-                    &kubeconfig,
-                    "bash",
-                    false,
-                )?;
+                match output.as_deref() {
+                    Some("json") => {
+                        let j = serde_json::json!({
+                            "context": context,
+                            "namespace": namespace,
+                            "kubeconfig": kubeconfig.to_string_lossy(),
+                        });
+                        println!("{}", serde_json::to_string_pretty(&j)?);
+                    }
+                    Some("spawn") => {
+                        spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                    }
+                    Some("env") | None => {
+                        commands::print_env_exports(
+                            &context,
+                            namespace.as_deref(),
+                            &kubeconfig,
+                            "bash",
+                            false,
+                        )?;
+                    }
+                    Some(other) => {
+                        return Err(
+                            K8pkError::Other(format!("unknown output format: {}", other)).into(),
+                        );
+                    }
+                }
             }
         }
 
         Command::Ns {
             namespace,
             recursive,
+            output,
         } => {
             let state = CurrentState::from_env();
             let context = state.require_context()?;
@@ -464,10 +486,37 @@ fn main() -> anyhow::Result<()> {
             let kubeconfig =
                 commands::ensure_isolated_kubeconfig(context, Some(&namespace), &paths)?;
 
+            // Handle output format (recursive takes precedence)
             if recursive {
                 spawn_shell(context, Some(&namespace), &kubeconfig)?;
             } else {
-                commands::print_env_exports(context, Some(&namespace), &kubeconfig, "bash", false)?;
+                match output.as_deref() {
+                    Some("json") => {
+                        let j = serde_json::json!({
+                            "context": context,
+                            "namespace": namespace,
+                            "kubeconfig": kubeconfig.to_string_lossy(),
+                        });
+                        println!("{}", serde_json::to_string_pretty(&j)?);
+                    }
+                    Some("spawn") => {
+                        spawn_shell(context, Some(&namespace), &kubeconfig)?;
+                    }
+                    Some("env") | None => {
+                        commands::print_env_exports(
+                            context,
+                            Some(&namespace),
+                            &kubeconfig,
+                            "bash",
+                            false,
+                        )?;
+                    }
+                    Some(other) => {
+                        return Err(
+                            K8pkError::Other(format!("unknown output format: {}", other)).into(),
+                        );
+                    }
+                }
             }
         }
 
@@ -550,7 +599,11 @@ fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Res
         }
     }
 
+    // Detect shell: SHELL on Unix, ComSpec on Windows
+    #[cfg(unix)]
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    #[cfg(windows)]
+    let shell = env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
 
     let mut cmd = ProcCommand::new(&shell);
     cmd.env("KUBECONFIG", kubeconfig.as_os_str());

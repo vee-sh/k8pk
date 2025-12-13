@@ -385,16 +385,49 @@ pub fn find_k8s_cli() -> Result<String> {
     }
 }
 
-/// List namespaces via kubectl/oc
+/// List namespaces via kubectl/oc (with timeout)
 pub fn list_namespaces(context: &str, kubeconfig_env: Option<&str>) -> Result<Vec<String>> {
+    use indicatif::{ProgressBar, ProgressStyle};
+    use std::io::IsTerminal;
+
     let cli = find_k8s_cli()?;
     let mut cmd = ProcCommand::new(&cli);
-    cmd.args(["--context", context, "get", "ns", "-o", "json"]);
+    // Add timeout to prevent hanging on unreachable clusters
+    cmd.args([
+        "--context",
+        context,
+        "--request-timeout=10s",
+        "get",
+        "ns",
+        "-o",
+        "json",
+    ]);
     if let Some(kc) = kubeconfig_env {
         cmd.env("KUBECONFIG", kc);
     }
 
-    let output = cmd.output()?;
+    // Show spinner if interactive
+    let spinner = if std::io::stderr().is_terminal() {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap(),
+        );
+        pb.set_message(format!("Fetching namespaces from {}...", context));
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        Some(pb)
+    } else {
+        None
+    };
+
+    let output = cmd.output();
+
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+
+    let output = output?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(K8pkError::CommandFailed(format!(
@@ -494,4 +527,156 @@ pub fn friendly_context_name(context_name: &str, cluster_type: &str) -> String {
         _ => {}
     }
     context_name.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_filename() {
+        assert_eq!(sanitize_filename("dev-cluster"), "dev-cluster");
+        assert_eq!(
+            sanitize_filename("arn:aws:eks:us-east-1"),
+            "arn_aws_eks_us-east-1"
+        );
+        assert_eq!(sanitize_filename("path/to/config"), "path_to_config");
+    }
+
+    #[test]
+    fn test_detect_cluster_type_by_name() {
+        assert_eq!(
+            detect_cluster_type("arn:aws:eks:us-east-1:123:cluster/prod", None),
+            "eks"
+        );
+        assert_eq!(detect_cluster_type("gke_project_zone_cluster", None), "gke");
+        // OCP detection by name requires /api. and :6443 pattern
+        assert_eq!(
+            detect_cluster_type("admin/api.cluster.example.com:6443", None),
+            "ocp"
+        );
+        assert_eq!(detect_cluster_type("aks-dev-cluster", None), "aks");
+        assert_eq!(detect_cluster_type("minikube", None), "k8s");
+    }
+
+    #[test]
+    fn test_detect_cluster_type_by_url() {
+        assert_eq!(
+            detect_cluster_type("my-cluster", Some("https://abc123.eks.amazonaws.com")),
+            "eks"
+        );
+        assert_eq!(
+            detect_cluster_type(
+                "my-cluster",
+                Some("https://35.x.x.x.container.googleapis.com")
+            ),
+            "gke"
+        );
+        assert_eq!(
+            detect_cluster_type("my-cluster", Some("https://api.cluster.example.com:6443")),
+            "ocp"
+        );
+    }
+
+    #[test]
+    fn test_friendly_context_name() {
+        assert_eq!(
+            friendly_context_name("arn:aws:eks:us-east-1:123:cluster/prod-cluster", "eks"),
+            "prod-cluster"
+        );
+        assert_eq!(
+            friendly_context_name("gke_my-project_us-central1_my-cluster", "gke"),
+            "my-cluster"
+        );
+    }
+
+    #[test]
+    fn test_kubeconfig_parse() {
+        let yaml = r#"
+apiVersion: v1
+kind: Config
+clusters:
+  - name: dev
+    cluster:
+      server: https://dev.example.com:6443
+contexts:
+  - name: dev
+    context:
+      cluster: dev
+      user: dev-user
+users:
+  - name: dev-user
+    user:
+      token: abc123
+current-context: dev
+"#;
+        let config: KubeConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.context_names(), vec!["dev".to_string()]);
+        assert_eq!(config.current_context, Some("dev".to_string()));
+        assert!(config.find_context("dev").is_some());
+        assert!(config.find_cluster("dev").is_some());
+        assert!(config.find_user("dev-user").is_some());
+    }
+
+    #[test]
+    fn test_kubeconfig_context_names() {
+        let cfg: KubeConfig = serde_yaml_ng::from_str(
+            r#"
+apiVersion: v1
+kind: Config
+contexts:
+  - name: ctx1
+    context:
+      cluster: cluster1
+  - name: ctx2
+    context:
+      cluster: cluster2
+clusters:
+  - name: cluster1
+    cluster:
+      server: https://cluster1.example.com
+  - name: cluster2
+    cluster:
+      server: https://cluster2.example.com
+users:
+  - name: user1
+"#,
+        )
+        .unwrap();
+
+        let names = cfg.context_names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"ctx1".to_string()));
+        assert!(names.contains(&"ctx2".to_string()));
+        assert_eq!(cfg.clusters.len(), 2);
+    }
+
+    #[test]
+    fn test_kubeconfig_find_methods() {
+        let cfg: KubeConfig = serde_yaml_ng::from_str(
+            r#"
+apiVersion: v1
+kind: Config
+contexts:
+  - name: dev
+    context:
+      cluster: dev-cluster
+      user: dev-user
+clusters:
+  - name: dev-cluster
+    cluster:
+      server: https://dev.example.com
+users:
+  - name: dev-user
+    user:
+      token: secret
+"#,
+        )
+        .unwrap();
+
+        assert!(cfg.find_context("dev").is_some());
+        assert!(cfg.find_context("nonexistent").is_none());
+        assert!(cfg.find_cluster("dev-cluster").is_some());
+        assert!(cfg.find_user("dev-user").is_some());
+    }
 }

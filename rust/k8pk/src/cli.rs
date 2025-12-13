@@ -264,7 +264,8 @@ pub enum Command {
         k8pk ctx dev              # Switch to 'dev'\n  \
         k8pk ctx dev -n prod      # Switch to 'dev' context, 'prod' namespace\n  \
         k8pk ctx -                # Switch to previous context\n  \
-        k8pk ctx                  # Interactive selection")]
+        k8pk ctx                  # Interactive selection\n  \
+        k8pk ctx dev -o json      # Output as JSON instead of spawning")]
     Ctx {
         /// Context name (use '-' for previous)
         #[arg(value_name = "CONTEXT")]
@@ -279,13 +280,17 @@ pub enum Command {
             help = "Spawn subshell instead of modifying current"
         )]
         recursive: bool,
+        /// Output format: env, json, spawn (default: env for eval)
+        #[arg(short = 'o', long, value_name = "FORMAT")]
+        output: Option<String>,
     },
 
     /// Switch to namespace (with history support, use '-' for previous)
     #[command(after_help = "Examples:\n  \
         k8pk ns production        # Switch to 'production'\n  \
         k8pk ns -                 # Switch to previous namespace\n  \
-        k8pk ns                   # Interactive selection")]
+        k8pk ns                   # Interactive selection\n  \
+        k8pk ns prod -o json      # Output as JSON")]
     Ns {
         /// Namespace name (use '-' for previous)
         #[arg(value_name = "NAMESPACE")]
@@ -297,6 +302,9 @@ pub enum Command {
             help = "Spawn subshell instead of modifying current"
         )]
         recursive: bool,
+        /// Output format: env, json, spawn (default: env for eval)
+        #[arg(short = 'o', long, value_name = "FORMAT")]
+        output: Option<String>,
     },
 
     /// Update k8pk to the latest version

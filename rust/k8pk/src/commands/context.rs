@@ -4,9 +4,10 @@ use crate::error::{K8pkError, Result};
 use crate::kubeconfig;
 use crate::state::CurrentState;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Save context/namespace to history
+/// Save context/namespace to history (atomic write to prevent corruption)
 pub fn save_to_history(context: &str, namespace: Option<&str>) -> Result<()> {
     let history_path = history_file_path()?;
     let mut history = load_history()?;
@@ -24,8 +25,13 @@ pub fn save_to_history(context: &str, namespace: Option<&str>) -> Result<()> {
         }
     }
 
+    // Atomic write: write to temp file then rename
     let yaml = serde_yaml_ng::to_string(&history)?;
-    fs::write(history_path, yaml)?;
+    let parent = history_path.parent().ok_or(K8pkError::NoHomeDir)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(yaml.as_bytes())?;
+    temp.persist(&history_path)
+        .map_err(|e| K8pkError::Io(e.error))?;
     Ok(())
 }
 
@@ -199,4 +205,50 @@ fn load_history() -> Result<History> {
     }
     let content = fs::read_to_string(&path)?;
     Ok(serde_yaml_ng::from_str(&content)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_match_pattern_exact() {
+        let contexts = vec!["dev".to_string(), "prod".to_string(), "staging".to_string()];
+        assert_eq!(match_pattern("dev", &contexts), vec!["dev"]);
+        assert_eq!(
+            match_pattern("nonexistent", &contexts),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_match_pattern_wildcard_prefix() {
+        let contexts = vec![
+            "dev-cluster".to_string(),
+            "dev-local".to_string(),
+            "prod-cluster".to_string(),
+        ];
+        let matched = match_pattern("dev-*", &contexts);
+        assert_eq!(matched.len(), 2);
+        assert!(matched.contains(&"dev-cluster".to_string()));
+        assert!(matched.contains(&"dev-local".to_string()));
+    }
+
+    #[test]
+    fn test_match_pattern_wildcard_middle() {
+        let contexts = vec![
+            "us-east-1-prod".to_string(),
+            "us-west-2-prod".to_string(),
+            "eu-west-1-dev".to_string(),
+        ];
+        let matched = match_pattern("us-*-prod", &contexts);
+        assert_eq!(matched.len(), 2);
+    }
+
+    #[test]
+    fn test_history_struct() {
+        let history = History::default();
+        assert!(history.context_history.is_empty());
+        assert!(history.namespace_history.is_empty());
+    }
 }
