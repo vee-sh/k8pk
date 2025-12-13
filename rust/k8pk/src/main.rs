@@ -2258,7 +2258,7 @@ fn update_k8pk(check_only: bool, force: bool) -> Result<()> {
         .context("failed to create HTTP client")?;
     
     let response = client
-        .get("https://api.github.com/repos/a1ex-var1amov/k8pk/releases/latest")
+        .get("https://api.github.com/repos/vee-sh/k8pk/releases/latest")
         .send()
         .context("failed to fetch latest release info")?;
     
@@ -2313,7 +2313,7 @@ fn update_k8pk(check_only: bool, force: bool) -> Result<()> {
     println!("Platform: {}", platform);
     
     // Download and install
-    let download_url = format!("https://github.com/a1ex-var1amov/k8pk/releases/download/{}/k8pk-{}-{}.tar.gz", 
+    let download_url = format!("https://github.com/vee-sh/k8pk/releases/download/{}/k8pk-{}-{}.tar.gz", 
         latest_tag, latest_tag, platform);
     
     let temp_dir = std::env::temp_dir().join(format!("k8pk-update-{}", std::process::id()));

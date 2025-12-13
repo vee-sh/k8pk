@@ -19,10 +19,10 @@ Cross-terminal Kubernetes context/namespace switcher. Works in any terminal via 
 **Automated Installation Script** (recommended):
 ```bash
 # Download and run the installation script
-curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/k8pk/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/vee-sh/k8pk/main/install.sh | bash
 
 # Or with a specific version:
-curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/k8pk/main/install.sh | bash -s v0.2.1
+curl -fsSL https://raw.githubusercontent.com/vee-sh/k8pk/main/install.sh | bash -s v0.2.1
 ```
 
 The installation script will:
@@ -39,12 +39,12 @@ The installation script will:
 **Manual Installation from GitHub Releases**:
 ```bash
 # Download the latest release for your platform from:
-# https://github.com/a1ex-var1amov/k8pk/releases
+# https://github.com/vee-sh/k8pk/releases
 
 # Example for Linux x86_64:
 VERSION="0.2.1"
 PLATFORM="x86_64-unknown-linux-gnu"
-wget https://github.com/a1ex-var1amov/k8pk/releases/download/v${VERSION}/k8pk-v${VERSION}-${PLATFORM}.tar.gz
+wget https://github.com/vee-sh/k8pk/releases/download/v${VERSION}/k8pk-v${VERSION}-${PLATFORM}.tar.gz
 tar -xzf k8pk-v${VERSION}-${PLATFORM}.tar.gz
 cd k8pk-v${VERSION}-${PLATFORM}
 ./install.sh  # Run the included installation script
@@ -60,7 +60,7 @@ sudo install -m 0755 target/release/k8pk /usr/local/bin/k8pk
 **Homebrew**:
 ```bash
 # Install from tap (when available)
-brew install a1ex-var1amov/k8pk/k8pk
+brew install vee-sh/k8pk/k8pk
 
 # Or install from local formula
 brew install --build-from-source /path/to/homebrew/Formula/k8pk.rb
@@ -121,7 +121,7 @@ Add to your WezTerm config:
 local wezterm = require 'wezterm'
 local config = wezterm.config_builder and wezterm.config_builder() or {}
 
-local k8s_power = wezterm.plugin.require('https://github.com/a1ex-var1amov/k8pk')
+local k8s_power = wezterm.plugin.require('https://github.com/vee-sh/k8pk')
 k8s_power.apply_to_config(config)
 
 return config
@@ -321,7 +321,7 @@ GitHub Releases include:
 
 Installation is simple:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/a1ex-var1amov/k8pk/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/vee-sh/k8pk/main/install.sh | bash
 ```
 
 ## Requirements

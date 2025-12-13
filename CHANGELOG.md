@@ -13,7 +13,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Install script now automatically installs completions during installation
 - Better error messages when release assets are not yet available
 
-[0.4.1]: https://github.com/a1ex-var1amov/k8pk/releases/tag/v0.4.1
+[0.4.1]: https://github.com/vee-sh/k8pk/releases/tag/v0.4.1
 
 ## [0.4.0] - 2025-01-27
 ### Added
@@ -32,7 +32,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Improved namespace matching with interactive picker for multiple matches
 - Enhanced context switching with alias resolution
 
-[0.4.0]: https://github.com/a1ex-var1amov/k8pk/releases/tag/v0.4.0
+[0.4.0]: https://github.com/vee-sh/k8pk/releases/tag/v0.4.0
 
 ## [0.3.0] - 2025-01-27
 ### Added
@@ -51,7 +51,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Shell scripts now include `kctx` and `kns` convenience functions
 - All context switching commands now update history automatically
 
-[0.3.0]: https://github.com/a1ex-var1amov/k8pk/releases/tag/v0.3.0
+[0.3.0]: https://github.com/vee-sh/k8pk/releases/tag/v0.3.0
 
 ## [0.2.1] - 2025-01-27
 ### Added
@@ -71,7 +71,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Fixed release-please workflow configuration
 - Fixed Windows build compatibility (removed Unix-specific code)
 
-[0.2.1]: https://github.com/a1ex-var1amov/k8pk/releases/tag/v0.2.1
+[0.2.1]: https://github.com/vee-sh/k8pk/releases/tag/v0.2.1
 
 ## [0.2.0] - 2025-11-04
 ### Added
@@ -80,4 +80,4 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Context listing, namespace discovery, kubeconfig materialization, and interactive picker
 - Utilities for cleaning, copying, renaming, removing, merging, and diffing kubeconfig contexts
 
-[0.2.0]: https://github.com/a1ex-var1amov/k8pk/releases/tag/v0.2.0
+[0.2.0]: https://github.com/vee-sh/k8pk/releases/tag/v0.2.0

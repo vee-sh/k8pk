@@ -143,9 +143,9 @@ install_binary() {
     if [ "$version" = "latest" ]; then
         # Get latest release tag
         if command -v curl >/dev/null 2>&1; then
-            VERSION=$(curl -s https://api.github.com/repos/a1ex-var1amov/k8pk/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            VERSION=$(curl -s https://api.github.com/repos/vee-sh/k8pk/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         elif command -v wget >/dev/null 2>&1; then
-            VERSION=$(wget -qO- https://api.github.com/repos/a1ex-var1amov/k8pk/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            VERSION=$(wget -qO- https://api.github.com/repos/vee-sh/k8pk/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         else
             error "Need curl or wget to download k8pk"
         fi
@@ -159,7 +159,7 @@ install_binary() {
     
     info "Downloading k8pk $VERSION_TAG for $TARGET..."
     
-    DOWNLOAD_URL="https://github.com/a1ex-var1amov/k8pk/releases/download/${VERSION_TAG}/k8pk-${VERSION_TAG}-${TARGET}.tar.gz"
+    DOWNLOAD_URL="https://github.com/vee-sh/k8pk/releases/download/${VERSION_TAG}/k8pk-${VERSION_TAG}-${TARGET}.tar.gz"
     
     TEMP_DIR=$(mktemp -d)
     trap "rm -rf $TEMP_DIR" EXIT
@@ -188,7 +188,7 @@ install_binary() {
     
     # Check if file is actually a tar.gz (starts with gzip magic bytes or tar signature)
     if ! file "$TEMP_DIR/k8pk.tar.gz" | grep -qE "(gzip|tar|archive)"; then
-        error "Downloaded file is not a valid archive. This usually means the release is still building.\nPlease check: https://github.com/a1ex-var1amov/k8pk/releases/tag/$VERSION_TAG\nOr try again in a few minutes."
+        error "Downloaded file is not a valid archive. This usually means the release is still building.\nPlease check: https://github.com/vee-sh/k8pk/releases/tag/$VERSION_TAG\nOr try again in a few minutes."
     fi
     
     tar -xzf "$TEMP_DIR/k8pk.tar.gz" -C "$TEMP_DIR" || error "Failed to extract archive. The downloaded file may be corrupted or incomplete."
@@ -434,7 +434,7 @@ EOF
     else
         # Add plugin configuration
         PLUGIN_CONFIG=$(cat <<'PLUGIN'
-local k8s_power = wezterm.plugin.require('https://github.com/a1ex-var1amov/k8pk')
+local k8s_power = wezterm.plugin.require('https://github.com/vee-sh/k8pk')
 k8s_power.apply_to_config(config)
 PLUGIN
 )
