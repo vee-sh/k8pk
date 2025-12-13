@@ -9,7 +9,6 @@ pub enum K8pkError {
     #[error("context '{0}' not found")]
     ContextNotFound(String),
 
-
     #[error("cluster '{0}' not found")]
     ClusterNotFound(String),
 
@@ -79,4 +78,3 @@ impl From<String> for K8pkError {
 
 /// Result type alias for k8pk operations
 pub type Result<T> = std::result::Result<T, K8pkError>;
-

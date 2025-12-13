@@ -87,7 +87,9 @@ pub fn ensure_isolated_kubeconfig(
     fs::create_dir_all(&base)?;
 
     let ctx_sanitized = kubeconfig::sanitize_filename(context);
-    let ns_sanitized = namespace.map(kubeconfig::sanitize_filename).unwrap_or_default();
+    let ns_sanitized = namespace
+        .map(kubeconfig::sanitize_filename)
+        .unwrap_or_default();
     let filename = if ns_sanitized.is_empty() {
         format!("{}.yaml", ctx_sanitized)
     } else {

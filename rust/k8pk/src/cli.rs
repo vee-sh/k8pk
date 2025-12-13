@@ -200,15 +200,10 @@ pub enum Command {
     },
 
     /// Export path to isolated kubeconfig file
-    Export {
-        context: String,
-        namespace: String,
-    },
+    Export { context: String, namespace: String },
 
     /// Generate shell completion scripts
-    Completions {
-        shell: String,
-    },
+    Completions { shell: String },
 
     /// Lint kubeconfig files for issues
     Lint {
@@ -261,4 +256,3 @@ pub enum Command {
         json: bool,
     },
 }
-

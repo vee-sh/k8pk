@@ -8,11 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 /// Merge multiple kubeconfig files
-pub fn merge_files(
-    files: &[PathBuf],
-    output: Option<&Path>,
-    overwrite: bool,
-) -> Result<()> {
+pub fn merge_files(files: &[PathBuf], output: Option<&Path>, overwrite: bool) -> Result<()> {
     if files.is_empty() {
         return Err(K8pkError::Other("no files specified".into()));
     }
@@ -81,11 +77,7 @@ pub fn merge_files(
 }
 
 /// Compare two kubeconfig files
-pub fn diff_files(
-    file1: &Path,
-    file2: &Path,
-    diff_only: bool,
-) -> Result<()> {
+pub fn diff_files(file1: &Path, file2: &Path, diff_only: bool) -> Result<()> {
     let content1 = fs::read_to_string(file1)?;
     let content2 = fs::read_to_string(file2)?;
 
@@ -124,11 +116,7 @@ pub fn diff_files(
 }
 
 /// Lint kubeconfig files for issues
-pub fn lint(
-    file: Option<&Path>,
-    all_paths: &[PathBuf],
-    strict: bool,
-) -> Result<()> {
+pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<()> {
     let paths: Vec<PathBuf> = if let Some(f) = file {
         vec![f.to_path_buf()]
     } else {

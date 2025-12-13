@@ -37,5 +37,3 @@ pub fn pick_context_namespace(
 
     Ok((context, namespace))
 }
-
-

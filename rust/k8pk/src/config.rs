@@ -70,10 +70,8 @@ pub fn config_path() -> Result<PathBuf> {
 
 /// Load k8pk configuration (cached after first load)
 pub fn load() -> Result<&'static K8pkConfig> {
-    let cached = CONFIG_CACHE.get_or_init(|| {
-        load_uncached().map_err(|e| e.to_string())
-    });
-    
+    let cached = CONFIG_CACHE.get_or_init(|| load_uncached().map_err(|e| e.to_string()));
+
     cached.as_ref().map_err(|e| K8pkError::Other(e.clone()))
 }
 
@@ -131,4 +129,3 @@ mod tests {
         assert!(!path.to_string_lossy().starts_with("~"));
     }
 }
-

@@ -42,7 +42,10 @@ pub fn check_and_update(check_only: bool, force: bool) -> Result<()> {
         if check_only {
             println!("k8pk is already up to date (v{})", current_version);
         } else {
-            println!("k8pk is already at the latest version (v{})", current_version);
+            println!(
+                "k8pk is already at the latest version (v{})",
+                current_version
+            );
             println!("Use --force to reinstall anyway");
         }
         return Ok(());
@@ -126,8 +129,8 @@ pub fn check_and_update(check_only: bool, force: bool) -> Result<()> {
     }
 
     // Try to find current binary location
-    let install_path = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/k8pk"));
+    let install_path =
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/k8pk"));
 
     println!("Installing to {}...", install_path.display());
 
@@ -165,4 +168,3 @@ fn detect_platform() -> (&'static str, &'static str) {
 
     (os, arch)
 }
-

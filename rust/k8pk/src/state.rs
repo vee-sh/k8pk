@@ -46,9 +46,7 @@ impl CurrentState {
 
     /// Get the current context, returning an error if not set
     pub fn require_context(&self) -> Result<&str> {
-        self.context
-            .as_deref()
-            .ok_or(K8pkError::NotInContext)
+        self.context.as_deref().ok_or(K8pkError::NotInContext)
     }
 
     /// Get the next depth level for recursive shells
@@ -60,12 +58,21 @@ impl CurrentState {
     pub fn to_json(&self) -> serde_json::Value {
         let mut map = serde_json::Map::new();
         if let Some(ref ctx) = self.context {
-            map.insert("context".to_string(), serde_json::Value::String(ctx.clone()));
+            map.insert(
+                "context".to_string(),
+                serde_json::Value::String(ctx.clone()),
+            );
         }
         if let Some(ref ns) = self.namespace {
-            map.insert("namespace".to_string(), serde_json::Value::String(ns.clone()));
+            map.insert(
+                "namespace".to_string(),
+                serde_json::Value::String(ns.clone()),
+            );
         }
-        map.insert("depth".to_string(), serde_json::Value::Number(self.depth.into()));
+        map.insert(
+            "depth".to_string(),
+            serde_json::Value::Number(self.depth.into()),
+        );
         if let Some(ref p) = self.config_path {
             map.insert(
                 "config".to_string(),
@@ -75,4 +82,3 @@ impl CurrentState {
         serde_json::Value::Object(map)
     }
 }
-

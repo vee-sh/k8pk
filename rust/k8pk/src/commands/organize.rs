@@ -43,7 +43,8 @@ pub fn organize_by_cluster_type(
 
     for ctx in &cfg.contexts {
         // Get server URL from cluster
-        let server_url = if let Ok((cluster_name, _)) = kubeconfig::extract_context_refs(&ctx.rest) {
+        let server_url = if let Ok((cluster_name, _)) = kubeconfig::extract_context_refs(&ctx.rest)
+        {
             cfg.clusters
                 .iter()
                 .find(|c| c.name == cluster_name)
@@ -111,7 +112,10 @@ pub fn organize_by_cluster_type(
     if dry_run {
         println!("\nDry run complete. Use without --dry-run to create files.");
     } else {
-        println!("\nOrganization complete. Add {} to your KUBECONFIG path.", out_dir.display());
+        println!(
+            "\nOrganization complete. Add {} to your KUBECONFIG path.",
+            out_dir.display()
+        );
     }
 
     Ok(())
@@ -220,7 +224,10 @@ pub fn openshift_login(
         format!("ocp-{}", sanitized)
     });
 
-    let kubeconfig_path = out_dir.join(format!("{}.yaml", kubeconfig::sanitize_filename(&context_name)));
+    let kubeconfig_path = out_dir.join(format!(
+        "{}.yaml",
+        kubeconfig::sanitize_filename(&context_name)
+    ));
 
     println!("Logging in to {}...", server);
 
@@ -289,4 +296,3 @@ fn extract_server_url(cluster_rest: &Yaml) -> Option<String> {
         _ => None,
     }
 }
-

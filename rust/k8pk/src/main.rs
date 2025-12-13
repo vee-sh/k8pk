@@ -38,11 +38,8 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let k8pk_config = config::load()?;
 
-    let paths = kubeconfig::resolve_paths(
-        cli.kubeconfig.as_deref(),
-        &cli.kubeconfig_dir,
-        k8pk_config,
-    )?;
+    let paths =
+        kubeconfig::resolve_paths(cli.kubeconfig.as_deref(), &cli.kubeconfig_dir, k8pk_config)?;
 
     let kubeconfig_env = kubeconfig::join_paths_for_env(&paths);
 
@@ -67,12 +64,16 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     for name in names {
                         println!("{}", name);
+                    }
                 }
             }
         }
-        }
 
-        Command::Gen { context, out, namespace } => {
+        Command::Gen {
+            context,
+            out,
+            namespace,
+        } => {
             let merged = kubeconfig::load_merged(&paths)?;
             let mut pruned = kubeconfig::prune_to_context(&merged, &context)?;
             if let Some(ns) = namespace {
@@ -80,7 +81,11 @@ fn main() -> anyhow::Result<()> {
             }
             let yaml = serde_yaml_ng::to_string(&pruned)?;
             fs::write(&out, yaml)?;
-            println!("Generated kubeconfig for context '{}' at {}", context, out.display());
+            println!(
+                "Generated kubeconfig for context '{}' at {}",
+                context,
+                out.display()
+            );
         }
 
         Command::Current => {
@@ -99,17 +104,19 @@ fn main() -> anyhow::Result<()> {
             } else {
                 for ns in namespaces {
                     println!("{}", ns);
+                }
             }
         }
-        }
 
-        Command::Env { context, namespace, shell, verbose } => {
+        Command::Env {
+            context,
+            namespace,
+            shell,
+            verbose,
+        } => {
             let context = config::resolve_alias(&context);
-            let kubeconfig = commands::ensure_isolated_kubeconfig(
-                &context,
-                namespace.as_deref(),
-                &paths,
-            )?;
+            let kubeconfig =
+                commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
             commands::print_env_exports(
                 &context,
                 namespace.as_deref(),
@@ -121,16 +128,11 @@ fn main() -> anyhow::Result<()> {
 
         Command::Pick { output, verbose } => {
             let merged = kubeconfig::load_merged(&paths)?;
-            let (context, namespace) = commands::pick_context_namespace(
-                &merged,
-                kubeconfig_env.as_deref(),
-            )?;
+            let (context, namespace) =
+                commands::pick_context_namespace(&merged, kubeconfig_env.as_deref())?;
 
-            let kubeconfig = commands::ensure_isolated_kubeconfig(
-                &context,
-                namespace.as_deref(),
-                &paths,
-            )?;
+            let kubeconfig =
+                commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
 
             match output.as_deref() {
                 Some("env") => {
@@ -154,22 +156,28 @@ fn main() -> anyhow::Result<()> {
                     spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
                 }
                 Some(other) => {
-                    return Err(K8pkError::Other(format!("unknown output format: {}", other)).into());
+                    return Err(
+                        K8pkError::Other(format!("unknown output format: {}", other)).into(),
+                    );
                 }
             }
         }
 
         Command::Spawn { context, namespace } => {
             let context = config::resolve_alias(&context);
-            let kubeconfig = commands::ensure_isolated_kubeconfig(
-                &context,
-                namespace.as_deref(),
-                &paths,
-            )?;
+            let kubeconfig =
+                commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
             spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
         }
 
-        Command::Cleanup { days, orphaned, dry_run, all, from_file, interactive } => {
+        Command::Cleanup {
+            days,
+            orphaned,
+            dry_run,
+            all,
+            from_file,
+            interactive,
+        } => {
             let merged = kubeconfig::load_merged(&paths)?;
             let allowed_contexts = merged.context_names();
 
@@ -221,7 +229,13 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        Command::RemoveContext { from_file, context, interactive, remove_orphaned, dry_run } => {
+        Command::RemoveContext {
+            from_file,
+            context,
+            interactive,
+            remove_orphaned,
+            dry_run,
+        } => {
             let file_path = match from_file {
                 Some(p) => p,
                 None => default_kubeconfig_path()?,
@@ -236,7 +250,12 @@ fn main() -> anyhow::Result<()> {
             )?;
         }
 
-        Command::RenameContext { from_file, context, new_name, dry_run } => {
+        Command::RenameContext {
+            from_file,
+            context,
+            new_name,
+            dry_run,
+        } => {
             let file_path = match from_file {
                 Some(p) => p,
                 None => default_kubeconfig_path()?,
@@ -245,7 +264,13 @@ fn main() -> anyhow::Result<()> {
             rename_context_in_file(&file_path, &context, &new_name, dry_run)?;
         }
 
-        Command::CopyContext { from_file, to_file, context, new_name, dry_run } => {
+        Command::CopyContext {
+            from_file,
+            to_file,
+            context,
+            new_name,
+            dry_run,
+        } => {
             let dest_path = match to_file {
                 Some(p) => p,
                 None => default_kubeconfig_path()?,
@@ -260,23 +285,37 @@ fn main() -> anyhow::Result<()> {
             )?;
         }
 
-        Command::Merge { files, out, overwrite } => {
+        Command::Merge {
+            files,
+            out,
+            overwrite,
+        } => {
             commands::merge_files(&files, out.as_deref(), overwrite)?;
         }
 
-        Command::Diff { file1, file2, diff_only } => {
+        Command::Diff {
+            file1,
+            file2,
+            diff_only,
+        } => {
             commands::diff_files(&file1, &file2, diff_only)?;
         }
 
-        Command::Exec { context, namespace, command, fail_early, no_headers } => {
+        Command::Exec {
+            context,
+            namespace,
+            command,
+            fail_early,
+            no_headers,
+        } => {
             let merged = kubeconfig::load_merged(&paths)?;
             let all_contexts = merged.context_names();
             let matched = commands::match_pattern(&context, &all_contexts);
-            
+
             if matched.is_empty() {
                 return Err(K8pkError::ContextNotFound(context).into());
             }
-            
+
             for ctx in &matched {
                 let exit_code = exec_command_in_context(
                     ctx,
@@ -287,11 +326,11 @@ fn main() -> anyhow::Result<()> {
                 )?;
 
                 if fail_early && exit_code != 0 {
-                        std::process::exit(exit_code);
-                    }
+                    std::process::exit(exit_code);
                 }
             }
-            
+        }
+
         Command::Info { what } => {
             let state = CurrentState::from_env();
             match what.as_str() {
@@ -320,26 +359,30 @@ fn main() -> anyhow::Result<()> {
                     return Err(K8pkError::Other(format!(
                         "unknown info type: {}. Use: ctx, ns, depth, config, all",
                         what
-                    )).into());
+                    ))
+                    .into());
                 }
             }
         }
 
-        Command::Ctx { context, namespace, recursive } => {
+        Command::Ctx {
+            context,
+            namespace,
+            recursive,
+        } => {
             let merged = kubeconfig::load_merged(&paths)?;
 
             let context = match context {
                 Some(c) if c == "-" => {
-                    commands::get_previous_context()?
-                        .ok_or(K8pkError::NoPreviousContext)?
+                    commands::get_previous_context()?.ok_or(K8pkError::NoPreviousContext)?
                 }
                 Some(c) => config::resolve_alias(&c),
                 None => {
                     // Interactive pick
                     let contexts = merged.context_names();
-                if contexts.is_empty() {
+                    if contexts.is_empty() {
                         return Err(K8pkError::NoContexts.into());
-                }
+                    }
                     Select::new("Select context:", contexts)
                         .prompt()
                         .map_err(|_| K8pkError::Cancelled)?
@@ -348,12 +391,9 @@ fn main() -> anyhow::Result<()> {
 
             commands::save_to_history(&context, namespace.as_deref())?;
 
-            let kubeconfig = commands::ensure_isolated_kubeconfig(
-                &context,
-                namespace.as_deref(),
-                &paths,
-            )?;
-            
+            let kubeconfig =
+                commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
+
             if recursive {
                 spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
             } else {
@@ -368,20 +408,23 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        Command::Ns { namespace, recursive } => {
+        Command::Ns {
+            namespace,
+            recursive,
+        } => {
             let state = CurrentState::from_env();
             let context = state.require_context()?;
 
             let namespace = match namespace {
                 Some(ns) if ns == "-" => {
-                    commands::get_previous_namespace()?
-                        .ok_or(K8pkError::NoPreviousNamespace)?
+                    commands::get_previous_namespace()?.ok_or(K8pkError::NoPreviousNamespace)?
                 }
                 Some(ns) => ns,
                 None => {
                     // Interactive pick
-                    let namespaces = kubeconfig::list_namespaces(context, kubeconfig_env.as_deref())?;
-                if namespaces.is_empty() {
+                    let namespaces =
+                        kubeconfig::list_namespaces(context, kubeconfig_env.as_deref())?;
+                    if namespaces.is_empty() {
                         return Err(K8pkError::NoNamespaces(context.to_string()).into());
                     }
                     Select::new("Select namespace:", namespaces)
@@ -392,22 +435,13 @@ fn main() -> anyhow::Result<()> {
 
             commands::save_to_history(context, Some(&namespace))?;
 
-            let kubeconfig = commands::ensure_isolated_kubeconfig(
-                context,
-                Some(&namespace),
-                &paths,
-            )?;
-            
+            let kubeconfig =
+                commands::ensure_isolated_kubeconfig(context, Some(&namespace), &paths)?;
+
             if recursive {
                 spawn_shell(context, Some(&namespace), &kubeconfig)?;
             } else {
-                commands::print_env_exports(
-                    context,
-                    Some(&namespace),
-                    &kubeconfig,
-                    "bash",
-                    false,
-                )?;
+                commands::print_env_exports(context, Some(&namespace), &kubeconfig, "bash", false)?;
             }
         }
 
@@ -416,11 +450,8 @@ fn main() -> anyhow::Result<()> {
         }
 
         Command::Export { context, namespace } => {
-            let kubeconfig = commands::ensure_isolated_kubeconfig(
-                &context,
-                Some(&namespace),
-                &paths,
-            )?;
+            let kubeconfig =
+                commands::ensure_isolated_kubeconfig(&context, Some(&namespace), &paths)?;
             println!("{}", kubeconfig.display());
         }
 
@@ -437,7 +468,15 @@ fn main() -> anyhow::Result<()> {
             edit_kubeconfig(context.as_deref(), editor.as_deref(), &merged, &paths)?;
         }
 
-        Command::Login { server, token, username, password, name, output_dir, insecure_skip_tls_verify } => {
+        Command::Login {
+            server,
+            token,
+            username,
+            password,
+            name,
+            output_dir,
+            insecure_skip_tls_verify,
+        } => {
             commands::openshift_login(
                 &server,
                 token.as_deref(),
@@ -449,7 +488,12 @@ fn main() -> anyhow::Result<()> {
             )?;
         }
 
-        Command::Organize { file, output_dir, dry_run, remove_from_source } => {
+        Command::Organize {
+            file,
+            output_dir,
+            dry_run,
+            remove_from_source,
+        } => {
             commands::organize_by_cluster_type(
                 file.as_deref(),
                 output_dir.as_deref(),
@@ -463,7 +507,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-        Ok(())
+    Ok(())
 }
 
 /// Spawn a new shell with context/namespace set
@@ -491,7 +535,7 @@ fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Res
         cmd.env("K8PK_NAMESPACE", ns);
         cmd.env("OC_NAMESPACE", ns);
     }
-    
+
     #[cfg(unix)]
     {
         let err = cmd.exec();
@@ -510,10 +554,7 @@ fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Res
 
 /// Run a hook command
 fn run_hook(command: &str) -> Result<()> {
-    let status = ProcCommand::new("sh")
-        .arg("-c")
-        .arg(command)
-        .status()?;
+    let status = ProcCommand::new("sh").arg("-c").arg(command).status()?;
 
     if !status.success() {
         eprintln!("Warning: hook command failed: {}", command);
@@ -536,7 +577,8 @@ fn exec_command_in_context(
 
     let kubeconfig = commands::ensure_isolated_kubeconfig(context, Some(namespace), paths)?;
 
-    let (cmd_name, args) = command.split_first()
+    let (cmd_name, args) = command
+        .split_first()
         .ok_or_else(|| K8pkError::Other("empty command".into()))?;
 
     let mut cmd = ProcCommand::new(cmd_name);
@@ -565,7 +607,7 @@ fn generate_completions(shell: &str) -> Result<()> {
         "fish" => generate(shells::Fish, &mut cmd, "k8pk", &mut stdout),
         _ => return Err(K8pkError::Other(format!("unsupported shell: {}", shell))),
     }
-    
+
     Ok(())
 }
 
@@ -588,17 +630,19 @@ fn remove_contexts_from_file(
         let names: Vec<String> = cfg.contexts.iter().map(|c| c.name.clone()).collect();
         if names.is_empty() {
             println!("No contexts in file");
-        return Ok(());
-    }
+            return Ok(());
+        }
         MultiSelect::new("Select contexts to remove:", names)
-        .prompt()
+            .prompt()
             .map_err(|_| K8pkError::Cancelled)?
     } else if let Some(ctx) = context {
         vec![ctx.to_string()]
     } else {
-        return Err(K8pkError::Other("specify --context or --interactive".into()));
+        return Err(K8pkError::Other(
+            "specify --context or --interactive".into(),
+        ));
     };
-    
+
     for ctx_name in &contexts_to_remove {
         if dry_run {
             println!("Would remove context: {}", ctx_name);
@@ -607,33 +651,45 @@ fn remove_contexts_from_file(
             println!("Removed context: {}", ctx_name);
         }
     }
-    
+
     if remove_orphaned {
         // Find referenced clusters/users
-        let referenced_clusters: HashSet<String> = cfg.contexts
+        let referenced_clusters: HashSet<String> = cfg
+            .contexts
             .iter()
-            .filter_map(|c| kubeconfig::extract_context_refs(&c.rest).ok().map(|(cl, _)| cl))
+            .filter_map(|c| {
+                kubeconfig::extract_context_refs(&c.rest)
+                    .ok()
+                    .map(|(cl, _)| cl)
+            })
             .collect();
 
-        let referenced_users: HashSet<String> = cfg.contexts
+        let referenced_users: HashSet<String> = cfg
+            .contexts
             .iter()
-            .filter_map(|c| kubeconfig::extract_context_refs(&c.rest).ok().map(|(_, u)| u))
+            .filter_map(|c| {
+                kubeconfig::extract_context_refs(&c.rest)
+                    .ok()
+                    .map(|(_, u)| u)
+            })
             .collect();
 
-        let orphaned_clusters: Vec<String> = cfg.clusters
+        let orphaned_clusters: Vec<String> = cfg
+            .clusters
             .iter()
             .filter(|c| !referenced_clusters.contains(&c.name))
             .map(|c| c.name.clone())
             .collect();
 
-        let orphaned_users: Vec<String> = cfg.users
+        let orphaned_users: Vec<String> = cfg
+            .users
             .iter()
             .filter(|u| !referenced_users.contains(&u.name))
             .map(|u| u.name.clone())
             .collect();
 
         for name in &orphaned_clusters {
-        if dry_run {
+            if dry_run {
                 println!("Would remove orphaned cluster: {}", name);
             } else {
                 cfg.clusters.retain(|c| c.name != *name);
@@ -644,7 +700,7 @@ fn remove_contexts_from_file(
         for name in &orphaned_users {
             if dry_run {
                 println!("Would remove orphaned user: {}", name);
-        } else {
+            } else {
                 cfg.users.retain(|u| u.name != *name);
                 println!("Removed orphaned user: {}", name);
             }
@@ -655,7 +711,7 @@ fn remove_contexts_from_file(
         let yaml = serde_yaml_ng::to_string(&cfg)?;
         fs::write(file_path, yaml)?;
     }
-    
+
     Ok(())
 }
 
@@ -673,26 +729,27 @@ fn rename_context_in_file(
     let content = fs::read_to_string(file_path)?;
     let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
 
-    let ctx = cfg.contexts
+    let ctx = cfg
+        .contexts
         .iter_mut()
         .find(|c| c.name == old_name)
         .ok_or_else(|| K8pkError::ContextNotFound(old_name.to_string()))?;
 
-        if dry_run {
+    if dry_run {
         println!("Would rename context: {} -> {}", old_name, new_name);
     } else {
         ctx.name = new_name.to_string();
-    
+
         // Update current-context if it matches
         if cfg.current_context.as_deref() == Some(old_name) {
-        cfg.current_context = Some(new_name.to_string());
+            cfg.current_context = Some(new_name.to_string());
         }
 
         let yaml = serde_yaml_ng::to_string(&cfg)?;
         fs::write(file_path, yaml)?;
         println!("Renamed context: {} -> {}", old_name, new_name);
     }
-    
+
     Ok(())
 }
 
@@ -727,17 +784,22 @@ fn copy_context_between_files(
         .ok_or_else(|| K8pkError::UserNotFound(user_name.clone()))?;
 
     let target_name = new_name.unwrap_or(context);
-    
+
     if dry_run {
-        println!("Would copy context: {} -> {} ({})", context, target_name, to_file.display());
+        println!(
+            "Would copy context: {} -> {} ({})",
+            context,
+            target_name,
+            to_file.display()
+        );
         return Ok(());
     }
-    
+
     // Load or create target file
     let mut dest_cfg: KubeConfig = if to_file.exists() {
         let content = fs::read_to_string(to_file)?;
         serde_yaml_ng::from_str(&content)?
-        } else {
+    } else {
         KubeConfig::default()
     };
 
@@ -760,8 +822,13 @@ fn copy_context_between_files(
     let yaml = serde_yaml_ng::to_string(&dest_cfg)?;
     fs::write(to_file, yaml)?;
 
-    println!("Copied context: {} -> {} ({})", context, target_name, to_file.display());
-    
+    println!(
+        "Copied context: {} -> {} ({})",
+        context,
+        target_name,
+        to_file.display()
+    );
+
     Ok(())
 }
 
@@ -777,9 +844,9 @@ fn edit_kubeconfig(
     let file_to_edit = if let Some(ctx) = context {
         ctx_paths
             .get(ctx)
-        .cloned()
+            .cloned()
             .ok_or_else(|| K8pkError::ContextNotFound(ctx.to_string()))?
-        } else {
+    } else {
         // Show file picker
         let files: Vec<PathBuf> = paths.iter().filter(|p| p.exists()).cloned().collect();
         if files.is_empty() {
@@ -798,15 +865,16 @@ fn edit_kubeconfig(
         .map(String::from)
         .or_else(|| env::var("EDITOR").ok())
         .unwrap_or_else(|| "vim".to_string());
-    
-    let status = ProcCommand::new(&editor_cmd)
-        .arg(&file_to_edit)
-        .status()?;
-    
+
+    let status = ProcCommand::new(&editor_cmd).arg(&file_to_edit).status()?;
+
     if !status.success() {
-        return Err(K8pkError::CommandFailed(format!("{} exited with error", editor_cmd)));
+        return Err(K8pkError::CommandFailed(format!(
+            "{} exited with error",
+            editor_cmd
+        )));
     }
-    
+
     Ok(())
 }
 

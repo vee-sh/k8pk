@@ -56,7 +56,6 @@ impl KubeConfig {
         }
     }
 
-
     /// Get list of context names
     pub fn context_names(&self) -> Vec<String> {
         self.contexts.iter().map(|c| c.name.clone()).collect()
@@ -81,7 +80,9 @@ impl KubeConfig {
 /// Extract cluster and user references from a context
 pub fn extract_context_refs(rest: &Yaml) -> Result<(String, String)> {
     let Yaml::Mapping(map) = rest else {
-        return Err(K8pkError::InvalidKubeconfig("invalid context object".into()));
+        return Err(K8pkError::InvalidKubeconfig(
+            "invalid context object".into(),
+        ));
     };
     let Some(Yaml::Mapping(inner)) = map.get(Yaml::from("context")).cloned() else {
         return Err(K8pkError::InvalidKubeconfig("missing context field".into()));
@@ -294,20 +295,22 @@ pub fn find_from_config(config: &K8pkConfig) -> Result<Vec<PathBuf>> {
 
         if include_pattern.contains('*') {
             // Glob pattern
-            let parent = expanded
-                .parent()
-                .ok_or_else(|| K8pkError::InvalidKubeconfig(format!("invalid pattern: {}", include_pattern)))?;
+            let parent = expanded.parent().ok_or_else(|| {
+                K8pkError::InvalidKubeconfig(format!("invalid pattern: {}", include_pattern))
+            })?;
 
             if !parent.exists() {
                 continue;
             }
 
             let glob_str = expanded.to_string_lossy();
-            let glob = Glob::new(&glob_str)
-                .map_err(|_| K8pkError::InvalidKubeconfig(format!("invalid glob: {}", include_pattern)))?;
+            let glob = Glob::new(&glob_str).map_err(|_| {
+                K8pkError::InvalidKubeconfig(format!("invalid glob: {}", include_pattern))
+            })?;
             let mut builder = GlobSetBuilder::new();
             builder.add(glob);
-            let globset = builder.build()
+            let globset = builder
+                .build()
                 .map_err(|_| K8pkError::InvalidKubeconfig("failed to build globset".into()))?;
 
             if parent.is_dir() {
@@ -351,7 +354,8 @@ pub fn match_globs(path: &Path, patterns: &[String]) -> Result<bool> {
             .map_err(|_| K8pkError::InvalidKubeconfig(format!("invalid glob: {}", pattern)))?;
         builder.add(glob);
     }
-    let globset = builder.build()
+    let globset = builder
+        .build()
         .map_err(|_| K8pkError::InvalidKubeconfig("failed to build globset".into()))?;
     Ok(globset.is_match(path))
 }
@@ -491,4 +495,3 @@ pub fn friendly_context_name(context_name: &str, cluster_type: &str) -> String {
     }
     context_name.to_string()
 }
-
