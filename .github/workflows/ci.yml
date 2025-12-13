@@ -227,15 +227,36 @@ jobs:
           
           "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ needs.create-release.outputs.tag }}
-          files: |
+          name: release-${{ matrix.target }}
+          path: |
             ${{ env.ARCHIVE }}
             ${{ env.ARCHIVE }}.sha256
             ${{ env.ARCHIVE }}.sig
             ${{ env.ARCHIVE }}.pem
+
+  # ============================================
+  # Upload all artifacts to release (single job to avoid race)
+  # ============================================
+  upload-release:
+    name: Upload Release Assets
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.create-release.outputs.tag }}
+          files: artifacts/*
 
   # ============================================
   # Update Homebrew Tap (after all builds complete)
@@ -243,7 +264,7 @@ jobs:
   homebrew:
     name: Update Homebrew
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build]
+    needs: [upload-release]
     runs-on: ubuntu-latest
     steps:
       - name: Determine version
