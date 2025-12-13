@@ -63,7 +63,13 @@ fn main() -> anyhow::Result<()> {
 
     let kubeconfig_env = kubeconfig::join_paths_for_env(&paths);
 
-    match cli.command {
+    // Default to interactive picker if no command specified
+    let command = cli.command.unwrap_or(Command::Pick {
+        output: None,
+        verbose: false,
+    });
+
+    match command {
         Command::Contexts { json, path } => {
             if path {
                 let ctx_paths = kubeconfig::list_contexts_with_paths(&paths)?;

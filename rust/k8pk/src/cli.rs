@@ -11,7 +11,7 @@ use std::path::PathBuf;
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 
     /// Override kubeconfig path (defaults to $KUBECONFIG or ~/.kube/config)
     #[arg(long)]

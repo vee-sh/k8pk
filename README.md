@@ -142,8 +142,11 @@ k8pk which
 k8pk which "prod*"  # Filter by pattern
 k8pk which --json   # JSON output
 
-# Interactive picker (automatically spawns shell in interactive TTY)
-k8pk pick
+# Interactive picker (just run k8pk with no arguments!)
+k8pk
+
+# Or explicitly: k8pk pick
+# Automatically spawns shell in interactive TTY
 
 # Or explicitly request exports (requires eval):
 k8pk pick --output env | eval
