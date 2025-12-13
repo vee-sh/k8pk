@@ -47,6 +47,12 @@
 - `k8pk remove-context` - Remove contexts
 - `k8pk cleanup` - Clean old generated configs
 
+### Multi-Cluster Management
+- `k8pk login <server>` - Login to OpenShift, save to separate file (not ~/.kube/config)
+- `k8pk organize` - Split messy kubeconfig by cluster type (EKS/GKE/OCP/AKS)
+- `k8pk which` - Show cluster type and source file for contexts
+- Auto-detection of EKS, GKE, OCP, AKS cluster types
+
 ### Utilities
 - `k8pk export <ctx> <ns>` - Print path to isolated kubeconfig
 - `k8pk update` - Self-update from GitHub releases

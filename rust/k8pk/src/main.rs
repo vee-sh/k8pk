@@ -270,6 +270,52 @@ enum Command {
         #[arg(long)]
         editor: Option<String>,
     },
+    /// Login to OpenShift cluster (wrapper for oc login that saves to separate file)
+    Login {
+        /// OpenShift API server URL (e.g., https://api.cluster.example.com:6443)
+        server: String,
+        /// Token for authentication (if not provided, will prompt or use --username/--password)
+        #[arg(long)]
+        token: Option<String>,
+        /// Username for authentication
+        #[arg(short = 'u', long)]
+        username: Option<String>,
+        /// Password for authentication
+        #[arg(short = 'p', long)]
+        password: Option<String>,
+        /// Custom name for the context (defaults to auto-generated from server URL)
+        #[arg(long)]
+        name: Option<String>,
+        /// Directory to save the kubeconfig (defaults to ~/.kube/ocp/)
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+        /// Skip TLS verification (insecure)
+        #[arg(long)]
+        insecure_skip_tls_verify: bool,
+    },
+    /// Organize a messy kubeconfig into separate files by cluster type
+    Organize {
+        /// Source kubeconfig file to organize (defaults to ~/.kube/config)
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Output directory for organized configs (defaults to ~/.kube/organized/)
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+        /// Dry run - show what would be created without actually creating files
+        #[arg(long)]
+        dry_run: bool,
+        /// Delete contexts from source file after copying (default: keep source intact)
+        #[arg(long)]
+        remove_from_source: bool,
+    },
+    /// Show cluster type and source info for contexts
+    Which {
+        /// Context name (or pattern with wildcards)
+        context: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -849,6 +895,15 @@ fn main() -> Result<()> {
         }
         Command::Edit { context, editor } => {
             edit_kubeconfig(context.as_deref(), editor.as_deref(), &merged, &paths)?;
+        }
+        Command::Login { server, token, username, password, name, output_dir, insecure_skip_tls_verify } => {
+            oc_login(&server, token.as_deref(), username.as_deref(), password.as_deref(), name.as_deref(), output_dir.as_deref(), insecure_skip_tls_verify)?;
+        }
+        Command::Organize { file, output_dir, dry_run, remove_from_source } => {
+            organize_kubeconfig(file.as_deref(), output_dir.as_deref(), dry_run, remove_from_source, &paths)?;
+        }
+        Command::Which { context, json } => {
+            which_context(context.as_deref(), json, &paths)?;
         }
     }
 
@@ -2579,6 +2634,377 @@ fn edit_kubeconfig(context: Option<&str>, editor: Option<&str>, merged: &KubeCon
     
     if !status.success() {
         return Err(anyhow!("editor exited with non-zero status"));
+    }
+    
+    Ok(())
+}
+
+/// Detect cluster type from context name or server URL
+fn detect_cluster_type(context_name: &str, server_url: Option<&str>) -> &'static str {
+    // Check context name patterns
+    if context_name.starts_with("arn:aws:eks:") {
+        return "eks";
+    }
+    if context_name.starts_with("gke_") {
+        return "gke";
+    }
+    if context_name.contains("/api.") && context_name.contains(":6443") {
+        return "ocp";
+    }
+    if context_name.starts_with("aks-") || context_name.contains("azure") {
+        return "aks";
+    }
+    
+    // Check server URL if available
+    if let Some(url) = server_url {
+        if url.contains(".eks.amazonaws.com") {
+            return "eks";
+        }
+        if url.contains(".container.googleapis.com") || url.contains("gke.io") {
+            return "gke";
+        }
+        if url.contains(":6443") || url.contains("openshift") || url.contains("ocp") {
+            return "ocp";
+        }
+        if url.contains(".azmk8s.io") || url.contains("azure") {
+            return "aks";
+        }
+    }
+    
+    "k8s" // generic kubernetes
+}
+
+/// Generate a friendly name for a context
+fn friendly_context_name(context_name: &str, cluster_type: &str) -> String {
+    match cluster_type {
+        "eks" => {
+            // arn:aws:eks:us-east-1:123456789012:cluster/my-cluster -> my-cluster
+            if let Some(cluster_part) = context_name.split("cluster/").last() {
+                return cluster_part.to_string();
+            }
+        }
+        "gke" => {
+            // gke_project-id_zone_cluster-name -> cluster-name
+            let parts: Vec<&str> = context_name.split('_').collect();
+            if parts.len() >= 4 {
+                return parts[3..].join("_");
+            }
+        }
+        "ocp" => {
+            // namespace/api.cluster.example.com:6443/user -> cluster.example.com
+            let parts: Vec<&str> = context_name.split('/').collect();
+            if parts.len() >= 2 {
+                let server = parts[1].trim_start_matches("api.");
+                if let Some(host) = server.split(':').next() {
+                    return host.to_string();
+                }
+            }
+        }
+        _ => {}
+    }
+    context_name.to_string()
+}
+
+/// Login to OpenShift and save config to a separate file
+fn oc_login(
+    server: &str,
+    token: Option<&str>,
+    username: Option<&str>,
+    password: Option<&str>,
+    name: Option<&str>,
+    output_dir: Option<&Path>,
+    insecure: bool,
+) -> Result<()> {
+    // Verify oc is available
+    if which::which("oc").is_err() {
+        return Err(anyhow!("oc command not found. Install OpenShift CLI first."));
+    }
+    
+    // Determine output directory
+    let home = dirs_next::home_dir().ok_or_else(|| anyhow!("cannot resolve home dir"))?;
+    let output_dir = output_dir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| home.join(".kube").join("ocp"));
+    
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("creating directory '{}'", output_dir.display()))?;
+    
+    // Generate filename from server URL
+    let server_clean = server
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .replace(':', "-")
+        .replace('/', "-");
+    
+    let config_name = name.map(|n| n.to_string()).unwrap_or_else(|| server_clean.clone());
+    let config_file = output_dir.join(format!("{}.yaml", config_name));
+    
+    println!("Logging in to {}...", server);
+    println!("Saving config to: {}", config_file.display());
+    
+    // Build oc login command
+    let mut cmd = ProcCommand::new("oc");
+    cmd.arg("login");
+    cmd.arg(server);
+    cmd.arg("--kubeconfig").arg(&config_file);
+    
+    if let Some(t) = token {
+        cmd.arg("--token").arg(t);
+    } else if let (Some(u), Some(p)) = (username, password) {
+        cmd.arg("--username").arg(u);
+        cmd.arg("--password").arg(p);
+    }
+    
+    if insecure {
+        cmd.arg("--insecure-skip-tls-verify=true");
+    }
+    
+    let status = cmd.status()
+        .with_context(|| "failed to execute oc login")?;
+    
+    if !status.success() {
+        return Err(anyhow!("oc login failed"));
+    }
+    
+    println!("\n[OK] Login successful!");
+    println!("Config saved to: {}", config_file.display());
+    println!("\nTo use this config, either:");
+    println!("  1. Run: kpick (and select the new context)");
+    println!("  2. Run: export KUBECONFIG={}", config_file.display());
+    println!("\nTip: Add ~/.kube/ocp/*.yaml to your k8pk.yaml configs to auto-discover OCP clusters");
+    
+    Ok(())
+}
+
+/// Organize a kubeconfig file by splitting contexts into separate files by cluster type
+fn organize_kubeconfig(
+    source_file: Option<&Path>,
+    output_dir: Option<&Path>,
+    dry_run: bool,
+    remove_from_source: bool,
+    _paths: &[PathBuf],
+) -> Result<()> {
+    let home = dirs_next::home_dir().ok_or_else(|| anyhow!("cannot resolve home dir"))?;
+    
+    // Determine source file
+    let source = source_file
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| home.join(".kube").join("config"));
+    
+    if !source.exists() {
+        return Err(anyhow!("source file not found: {}", source.display()));
+    }
+    
+    // Determine output directory
+    let output_dir = output_dir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| home.join(".kube").join("organized"));
+    
+    // Load source config
+    let content = fs::read_to_string(&source)
+        .with_context(|| format!("reading '{}'", source.display()))?;
+    let config: KubeConfig = serde_yaml_ng::from_str(&content)
+        .with_context(|| format!("parsing '{}'", source.display()))?;
+    
+    // Group contexts by cluster type
+    let mut by_type: std::collections::HashMap<&str, Vec<&NamedItem>> = std::collections::HashMap::new();
+    
+    for ctx in &config.contexts {
+        // Try to get server URL from cluster
+        let server_url = extract_ctx_refs(&ctx.rest).ok().and_then(|(cluster_name, _)| {
+            config.clusters.iter()
+                .find(|c| c.name == cluster_name)
+                .and_then(|c| {
+                    if let Yaml::Mapping(ref m) = c.rest {
+                        if let Some(Yaml::Mapping(cluster_data)) = m.get(&Yaml::from("cluster")) {
+                            if let Some(Yaml::String(s)) = cluster_data.get(&Yaml::from("server")) {
+                                return Some(s.clone());
+                            }
+                        }
+                    }
+                    None
+                })
+        });
+        
+        let cluster_type = detect_cluster_type(&ctx.name, server_url.as_deref());
+        by_type.entry(cluster_type).or_default().push(ctx);
+    }
+    
+    println!("Organizing {} contexts from {}", config.contexts.len(), source.display());
+    println!("Output directory: {}", output_dir.display());
+    println!();
+    
+    // Summary
+    for (ctype, contexts) in &by_type {
+        let dir_name = match *ctype {
+            "eks" => "eks",
+            "gke" => "gke",
+            "ocp" => "ocp",
+            "aks" => "aks",
+            _ => "k8s",
+        };
+        println!("  {} ({}): {} context(s)", ctype.to_uppercase(), dir_name, contexts.len());
+        for ctx in contexts {
+            let friendly = friendly_context_name(&ctx.name, ctype);
+            if friendly != ctx.name {
+                println!("    - {} ({})", friendly, ctx.name);
+            } else {
+                println!("    - {}", ctx.name);
+            }
+        }
+    }
+    println!();
+    
+    if dry_run {
+        println!("[DRY RUN] No files were created.");
+        return Ok(());
+    }
+    
+    // Create output files
+    let mut created_files = Vec::new();
+    
+    for (ctype, contexts) in &by_type {
+        let type_dir = output_dir.join(ctype);
+        fs::create_dir_all(&type_dir)?;
+        
+        for ctx in contexts {
+            let friendly = friendly_context_name(&ctx.name, ctype);
+            let file_name = format!("{}.yaml", friendly.replace('/', "-").replace(':', "-"));
+            let file_path = type_dir.join(&file_name);
+            
+            // Create a minimal kubeconfig for this context
+            let (cluster_name, user_name) = extract_ctx_refs(&ctx.rest)?;
+            let cluster = config.clusters.iter()
+                .find(|c| c.name == cluster_name)
+                .cloned()
+                .ok_or_else(|| anyhow!("cluster '{}' not found", cluster_name))?;
+            let user = config.users.iter()
+                .find(|u| u.name == user_name)
+                .cloned()
+                .ok_or_else(|| anyhow!("user '{}' not found", user_name))?;
+            
+            let mut new_config = KubeConfig {
+                api_version: Some("v1".to_string()),
+                kind: Some("Config".to_string()),
+                preferences: Some(Yaml::Mapping(Default::default())),
+                current_context: Some(ctx.name.clone()),
+                contexts: vec![(*ctx).clone()],
+                clusters: vec![cluster],
+                users: vec![user],
+                extensions: None,
+            };
+            ensure_defaults(&mut new_config, Some(&ctx.name));
+            
+            let yaml = serde_yaml_ng::to_string(&new_config)?;
+            fs::write(&file_path, yaml)?;
+            
+            println!("[OK] Created: {}", file_path.display());
+            created_files.push(file_path);
+        }
+    }
+    
+    println!();
+    println!("Created {} files", created_files.len());
+    
+    if remove_from_source {
+        println!();
+        println!("[WARN] --remove-from-source is not yet implemented.");
+        println!("       Your source file was not modified.");
+    }
+    
+    println!();
+    println!("Tip: Add these patterns to your ~/.kube/k8pk.yaml:");
+    println!("  configs:");
+    println!("    include:");
+    println!("      - {}/**/*.yaml", output_dir.display());
+    
+    Ok(())
+}
+
+/// Show which cluster type and source file a context is from
+fn which_context(pattern: Option<&str>, json: bool, paths: &[PathBuf]) -> Result<()> {
+    let context_paths = list_contexts_with_paths(paths)?;
+    
+    // Filter by pattern if provided
+    let filtered: Vec<_> = if let Some(p) = pattern {
+        let all_contexts: Vec<String> = context_paths.keys().cloned().collect();
+        let matched = match_contexts(p, &all_contexts);
+        context_paths.into_iter()
+            .filter(|(k, _)| matched.contains(k))
+            .collect()
+    } else {
+        context_paths.into_iter().collect()
+    };
+    
+    if filtered.is_empty() {
+        if let Some(p) = pattern {
+            return Err(anyhow!("no contexts matching '{}' found", p));
+        }
+        return Err(anyhow!("no contexts found"));
+    }
+    
+    // Load configs to get server URLs
+    let merged = load_merged_kubeconfig(paths)?;
+    
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    
+    for (ctx_name, source_path) in &filtered {
+        // Get server URL if possible
+        let server_url = merged.contexts.iter()
+            .find(|c| &c.name == ctx_name)
+            .and_then(|c| extract_ctx_refs(&c.rest).ok())
+            .and_then(|(cluster_name, _)| {
+                merged.clusters.iter()
+                    .find(|c| c.name == cluster_name)
+                    .and_then(|c| {
+                        if let Yaml::Mapping(ref m) = c.rest {
+                            if let Some(Yaml::Mapping(cluster_data)) = m.get(&Yaml::from("cluster")) {
+                                if let Some(Yaml::String(s)) = cluster_data.get(&Yaml::from("server")) {
+                                    return Some(s.clone());
+                                }
+                            }
+                        }
+                        None
+                    })
+            });
+        
+        let cluster_type = detect_cluster_type(ctx_name, server_url.as_deref());
+        let friendly = friendly_context_name(ctx_name, cluster_type);
+        
+        if json {
+            let mut obj = serde_json::Map::new();
+            obj.insert("context".to_string(), serde_json::Value::String(ctx_name.clone()));
+            obj.insert("type".to_string(), serde_json::Value::String(cluster_type.to_string()));
+            obj.insert("friendly_name".to_string(), serde_json::Value::String(friendly));
+            obj.insert("source_file".to_string(), serde_json::Value::String(source_path.display().to_string()));
+            if let Some(ref url) = server_url {
+                obj.insert("server".to_string(), serde_json::Value::String(url.clone()));
+            }
+            results.push(serde_json::Value::Object(obj));
+        } else {
+            let type_label = match cluster_type {
+                "eks" => "[EKS]",
+                "gke" => "[GKE]",
+                "ocp" => "[OCP]",
+                "aks" => "[AKS]",
+                _ => "[K8S]",
+            };
+            
+            if friendly != *ctx_name {
+                println!("{} {} ({})", type_label, friendly, ctx_name);
+            } else {
+                println!("{} {}", type_label, ctx_name);
+            }
+            println!("    File: {}", source_path.display());
+            if let Some(ref url) = server_url {
+                println!("    Server: {}", url);
+            }
+            println!();
+        }
+    }
+    
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
     }
     
     Ok(())

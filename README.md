@@ -143,6 +143,11 @@ k8pk contexts --path
 # List contexts with paths in JSON format
 k8pk contexts --path --json
 
+# Show cluster type (EKS/GKE/OCP/AKS) and source file for contexts
+k8pk which
+k8pk which "prod*"  # Filter by pattern
+k8pk which --json   # JSON output
+
 # Interactive picker (automatically spawns shell in interactive TTY)
 k8pk pick
 
@@ -276,9 +281,19 @@ k8pk lint --strict  # Fail on warnings
 k8pk edit           # Interactive menu to select context
 k8pk edit dev       # Edit file containing 'dev' context
 k8pk edit dev --editor nano  # Use specific editor
+
+# Login to OpenShift (saves to separate file, not ~/.kube/config)
+k8pk login https://api.cluster.example.com:6443 --token $TOKEN
+k8pk login https://api.prod.example.com:6443 --name prod-ocp --token $TOKEN
+
+# Organize a messy kubeconfig by cluster type
+k8pk organize --dry-run  # Preview what would be created
+k8pk organize            # Split into ~/.kube/organized/{eks,gke,ocp,aks,k8s}/
 ```
 
 **OpenShift:** When `oc` is available, `k8pk` automatically uses it. Generated kubeconfigs work with both `kubectl` and `oc`. The `env` command also sets `OC_NAMESPACE` for OpenShift compatibility.
+
+**Multi-cluster setup:** For managing EKS, GKE, OCP, and AKS together, see [MULTI_CLUSTER.md](MULTI_CLUSTER.md).
 
 ## Cross-Terminal Examples
 

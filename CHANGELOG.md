@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+### Added
+- `k8pk login` - Safe OpenShift login that saves to separate files (not ~/.kube/config)
+- `k8pk organize` - Split messy kubeconfig into separate files by cluster type (EKS/GKE/OCP/AKS/K8S)
+- `k8pk which` - Show cluster type, source file, and server URL for contexts
+- Auto-detection of cluster types from context names and server URLs
+- New documentation: MULTI_CLUSTER.md guide for managing mixed environments
+
 ## [0.5.0] - 2025-11-05
 ### Added
 - Auto-spawn shell in `k8pk pick` when run interactively (no need to manually eval exports)
