@@ -1,0 +1,149 @@
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.5.0)'
+        required: true
+
+jobs:
+  update-formula:
+    name: Update Homebrew Formula
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Wait for release assets
+        run: |
+          # Give time for release workflow to upload assets
+          sleep 60
+
+      - name: Download and calculate checksums
+        id: checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          BASE_URL="https://github.com/vee-sh/k8pk/releases/download/${TAG}"
+          
+          # Download and calculate SHA256 for each platform
+          for platform in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+            FILENAME="k8pk-v${VERSION}-${platform}.tar.gz"
+            echo "Downloading ${FILENAME}..."
+            
+            # Retry download up to 5 times
+            for i in 1 2 3 4 5; do
+              if curl -fsSL -o "/tmp/${FILENAME}" "${BASE_URL}/${FILENAME}"; then
+                break
+              fi
+              echo "Retry $i..."
+              sleep 30
+            done
+            
+            SHA=$(sha256sum "/tmp/${FILENAME}" | cut -d' ' -f1)
+            echo "${platform}=${SHA}" >> $GITHUB_OUTPUT
+            echo "${platform}: ${SHA}"
+          done
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: vee-sh/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          
+          cat > homebrew-tap/Formula/k8pk.rb << 'EOF'
+          class K8pk < Formula
+            desc "Kubernetes context picker - cross-terminal k8s context/namespace switcher"
+            homepage "https://github.com/vee-sh/k8pk"
+            version "VERSION_PLACEHOLDER"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/vee-sh/k8pk/releases/download/vVERSION_PLACEHOLDER/k8pk-vVERSION_PLACEHOLDER-aarch64-apple-darwin.tar.gz"
+                sha256 "SHA_AARCH64_DARWIN"
+              end
+              on_intel do
+                url "https://github.com/vee-sh/k8pk/releases/download/vVERSION_PLACEHOLDER/k8pk-vVERSION_PLACEHOLDER-x86_64-apple-darwin.tar.gz"
+                sha256 "SHA_X86_64_DARWIN"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "https://github.com/vee-sh/k8pk/releases/download/vVERSION_PLACEHOLDER/k8pk-vVERSION_PLACEHOLDER-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "SHA_X86_64_LINUX"
+              end
+            end
+
+            def install
+              bin.install "k8pk"
+              
+              # Install shell integration scripts if present
+              if File.exist?("shell/k8pk.sh")
+                (share/"k8pk/shell").install "shell/k8pk.sh"
+              end
+              if File.exist?("shell/k8pk.fish")
+                (share/"k8pk/shell").install "shell/k8pk.fish"
+              end
+              
+              # Generate shell completions
+              generate_completions_from_executable(bin/"k8pk", "completions")
+            end
+
+            def caveats
+              <<~EOS
+                Shell integration scripts installed to:
+                  #{share}/k8pk/shell/
+
+                Add to your shell config:
+                  bash/zsh: source #{share}/k8pk/shell/k8pk.sh
+                  fish:     source #{share}/k8pk/shell/k8pk.fish
+
+                This provides the `kpick`, `kswitch`, `kctx`, and `kns` commands.
+              EOS
+            end
+
+            test do
+              assert_match "k8pk", shell_output("#{bin}/k8pk --version")
+            end
+          end
+          EOF
+          
+          # Replace placeholders with actual values
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-tap/Formula/k8pk.rb
+          sed -i "s/SHA_AARCH64_DARWIN/${{ steps.checksums.outputs.aarch64-apple-darwin }}/g" homebrew-tap/Formula/k8pk.rb
+          sed -i "s/SHA_X86_64_DARWIN/${{ steps.checksums.outputs.x86_64-apple-darwin }}/g" homebrew-tap/Formula/k8pk.rb
+          sed -i "s/SHA_X86_64_LINUX/${{ steps.checksums.outputs.x86_64-unknown-linux-gnu }}/g" homebrew-tap/Formula/k8pk.rb
+          
+          echo "Updated formula:"
+          cat homebrew-tap/Formula/k8pk.rb
+
+      - name: Commit and push
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/k8pk.rb
+          git commit -m "k8pk: update to ${{ steps.version.outputs.version }}" || echo "No changes to commit"
+          git push
+
