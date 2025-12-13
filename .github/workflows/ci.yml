@@ -2,10 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']  # Trigger on version tags
+    tags: ['v*']  # Only trigger on version tags for releases
   pull_request:
-    branches: [main]
+    branches: [main]  # Lint/test PRs before merge
   workflow_dispatch:
     inputs:
       tag:
