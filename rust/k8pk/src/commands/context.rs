@@ -135,13 +135,22 @@ pub fn print_env_exports(
     let state = CurrentState::from_env();
     let new_depth = if state.depth == 0 { 1 } else { state.depth };
 
+    // Isolate cache per context to avoid stale API discovery (fixes oc/kubectl cache conflicts)
+    let cache_dir = kubeconfig
+        .parent()
+        .unwrap_or(Path::new("/tmp"))
+        .join("cache")
+        .join(crate::kubeconfig::sanitize_filename(context));
+
     let exports = match shell {
         "fish" => {
             let mut s = format!(
                 "set -gx KUBECONFIG \"{}\";\n\
+                 set -gx KUBECACHEDIR \"{}\";\n\
                  set -gx K8PK_CONTEXT \"{}\";\n\
                  set -gx K8PK_DEPTH {};\n",
                 kubeconfig.display(),
+                cache_dir.display(),
                 context,
                 new_depth
             );
@@ -157,9 +166,11 @@ pub fn print_env_exports(
         _ => {
             let mut s = format!(
                 "export KUBECONFIG=\"{}\";\n\
+                 export KUBECACHEDIR=\"{}\";\n\
                  export K8PK_CONTEXT=\"{}\";\n\
                  export K8PK_DEPTH={};\n",
                 kubeconfig.display(),
+                cache_dir.display(),
                 context,
                 new_depth
             );
