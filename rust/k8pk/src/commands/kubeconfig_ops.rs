@@ -278,9 +278,8 @@ pub fn cleanup_generated(
             let is_old = modified < cutoff;
 
             // Check orphaned if requested
+            // Filename format: {context}.yaml or {context}_{namespace}.yaml
             let is_orphaned = if orphaned {
-                // Filename format: {context}.yaml or {context}_{namespace}.yaml
-                // Extract context part (before first underscore or full name if no underscore)
                 let base = filename.trim_end_matches(".yaml").trim_end_matches(".yml");
                 let ctx_part = base.split('_').next().unwrap_or(base);
                 !allowed_contexts.iter().any(|ctx| {
@@ -315,4 +314,3 @@ pub fn cleanup_generated(
 
     Ok(())
 }
-
