@@ -196,4 +196,3 @@ fn load_history() -> Result<History> {
     let content = fs::read_to_string(&path)?;
     Ok(serde_yaml_ng::from_str(&content)?)
 }
-
