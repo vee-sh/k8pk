@@ -318,6 +318,33 @@ kitty @ launch --type=tab --tab-title "⎈ $(k8pk pick --output json | jq -r '.c
 
 Just use `kpick` or `kswitch` - they work in any terminal that runs your shell.
 
+## Configuration
+
+Create `~/.kube/k8pk.yaml` to configure where k8pk looks for kubeconfig files:
+
+```yaml
+configs:
+  include:
+    - ~/.kube/config
+    - ~/.kube/*.yaml
+    - ~/.kube/eks/*.yaml
+    - ~/.kube/gke/*.yaml
+    - ~/.kube/ocp/*.yaml
+  exclude:
+    - ~/.kube/k8pk.yaml
+
+# Context aliases (short names for long ARNs)
+aliases:
+  prod: "arn:aws:eks:us-east-1:123456:cluster/production"
+  dev: "dev-cluster"
+
+# Hooks for terminal integration
+hooks:
+  start_ctx: 'echo -en "\033]1; k8s: `k8pk info ctx` \007"'
+```
+
+**Priority order:** `--kubeconfig` flag > `$KUBECONFIG` env > `--kubeconfig-dir` flags > config file > `~/.kube/config`
+
 ## Architecture
 
 - **`k8pk` CLI**: Core Rust binary, works everywhere
@@ -359,22 +386,16 @@ curl -fsSL https://raw.githubusercontent.com/vee-sh/k8pk/main/install.sh | bash
 
 ## Testing
 
-Quick test script:
 ```bash
+# Quick test
 ./tests/test.sh
-```
 
-Full test suite:
-```bash
 # Rust tests
-cd rust/k8pk
-cargo test
+cd rust/k8pk && cargo test
 
 # Lua tests (for WezTerm plugin)
 busted tests/plugin_spec.lua
 ```
-
-See [TESTING.md](TESTING.md) for comprehensive test plan including OC CLI tests.
 
 ## Future Improvements
 
