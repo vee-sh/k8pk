@@ -22,7 +22,7 @@ Cross-terminal Kubernetes context/namespace switcher. Works in any terminal via 
 curl -fsSL https://raw.githubusercontent.com/vee-sh/k8pk/main/install.sh | bash
 
 # Or with a specific version:
-curl -fsSL https://raw.githubusercontent.com/vee-sh/k8pk/main/install.sh | bash -s v0.2.1
+curl -fsSL https://raw.githubusercontent.com/vee-sh/k8pk/main/install.sh | bash -s v0.5.0
 ```
 
 The installation script will:
