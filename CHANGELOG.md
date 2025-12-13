@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.8.2] - 2025-12-13
+
+### Fixed
+- Deduplicate contexts in interactive picker (no more duplicate entries)
+- Mark current/active context with `*` in picker list
+
 ## [0.8.1] - 2025-12-13
 
 ### Fixed

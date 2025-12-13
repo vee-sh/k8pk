@@ -405,14 +405,8 @@ fn main() -> anyhow::Result<()> {
                 }
                 Some(c) => config::resolve_alias(&c),
                 None => {
-                    // Interactive pick
-                    let contexts = merged.context_names();
-                    if contexts.is_empty() {
-                        return Err(K8pkError::NoContexts.into());
-                    }
-                    Select::new("Select context:", contexts)
-                        .prompt()
-                        .map_err(|_| K8pkError::Cancelled)?
+                    // Interactive pick with dedup and active marker
+                    commands::pick_context(&merged)?
                 }
             };
 
