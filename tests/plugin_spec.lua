@@ -9,7 +9,7 @@ end
 
 local plugin = require('init')
 
-describe('wezterm-k8s-power plugin', function()
+describe('k8pk WezTerm plugin', function()
 	it('adds default keybinding when enabled', function()
 		local cfg = {}
 		plugin.apply_to_config(cfg, { enable_default_keybinding = true })

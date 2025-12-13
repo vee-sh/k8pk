@@ -1,9 +1,9 @@
-# Feature Comparison & Roadmap
+# Feature Overview
 
-## What k8pk Already Has (Advantages)
+## What k8pk Offers
 
-- **Native WezTerm Plugin** - No other tool has this
-- **Built-in Interactive UI** - No fzf dependency needed
+- **Native WezTerm Plugin** - In-terminal context picker with per-tab isolation
+- **Built-in Interactive UI** - Arrow key navigation and type-to-search, no fzf needed
 - **OpenShift Support** - Auto-detects `oc`, sets `OC_NAMESPACE`
 - **Config Management** - Merge, diff, copy, rename, remove contexts
 - **Cleanup Utilities** - Smart cleanup with multiple strategies
@@ -12,179 +12,70 @@
 - **Pretty Labels** - EKS ARN formatting, better UX
 - **Smart Installation** - Auto-detects environment and sets up everything
 
-## Key Features to Add (High Priority)
+## Implemented Features
 
-### 1. **Exec Command** (from kubie)
-Run commands in a context/namespace without spawning a shell:
-```bash
-k8pk exec dev prod -- kubectl get pods
-k8pk exec dev prod -- oc get pods -n prod
-k8pk exec "dev-*" prod -- kubectl get nodes  # wildcard support
-```
+### Context Switching
+- `k8pk ctx <context>` - Switch context with history tracking
+- `k8pk ctx -` - Switch back to previous context
+- `k8pk ns <namespace>` - Switch namespace with history
+- `k8pk ns -` - Switch back to previous namespace
+- Namespace partial matching (e.g., `k8pk ns prod` finds `production`)
 
-**Why:** Essential for scripting and CI/CD. Allows running kubectl/oc commands without shell overhead.
+### Command Execution
+- `k8pk exec <context> <namespace> -- <command>` - Run commands in context
+- Wildcard support: `k8pk exec "dev-*" prod -- kubectl get pods`
 
-### 2. **Recursive Shells** (from kubie)
-Nest shells within shells for complex workflows:
-```bash
-k8pk spawn --context dev --recursive
-# Inside that shell:
-k8pk spawn --context prod --recursive  # Nested!
-```
+### Interactive Picker
+- `k8pk pick` - Interactive context/namespace selection
+- Auto-spawns shell when run interactively
+- Arrow key navigation + type-to-search
 
-**Why:** Some workflows require nested context switching. Shows depth in prompt.
+### Info & Status
+- `k8pk info ctx` - Current context name
+- `k8pk info ns` - Current namespace
+- `k8pk info depth` - Recursive shell depth
+- `k8pk info config` - Kubeconfig path
+- `k8pk info all` - All info as JSON
 
-### 3. **Context History** (from kubie/kubectx)
-Quick switch to previous context:
-```bash
-k8pk ctx -  # Switch back to previous context
-k8pk ns -   # Switch back to previous namespace
-```
+### Config Management
+- `k8pk lint` - Validate kubeconfig files
+- `k8pk edit` - Edit kubeconfig files
+- `k8pk merge` - Merge multiple configs
+- `k8pk diff` - Compare configs
+- `k8pk copy-context` - Copy context between files
+- `k8pk rename-context` - Rename a context
+- `k8pk remove-context` - Remove contexts
+- `k8pk cleanup` - Clean old generated configs
 
-**Why:** Very common workflow - quick back-and-forth switching.
+### Utilities
+- `k8pk export <ctx> <ns>` - Print path to isolated kubeconfig
+- `k8pk update` - Self-update from GitHub releases
+- `k8pk completions <shell>` - Generate shell completions
+- Context aliases in config file
+- Hooks (`start_ctx`, `stop_ctx`) for custom integrations
 
-### 4. **Lint Command** (from kubie)
-Validate kubeconfig files for issues:
-```bash
-k8pk lint                           # Lint all configs
-k8pk lint --file ~/.kube/config     # Lint specific file
-k8pk lint --strict                 # Strict validation
-```
+## Comparison with kubie
 
-**Why:** Catches config issues early - broken refs, missing certs, etc.
+| Feature | k8pk | kubie |
+|---------|------|-------|
+| WezTerm native plugin | Yes | No |
+| Built-in interactive UI | Yes | Requires fzf |
+| Windows support | Yes | No |
+| Config merge/diff | Yes | No |
+| Context cleanup | Yes | No |
+| OpenShift auto-detect | Yes | Partial |
+| Shell completions | Yes | Yes |
+| Context history (`-`) | Yes | Yes |
+| Exec command | Yes | Yes |
+| Recursive shells | Yes | Yes |
+| Hooks | Yes | Yes |
+| Lint command | Yes | Yes |
+| Edit command | Yes | Yes |
 
-### 5. **Edit Command** (from kubie)
-Quickly edit kubeconfig files:
-```bash
-k8pk edit                    # Interactive menu to select config
-k8pk edit --context dev      # Edit file containing 'dev' context
-k8pk edit --file ~/.kube/config  # Edit specific file
-```
+## Future Improvements
 
-**Why:** Faster than manually finding and editing config files.
-
-### 6. **Hooks Support** (from kubie)
-Run commands when contexts start/stop:
-```yaml
-# ~/.kube/k8pk.yaml
-hooks:
-  start_ctx: 'echo -en "\033]1; `k8pk info ctx`|`k8pk info ns` \007"'
-  stop_ctx: 'echo -en "\033]1; $SHELL \007"'
-```
-
-**Why:** Terminal title updates, notifications, custom integrations.
-
-### 7. **Info Command**
-Get current context/namespace info:
-```bash
-k8pk info ctx           # Current context name
-k8pk info ns            # Current namespace
-k8pk info depth         # Recursive shell depth
-k8pk info config        # Path to current kubeconfig
-```
-
-**Why:** Needed for hooks, scripts, and prompt integration.
-
-### 8. **Better Prompt Integration**
-Show context/namespace in shell prompt:
-```bash
-# For zsh/bash: Shows in PS1
-export PS1='$ [$(k8pk info ctx 2>/dev/null || echo "-")] $ '
-
-# Or use RPS1 for zsh (right side)
-# Configurable via k8pk.yaml
-```
-
-**Why:** Visual feedback without WezTerm plugin.
-
-### 9. **Namespace Partial Matching** (from kubie)
-Smart namespace matching:
-```bash
-k8pk ns prod  # If exactly one namespace contains "prod", switch to it
-              # If multiple match, show interactive picker
-```
-
-**Why:** Faster workflow - type partial name instead of full name.
-
-### 10. **Wildcard Exec** (from kubie)
-Run commands across multiple contexts:
-```bash
-k8pk exec "dev-*" prod -- kubectl get pods
-k8pk exec "*-prod" default -- kubectl get nodes
-```
-
-**Why:** Useful for running same command across dev/staging/prod.
-
-## Nice-to-Have Features
-
-### 11. **Faster Context Switching**
-Cache context list, parallel namespace discovery, incremental updates.
-
-### 12. **Self-Update** [COMPLETE]
-```bash
-k8pk update  # Check and update to latest version
-k8pk update --check  # Check for updates without installing
-k8pk update --force  # Force reinstall even if up to date
-```
-
-### 13. **Export Path Command** [COMPLETE] (from kubie)
-```bash
-k8pk export dev prod  # Print path to isolated config file
-```
-
-### 14. **Completion Scripts** [COMPLETE]
-```bash
-k8pk completions bash > /etc/bash_completion.d/k8pk
-k8pk completions zsh > ~/.zsh/completions/_k8pk
-k8pk completions fish > ~/.config/fish/completions/k8pk.fish
-```
-
-### 15. **Config Import/Export**
-```bash
-k8pk import --from-vault
-k8pk export --to-file ~/backup-config.yaml
-```
-
-### 16. **Context Aliases**
-```yaml
-# ~/.kube/k8pk.yaml
-aliases:
-  prod: "arn:aws:eks:us-east-1:123456:cluster/production"
-  dev: "dev-cluster"
-```
-
-### 17. **Multi-Context Operations**
-```bash
-k8pk exec-all "dev-*" prod -- kubectl get pods
-```
-
-## Implementation Priority
-
-**Phase 1 (Core Workflow):** [COMPLETE]
-1. [COMPLETE] Exec command
-2. [COMPLETE] Context history (`-` flag)
-3. [COMPLETE] Info command
-4. [COMPLETE] Better prompt integration
-
-**Phase 2 (Power User):** [COMPLETE]
-5. [COMPLETE] Recursive shells
-6. [COMPLETE] Lint command
-7. [COMPLETE] Edit command
-8. [COMPLETE] Hooks support
-
-**Phase 3 (Polish):** [COMPLETE]
-9. [COMPLETE] Namespace partial matching
-10. [COMPLETE] Wildcard exec (already implemented in exec command)
-11. [COMPLETE] Completion scripts
-12. [COMPLETE] Self-update
-13. [COMPLETE] Context aliases
-
-## What Makes k8pk Unique
-
-1. **WezTerm Native Plugin** - Best UX for WezTerm users
-2. **Zero Dependencies** - Built-in UI, no fzf needed
-3. **OpenShift First** - Better oc support than kubie
-4. **Config Management** - More than just switching
-5. **Cross-Platform** - Windows support
-6. **Smart Installation** - Auto-detects and configures everything
-
+- **Faster context discovery** - Cache indexed contexts by file mtime
+- **Config doctor** - Detect broken kubeconfigs, missing certs
+- **Merge strategies** - `--prefer left|right`, `--rename-on-conflict`
+- **Colorized diff** - Better diff UX with highlighting
+- **Structured logging** - `K8PK_LOG=debug` for troubleshooting

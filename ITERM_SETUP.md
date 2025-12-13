@@ -6,23 +6,21 @@
 
 Choose one of these methods:
 
-**Option A: Install to /usr/local/bin (recommended)**
+**Option A: Automated install (recommended)**
 ```bash
-cd /Users/a13x22/workdir/wezterm-k8s-power
+curl -fsSL https://raw.githubusercontent.com/vee-sh/k8pk/main/install.sh | bash
+```
+
+**Option B: Build from source**
+```bash
+cd /path/to/k8pk
+cargo build --release -p k8pk
 sudo install -m 0755 rust/k8pk/target/release/k8pk /usr/local/bin/k8pk
 ```
 
-**Option B: Add to your PATH (no sudo needed)**
+**Option C: Homebrew**
 ```bash
-# Add to ~/.zshrc
-echo 'export PATH="$HOME/workdir/wezterm-k8s-power/rust/k8pk/target/release:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-**Option C: Create symlink in ~/bin (if ~/bin is in PATH)**
-```bash
-mkdir -p ~/bin
-ln -s $(pwd)/rust/k8pk/target/release/k8pk ~/bin/k8pk
+brew install vee-sh/k8pk/k8pk
 ```
 
 ### 2. Verify Installation
@@ -38,7 +36,7 @@ Add to your `~/.zshrc`:
 
 ```bash
 # k8pk shell integration
-source /Users/a13x22/workdir/wezterm-k8s-power/shell/k8pk.sh
+source ~/.local/share/k8pk/k8pk.sh
 ```
 
 Then reload:
@@ -51,11 +49,11 @@ source ~/.zshrc
 Open a new iTerm2 tab and try:
 
 ```bash
-# Interactive picker
+# Interactive picker (built-in UI with arrow keys and type-to-search)
 kpick
 
 # Or switch directly
-kswitch my-awesome-project-01/api-cluster-example-com:6443/kube:admin my-awesome-project-01
+kswitch my-context my-namespace
 
 # Verify it worked
 echo $K8PK_CONTEXT
@@ -68,7 +66,7 @@ oc project
 
 ### Quick context switch
 ```bash
-kpick  # Interactive picker with fzf
+kpick  # Interactive picker with built-in UI
 ```
 
 ### Direct switch
@@ -77,10 +75,18 @@ kswitch <context>                    # Switch to context
 kswitch <context> <namespace>        # Switch to context + namespace
 ```
 
+### Context/namespace with history
+```bash
+kctx dev          # Switch to context 'dev'
+kctx -            # Switch back to previous context
+kns prod          # Switch to namespace 'prod'
+kns -             # Switch back to previous namespace
+```
+
 ### Using k8pk directly (without shell functions)
 ```bash
 # Interactive picker (outputs shell exports)
-eval "$(k8pk pick)"
+eval "$(k8pk pick --output env)"
 
 # Direct env export
 eval "$(k8pk env --context <context> --namespace <namespace>)"
@@ -96,14 +102,12 @@ k8pk namespaces --context <context>
 
 **k8pk not found:**
 - Check PATH: `echo $PATH`
-- Verify installation: `which k8pk` or `ls -la /usr/local/bin/k8pk`
+- Verify installation: `which k8pk` or `command -v k8pk`
 
 **Shell functions not working:**
-- Verify script exists: `ls -la shell/k8pk.sh`
 - Check sourcing: `grep k8pk ~/.zshrc`
 - Reload shell: `source ~/.zshrc`
 
 **OC_NAMESPACE not set:**
 - Make sure you're using a namespace: `kswitch <ctx> <ns>`
 - Check exports: `env | grep K8PK`
-

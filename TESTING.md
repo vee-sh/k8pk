@@ -37,8 +37,7 @@ k8pk pick --output spawn
 ```
 
 **Expected behavior:**
-- If `fzf` is installed: fuzzy finder interface
-- If no `fzf`: numbered menu
+- Built-in interactive UI with arrow key navigation and type-to-search
 - After selecting context, prompts for namespace (if available)
 - Outputs appropriate format based on `--output` flag
 
@@ -135,7 +134,7 @@ exit  # exit spawned shell
    ```lua
    local wezterm = require 'wezterm'
    local config = wezterm.config_builder and wezterm.config_builder() or {}
-   local k8s_power = wezterm.plugin.require('file:///path/to/wezterm-k8s-power')
+   local k8s_power = wezterm.plugin.require('https://github.com/vee-sh/k8pk')
    k8s_power.apply_to_config(config, { debug = true })
    return config
    ```
@@ -181,7 +180,7 @@ busted tests/plugin_spec.lua
 ## Test Checklist
 
 - [ ] `k8pk contexts` lists all contexts
-- [ ] `k8pk pick` works interactively (with and without fzf)
+- [ ] `k8pk pick` works interactively (built-in UI)
 - [ ] `k8pk env` outputs correct shell exports
 - [ ] `k8pk spawn` execs shell with correct env
 - [ ] `k8pk gen` creates valid kubeconfig files
@@ -238,6 +237,6 @@ If tests fail:
 1. **No contexts found**: Run `kubectl config get-contexts` or `oc config get-contexts` to verify contexts exist
 2. **Permission errors**: Ensure kubeconfig file is readable
 3. **OC not detected**: Ensure `oc` is on PATH (`which oc`)
-4. **fzf not working**: Install fzf or test without it (falls back to menu)
+4. **Interactive picker not working**: Ensure terminal supports TTY input
 5. **Shell exports not working**: Make sure you're using `eval "$(...)"` or the shell functions
 

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.5.0] - 2025-11-05
+### Added
+- Auto-spawn shell in `k8pk pick` when run interactively (no need to manually eval exports)
+
+[0.5.0]: https://github.com/vee-sh/k8pk/releases/tag/v0.5.0
+
 ## [0.4.1] - 2025-01-27
 ### Added
 - Automatic shell completion installation in install script (bash/zsh/fish)

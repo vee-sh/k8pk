@@ -42,7 +42,7 @@ The installation script will:
 # https://github.com/vee-sh/k8pk/releases
 
 # Example for Linux x86_64:
-VERSION="0.2.1"
+VERSION="0.5.0"
 PLATFORM="x86_64-unknown-linux-gnu"
 wget https://github.com/vee-sh/k8pk/releases/download/v${VERSION}/k8pk-v${VERSION}-${PLATFORM}.tar.gz
 tar -xzf k8pk-v${VERSION}-${PLATFORM}.tar.gz
@@ -210,28 +210,28 @@ k8pk cleanup --dry-run
 k8pk cleanup --all
 
 # Clean up configs only for contexts from a specific source file
-k8pk cleanup --from-file /Users/a13x22/.kube/config
+k8pk cleanup --from-file ~/.kube/config
 
 # Combine with other flags: clean old configs from a specific file
 k8pk cleanup --from-file ~/.kube/configs/dev.yaml --days 7
 
 # Interactive mode: select which contexts to clean up (use spacebar to toggle, Enter to confirm)
-k8pk cleanup --from-file /Users/a13x22/.kube/config --interactive
+k8pk cleanup --from-file ~/.kube/config --interactive
 
 # Interactive mode without --from-file: select from all contexts
 k8pk cleanup --interactive
 
 # Remove contexts from a kubeconfig file (interactive selection)
-k8pk remove-context --from-file /Users/a13x22/.kube/config --interactive
+k8pk remove-context --from-file ~/.kube/config --interactive
 
 # Remove a specific context
-k8pk remove-context --from-file /Users/a13x22/.kube/config --context "my-context"
+k8pk remove-context --from-file ~/.kube/config --context "my-context"
 
 # Remove contexts and also clean up orphaned clusters/users
-k8pk remove-context --from-file /Users/a13x22/.kube/config --interactive --remove-orphaned
+k8pk remove-context --from-file ~/.kube/config --interactive --remove-orphaned
 
 # Dry run to see what would be removed
-k8pk remove-context --from-file /Users/a13x22/.kube/config --interactive --dry-run
+k8pk remove-context --from-file ~/.kube/config --interactive --dry-run
 
 # Rename a context
 k8pk rename-context --from-file ~/.kube/config --context "old-name" --new-name "new-name"
@@ -361,15 +361,12 @@ busted tests/plugin_spec.lua
 
 See [TESTING.md](TESTING.md) for comprehensive test plan including OC CLI tests.
 
-## Next Steps
+## Future Improvements
 
-### High priority (quick wins)
+### High priority
 
-- **Use/show context**: `k8pk use-context <name> [--namespace <ns>]` for non-interactive switching; `k8pk show-context [--format text|json]` to print the current context/namespace.
 - **Safer writes**: Atomic writes via temp file + rename; file locking to avoid concurrent edits; timestamped backups; enforce 0600 permissions on generated files.
 - **Consistent output and verbosity**: Global `-q/--quiet`, `-v/--verbose` levels; `--no-color`; standardized `--output json|yaml|text` across commands.
-- **Shell completions**: `k8pk completions bash|zsh|fish` and installation docs.
-- **Homebrew formula**: Create/update Homebrew formula for `k8pk` to enable `brew install k8pk`.
 
 ### Medium priority
 
@@ -377,18 +374,15 @@ See [TESTING.md](TESTING.md) for comprehensive test plan including OC CLI tests.
 - **Config clarity**: `k8pk config path` and `k8pk config print`; config schema version + migration notice.
 - **Validation/doctor**: `k8pk doctor` to detect broken kubeconfigs, missing clusters/users, invalid cert/key refs.
 - **Merge conflict strategies**: `--prefer left|right`, `--rename-on-conflict`, and dry-run previews.
-- **Cleanup enhancements**: `--pattern <glob>`, size/age filters, `--keep N` per context, richer summary and confirmations in interactive mode.
+- **Cleanup enhancements**: `--pattern <glob>`, size/age filters, `--keep N` per context.
 - **Diff UX**: Colorized unified diff, `--json` machine-readable diff, highlight renamed entries.
 - **Logging**: Switch to `tracing` with env control (`K8PK_LOG=debug`), structured logs behind verbosity flags.
 - **Security**: Redact tokens/certs in logs; enforce 0600 for generated files; warn on insecure permissions.
-- **Cross-platform**: Windows path handling and CI matrix builds; thorough path/home expansion tests.
-- **Smarter globbing**: Use `ignore` crate to honor .gitignore and platform-specific ignore rules.
 
-### WezTerm niceties
+### WezTerm plugin
 
 - **Status bar**: Segment showing `context[:namespace]` with colorization.
-- **Keybinding**: Bind to `use-context` for fast switches.
-- **Minimal UI wrapper**: Picker wrapper that calls `k8pk use-context`; optional prompt search.
+- **Tab title sync**: Auto-update tab title when context changes.
 
 ## License
 

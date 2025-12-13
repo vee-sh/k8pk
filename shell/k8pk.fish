@@ -2,16 +2,33 @@
 # Source this file in your ~/.config/fish/config.fish:
 #   source /path/to/k8pk.fish
 #
+# Optional: Set K8PK_CONFIG_DIRS to scan additional directories for kubeconfigs
+#   set -x K8PK_CONFIG_DIRS "$HOME/.kube/configs:$HOME/.config/kubeconfigs"
+#
 # Optional: Set K8PK_VERBOSE to see confirmation messages
 #   set -x K8PK_VERBOSE 1
+
+# Build k8pk args with kubeconfig directories if set
+function _k8pk_args
+  set -l args
+  if test -n "$K8PK_CONFIG_DIRS"
+    for dir in (string split ':' $K8PK_CONFIG_DIRS)
+      if test -n "$dir"
+        set -a args --kubeconfig-dir $dir
+      end
+    end
+  end
+  echo $args
+end
 
 function kpick
   if not command -v k8pk >/dev/null 2>&1
     echo "k8pk not found. Install it first." >&2
     return 1
   end
+  set -l args (_k8pk_args)
   # Exports go to stdout (for source), no verbose output by default
-  k8pk pick --output env 2>/dev/null | source
+  k8pk $args pick --output env 2>/dev/null | source
   # Only print confirmation if K8PK_VERBOSE is set
   if test -n "$K8PK_VERBOSE"
     echo "Switched to $K8PK_CONTEXT"(test -n "$K8PK_NAMESPACE"; and echo " ($K8PK_NAMESPACE)"; or echo "") >&2
@@ -23,6 +40,7 @@ function kswitch
     echo "Usage: kswitch <context> [namespace]" >&2
     return 1
   end
+  set -l args (_k8pk_args)
   set ctx $argv[1]
   set ns ""
   if test (count $argv) -ge 2
@@ -30,9 +48,9 @@ function kswitch
   end
   # Exports go to stdout (for source), no verbose output by default
   if test -n "$ns"
-    k8pk env --context "$ctx" --namespace "$ns" --shell fish 2>/dev/null | source
+    k8pk $args env --context "$ctx" --namespace "$ns" --shell fish 2>/dev/null | source
   else
-    k8pk env --context "$ctx" --shell fish 2>/dev/null | source
+    k8pk $args env --context "$ctx" --shell fish 2>/dev/null | source
   end
   # Only print confirmation if K8PK_VERBOSE is set
   if test -n "$K8PK_VERBOSE"
@@ -41,20 +59,22 @@ function kswitch
 end
 
 function kctx
+  set -l args (_k8pk_args)
   if test (count $argv) -eq 0
-    k8pk ctx 2>/dev/null | source
+    k8pk $args ctx 2>/dev/null | source
   else if test (count $argv) -eq 1
-    k8pk ctx $argv[1] 2>/dev/null | source
+    k8pk $args ctx $argv[1] 2>/dev/null | source
   else
-    k8pk ctx $argv[1] --namespace $argv[2] 2>/dev/null | source
+    k8pk $args ctx $argv[1] --namespace $argv[2] 2>/dev/null | source
   end
 end
 
 function kns
+  set -l args (_k8pk_args)
   if test (count $argv) -eq 0
-    k8pk ns 2>/dev/null | source
+    k8pk $args ns 2>/dev/null | source
   else
-    k8pk ns $argv[1] 2>/dev/null | source
+    k8pk $args ns $argv[1] 2>/dev/null | source
   end
 end
 
@@ -71,4 +91,3 @@ function _k8pk_prompt
     echo "$prompt"
   end
 end
-
