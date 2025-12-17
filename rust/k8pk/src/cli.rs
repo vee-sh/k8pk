@@ -286,11 +286,15 @@ pub enum Command {
     },
 
     /// Switch to namespace (with history support, use '-' for previous)
-    #[command(after_help = "Examples:\n  \
+    #[command(
+        visible_alias = "nsls",
+        after_help = "Examples:\n  \
         k8pk ns production        # Switch to 'production'\n  \
         k8pk ns -                 # Switch to previous namespace\n  \
-        k8pk ns                   # Interactive selection\n  \
-        k8pk ns prod -o json      # Output as JSON")]
+        k8pk ns                   # Interactive selection (spawns shell)\n  \
+        k8pk ns prod -o json      # Output as JSON\n  \
+        k8pk ns prod -o env       # Output exports for eval"
+    )]
     Ns {
         /// Namespace name (use '-' for previous)
         #[arg(value_name = "NAMESPACE")]
@@ -302,7 +306,21 @@ pub enum Command {
             help = "Spawn subshell instead of modifying current"
         )]
         recursive: bool,
-        /// Output format: env, json, spawn (default: env for eval)
+        /// Output format: env, json, spawn (default: auto-detect - spawns shell if TTY, else exports)
+        #[arg(short = 'o', long, value_name = "FORMAT")]
+        output: Option<String>,
+    },
+
+    /// Clean up current k8pk session (unset all K8PK_* environment variables)
+    #[command(
+        visible_alias = "cln",
+        after_help = "Examples:\n  \
+        k8pk clean                 # Unset all K8PK_* variables\n  \
+        k8pk clean --output json  # Output as JSON\n  \
+        eval $(k8pk clean)        # Execute cleanup in current shell"
+    )]
+    Clean {
+        /// Output format: env, json (default: env for eval)
         #[arg(short = 'o', long, value_name = "FORMAT")]
         output: Option<String>,
     },

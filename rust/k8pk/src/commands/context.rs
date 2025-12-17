@@ -2,7 +2,6 @@
 
 use crate::error::{K8pkError, Result};
 use crate::kubeconfig;
-use crate::state::CurrentState;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -124,7 +123,7 @@ pub fn ensure_isolated_kubeconfig(
 
 /// Print environment exports for a context
 ///
-/// For non-recursive switching: depth=1 if entering from 0, else maintain current.
+/// For non-recursive switching: always reset to depth=1 (fresh k8pk session).
 pub fn print_env_exports(
     context: &str,
     namespace: Option<&str>,
@@ -132,8 +131,9 @@ pub fn print_env_exports(
     shell: &str,
     verbose: bool,
 ) -> Result<()> {
-    let state = CurrentState::from_env();
-    let new_depth = if state.depth == 0 { 1 } else { state.depth };
+    // Always reset to depth 1 for non-recursive context/namespace switching
+    // This prevents depth from accumulating when switching contexts
+    let new_depth = 1;
 
     // Isolate cache per context to avoid stale API discovery (fixes oc/kubectl cache conflicts)
     let cache_dir = kubeconfig
@@ -189,6 +189,58 @@ pub fn print_env_exports(
         eprintln!("{}", exports);
     }
     print!("{}", exports);
+    Ok(())
+}
+
+/// Print commands to exit/cleanup k8pk session
+pub fn print_exit_commands(output: Option<&str>) -> Result<()> {
+    use crate::state::CurrentState;
+
+    let state = CurrentState::from_env();
+
+    match output {
+        Some("json") => {
+            let j = serde_json::json!({
+                "kubeconfig": "/dev/null",
+                "unset": [
+                    "KUBECACHEDIR",
+                    "K8PK_CONTEXT",
+                    "K8PK_NAMESPACE",
+                    "K8PK_DEPTH",
+                    "OC_NAMESPACE"
+                ],
+                "in_recursive_shell": state.depth > 1
+            });
+            println!("{}", serde_json::to_string_pretty(&j)?);
+        }
+        _ => {
+            // Detect shell type for proper syntax
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+            let is_fish = shell.contains("fish");
+
+            // Always just unset variables - never automatically exit
+            // User can manually type 'exit' if they're in a recursive shell
+            // Set KUBECONFIG to /dev/null to effectively disable kubectl/oc
+            // Output only commands, no messages (silent mode)
+            if is_fish {
+                // Fish shell syntax
+                println!("set -gx KUBECONFIG \"/dev/null\";");
+                println!("set -e KUBECACHEDIR;");
+                println!("set -e K8PK_CONTEXT;");
+                println!("set -e K8PK_NAMESPACE;");
+                println!("set -e K8PK_DEPTH;");
+                println!("set -e OC_NAMESPACE;");
+            } else {
+                // Bash/Zsh syntax (default)
+                println!("export KUBECONFIG=\"/dev/null\";");
+                println!("unset KUBECACHEDIR;");
+                println!("unset K8PK_CONTEXT;");
+                println!("unset K8PK_NAMESPACE;");
+                println!("unset K8PK_DEPTH;");
+                println!("unset OC_NAMESPACE;");
+            }
+        }
+    }
     Ok(())
 }
 

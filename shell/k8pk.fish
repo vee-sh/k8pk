@@ -78,6 +78,16 @@ function kns
   end
 end
 
+function kclean
+  if not command -v k8pk >/dev/null 2>&1
+    echo "k8pk not found. Install it first." >&2
+    return 1
+  end
+  set -l args (_k8pk_args)
+  # Execute the cleanup commands automatically (silent - no output)
+  k8pk $args clean 2>/dev/null | source 2>/dev/null
+end
+
 function _k8pk_prompt
   if test -n "$K8PK_CONTEXT"
     set -l prompt "[$K8PK_CONTEXT"

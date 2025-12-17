@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.9.0] - 2025-12-16
+
+### Added
+- `k8pk clean` command (alias: `cln`) to cleanup k8pk session (sets KUBECONFIG=/dev/null, unsets all k8pk variables)
+- `kclean` shell function for automatic cleanup execution
+- `nsls` as alias for `ns` command
+
+### Changed
+- Default picker (`k8pk` with no args) now only picks context, not namespace
+- `k8pk ctx` and `k8pk ns` now spawn shells automatically when run interactively (like `k8pk nsls`)
+- `k8pk clean` spawns a cleaned shell when run interactively
+- Depth tracking: always resets to 1 for non-recursive context/namespace switching (prevents depth accumulation)
+- `k8pk clean` sets `KUBECONFIG=/dev/null` instead of unsetting it (more explicit)
+
+### Fixed
+- Fixed depth tracking to prevent accumulation (was going to 6, 7, 1000...)
+- Fixed `k8pk ctx` to spawn shell when interactive (was printing exports)
+- Fixed `k8pk ns` to spawn shell when interactive (was printing exports)
+- Fixed backspace in interactive picker (added page_size configuration)
+- Deduplicate contexts in interactive picker (no more duplicate entries)
+- Mark current/active context with `*` in picker list
+
 ## [0.8.2] - 2025-12-13
 
 ### Fixed

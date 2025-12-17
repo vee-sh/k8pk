@@ -175,3 +175,16 @@ kswitch() {
   fi
 }
 
+# Clean up k8pk session (unset all k8pk environment variables)
+# This automatically executes the cleanup - no need for eval
+kclean() {
+  if ! command -v k8pk >/dev/null 2>&1; then
+    echo "k8pk not found. Install it first." >&2
+    return 1
+  fi
+  
+  local args=$(_k8pk_args)
+  # Execute the cleanup commands automatically (silent - no output)
+  eval "$(k8pk $args clean 2>/dev/null)" 2>/dev/null
+}
+

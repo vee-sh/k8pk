@@ -428,10 +428,7 @@ fn main() -> anyhow::Result<()> {
                         });
                         println!("{}", serde_json::to_string_pretty(&j)?);
                     }
-                    Some("spawn") => {
-                        spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
-                    }
-                    Some("env") | None => {
+                    Some("env") => {
                         commands::print_env_exports(
                             &context,
                             namespace.as_deref(),
@@ -439,6 +436,20 @@ fn main() -> anyhow::Result<()> {
                             "bash",
                             false,
                         )?;
+                    }
+                    Some("spawn") | None => {
+                        // Auto-detect: if TTY, spawn shell; otherwise print exports
+                        if io::stdout().is_terminal() {
+                            spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                        } else {
+                            commands::print_env_exports(
+                                &context,
+                                namespace.as_deref(),
+                                &kubeconfig,
+                                "bash",
+                                false,
+                            )?;
+                        }
                     }
                     Some(other) => {
                         return Err(
@@ -464,14 +475,7 @@ fn main() -> anyhow::Result<()> {
                 Some(ns) => ns,
                 None => {
                     // Interactive pick
-                    let namespaces =
-                        kubeconfig::list_namespaces(context, kubeconfig_env.as_deref())?;
-                    if namespaces.is_empty() {
-                        return Err(K8pkError::NoNamespaces(context.to_string()).into());
-                    }
-                    Select::new("Select namespace:", namespaces)
-                        .prompt()
-                        .map_err(|_| K8pkError::Cancelled)?
+                    commands::pick_namespace(context, kubeconfig_env.as_deref())?
                 }
             };
 
@@ -493,10 +497,7 @@ fn main() -> anyhow::Result<()> {
                         });
                         println!("{}", serde_json::to_string_pretty(&j)?);
                     }
-                    Some("spawn") => {
-                        spawn_shell(context, Some(&namespace), &kubeconfig)?;
-                    }
-                    Some("env") | None => {
+                    Some("env") => {
                         commands::print_env_exports(
                             context,
                             Some(&namespace),
@@ -505,11 +506,45 @@ fn main() -> anyhow::Result<()> {
                             false,
                         )?;
                     }
+                    Some("spawn") | None => {
+                        // Auto-detect: if TTY, spawn shell; otherwise print exports
+                        if io::stdout().is_terminal() {
+                            spawn_shell(context, Some(&namespace), &kubeconfig)?;
+                        } else {
+                            commands::print_env_exports(
+                                context,
+                                Some(&namespace),
+                                &kubeconfig,
+                                "bash",
+                                false,
+                            )?;
+                        }
+                    }
                     Some(other) => {
                         return Err(
                             K8pkError::Other(format!("unknown output format: {}", other)).into(),
                         );
                     }
+                }
+            }
+        }
+
+        Command::Clean { output } => {
+            // If run interactively without explicit output format, spawn a cleaned shell
+            // Otherwise, just output the commands
+            match output.as_deref() {
+                Some("json") => {
+                    commands::print_exit_commands(Some("json"))?;
+                }
+                Some("env") => {
+                    commands::print_exit_commands(None)?;
+                }
+                None if io::stdout().is_terminal() => {
+                    // Spawn a new shell with cleaned environment
+                    spawn_cleaned_shell()?;
+                }
+                _ => {
+                    commands::print_exit_commands(None)?;
                 }
             }
         }
@@ -577,6 +612,34 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Spawn a new shell with cleaned k8pk environment (KUBECONFIG=/dev/null, all k8pk vars unset)
+fn spawn_cleaned_shell() -> Result<()> {
+    // Detect shell: SHELL on Unix, ComSpec on Windows
+    #[cfg(unix)]
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    #[cfg(windows)]
+    let shell = env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
+
+    let mut cmd = ProcCommand::new(&shell);
+    cmd.env("KUBECONFIG", "/dev/null");
+    // Don't set any K8PK_* variables - they'll be unset in the new shell
+
+    #[cfg(unix)]
+    {
+        let err = cmd.exec();
+        Err(K8pkError::Io(err))
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = cmd.status()?;
+        if !status.success() {
+            return Err(K8pkError::CommandFailed("shell exited with error".into()));
+        }
+        Ok(())
+    }
 }
 
 /// Spawn a new shell with context/namespace set
