@@ -270,12 +270,16 @@ pub fn openshift_login(
         let content = fs::read_to_string(&kubeconfig_path)?;
         let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
 
-        // Update context name if needed and extract namespace
-        if let Some(ctx) = cfg.contexts.first_mut() {
-            if ctx.name != context_name {
-                ctx.name = context_name.clone();
-            }
-            // Extract namespace from context if set
+        // Remove duplicate contexts (keep only the first occurrence of each name)
+        let mut seen = std::collections::HashSet::new();
+        cfg.contexts.retain(|c| seen.insert(c.name.clone()));
+
+        // Remove any existing contexts with the target name
+        cfg.contexts.retain(|c| c.name != context_name);
+
+        // Take the first context and rename it to our target name
+        if let Some(mut ctx) = cfg.contexts.pop() {
+            // Extract namespace from context if set (before renaming)
             if let serde_yaml_ng::Value::Mapping(map) = &ctx.rest {
                 if let Some(serde_yaml_ng::Value::Mapping(ctx_map)) =
                     map.get(serde_yaml_ng::Value::String("context".to_string()))
@@ -287,7 +291,12 @@ pub fn openshift_login(
                     }
                 }
             }
+
+            // Rename to our target name
+            ctx.name = context_name.clone();
+            cfg.contexts.push(ctx);
         }
+
         cfg.current_context = Some(context_name.clone());
 
         let yaml = serde_yaml_ng::to_string(&cfg)?;
