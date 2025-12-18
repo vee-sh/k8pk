@@ -192,6 +192,7 @@ pub fn display_context_info(
 }
 
 /// Login to OpenShift and save to separate file
+/// Returns the context name, namespace (if any), and kubeconfig path that was created
 pub fn openshift_login(
     server: &str,
     token: Option<&str>,
@@ -200,7 +201,7 @@ pub fn openshift_login(
     name: Option<&str>,
     output_dir: Option<&Path>,
     insecure: bool,
-) -> Result<()> {
+) -> Result<(String, Option<String>, PathBuf)> {
     // Verify oc is available
     if which::which("oc").is_err() {
         return Err(K8pkError::Other(
@@ -232,6 +233,13 @@ pub fn openshift_login(
     println!("Logging in to {}...", server);
 
     // Build oc login command
+    // If token is provided and insecure is not explicitly set, try insecure first
+    // (common for self-signed certs with token auth to avoid prompts)
+    let mut use_insecure = insecure;
+    if token.is_some() && !insecure {
+        use_insecure = true; // Auto-use insecure for token-based auth to avoid prompts
+    }
+
     let mut cmd = std::process::Command::new("oc");
     cmd.arg("login");
     cmd.arg(server);
@@ -246,7 +254,7 @@ pub fn openshift_login(
     if let Some(p) = password {
         cmd.arg("--password").arg(p);
     }
-    if insecure {
+    if use_insecure {
         cmd.arg("--insecure-skip-tls-verify");
     }
 
@@ -256,15 +264,28 @@ pub fn openshift_login(
         return Err(K8pkError::CommandFailed("oc login failed".into()));
     }
 
-    // Rename context in the generated file
+    // Rename context in the generated file and extract namespace
+    let mut namespace = None;
     if kubeconfig_path.exists() {
         let content = fs::read_to_string(&kubeconfig_path)?;
         let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
 
-        // Update context name if needed
+        // Update context name if needed and extract namespace
         if let Some(ctx) = cfg.contexts.first_mut() {
             if ctx.name != context_name {
                 ctx.name = context_name.clone();
+            }
+            // Extract namespace from context if set
+            if let serde_yaml_ng::Value::Mapping(map) = &ctx.rest {
+                if let Some(serde_yaml_ng::Value::Mapping(ctx_map)) =
+                    map.get(serde_yaml_ng::Value::String("context".to_string()))
+                {
+                    if let Some(serde_yaml_ng::Value::String(ns)) =
+                        ctx_map.get(serde_yaml_ng::Value::String("namespace".to_string()))
+                    {
+                        namespace = Some(ns.clone());
+                    }
+                }
             }
         }
         cfg.current_context = Some(context_name.clone());
@@ -273,14 +294,7 @@ pub fn openshift_login(
         fs::write(&kubeconfig_path, yaml)?;
     }
 
-    println!("Login successful!");
-    println!("Kubeconfig saved to: {}", kubeconfig_path.display());
-    println!("Context name: {}", context_name);
-    println!("\nTo use:");
-    println!("  k8pk ctx {}", context_name);
-    println!("  # or add {} to K8PK_CONFIG_DIRS", out_dir.display());
-
-    Ok(())
+    Ok((context_name, namespace, kubeconfig_path))
 }
 
 fn extract_server_url(cluster_rest: &Yaml) -> Option<String> {

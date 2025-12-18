@@ -604,7 +604,7 @@ fn main() -> anyhow::Result<()> {
                         .into(),
                 )
             })?;
-            commands::openshift_login(
+            let (context_name, namespace, kubeconfig_path) = commands::openshift_login(
                 &server_url,
                 token.as_deref(),
                 username.as_deref(),
@@ -613,6 +613,34 @@ fn main() -> anyhow::Result<()> {
                 output_dir.as_deref(),
                 insecure_skip_tls_verify,
             )?;
+
+            // Automatically switch to the new context after login
+            // Add the newly created kubeconfig to paths
+            let mut updated_paths = paths.clone();
+            updated_paths.push(kubeconfig_path.clone());
+
+            // Save to history
+            commands::save_to_history(&context_name, namespace.as_deref())?;
+
+            // Create isolated kubeconfig and switch to it
+            let kubeconfig = commands::ensure_isolated_kubeconfig(
+                &context_name,
+                namespace.as_deref(),
+                &updated_paths,
+            )?;
+
+            // Auto-detect: if TTY, spawn shell; otherwise print exports
+            if io::stdout().is_terminal() {
+                spawn_shell(&context_name, namespace.as_deref(), &kubeconfig)?;
+            } else {
+                commands::print_env_exports(
+                    &context_name,
+                    namespace.as_deref(),
+                    &kubeconfig,
+                    "bash",
+                    false,
+                )?;
+            }
         }
 
         Command::Organize {
