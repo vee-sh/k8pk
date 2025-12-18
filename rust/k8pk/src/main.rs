@@ -615,19 +615,23 @@ fn main() -> anyhow::Result<()> {
             )?;
 
             // Automatically switch to the new context after login
-            // Add the newly created kubeconfig to paths
-            let mut updated_paths = paths.clone();
-            updated_paths.push(kubeconfig_path.clone());
+            // Use the kubeconfig file directly that oc login created
+            // (it already has the correct credentials and context)
 
             // Save to history
             commands::save_to_history(&context_name, namespace.as_deref())?;
 
-            // Create isolated kubeconfig and switch to it
-            let kubeconfig = commands::ensure_isolated_kubeconfig(
-                &context_name,
-                namespace.as_deref(),
-                &updated_paths,
-            )?;
+            // If namespace is set, create an isolated kubeconfig with the namespace
+            // Otherwise, use the original file directly
+            let kubeconfig = if let Some(ns) = namespace.as_deref() {
+                // Need to create isolated kubeconfig with namespace set
+                let mut updated_paths = paths.clone();
+                updated_paths.push(kubeconfig_path.clone());
+                commands::ensure_isolated_kubeconfig(&context_name, Some(ns), &updated_paths)?
+            } else {
+                // Use the original file directly (no namespace to set)
+                kubeconfig_path
+            };
 
             // Auto-detect: if TTY, spawn shell; otherwise print exports
             if io::stdout().is_terminal() {
