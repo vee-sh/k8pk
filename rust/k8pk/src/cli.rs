@@ -383,13 +383,17 @@ pub enum Command {
 
     /// Login to OpenShift cluster (saves to separate file)
     #[command(after_help = "Examples:\n  \
+        k8pk login --server https://api.cluster.example.com:6443 --token sha256~abc\n  \
         k8pk login https://api.cluster.example.com:6443 --token sha256~abc\n  \
         k8pk login https://api.cluster.example.com:6443 -u admin\n  \
         k8pk login https://api.ocp.local:6443 --insecure-skip-tls-verify")]
     Login {
         /// OpenShift API server URL
-        #[arg(value_name = "SERVER")]
-        server: String,
+        #[arg(long, value_name = "SERVER")]
+        server: Option<String>,
+        /// Server URL (positional argument, alternative to --server)
+        #[arg(value_name = "SERVER_URL", last = true)]
+        server_pos: Option<String>,
         /// Bearer token for authentication
         #[arg(long, value_name = "TOKEN")]
         token: Option<String>,

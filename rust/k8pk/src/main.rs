@@ -581,6 +581,7 @@ fn main() -> anyhow::Result<()> {
 
         Command::Login {
             server,
+            server_pos,
             token,
             username,
             password,
@@ -588,8 +589,15 @@ fn main() -> anyhow::Result<()> {
             output_dir,
             insecure_skip_tls_verify,
         } => {
+            // Use --server flag if provided, otherwise fall back to positional argument
+            let server_url = server.or(server_pos).ok_or_else(|| {
+                K8pkError::Other(
+                    "server URL is required (use --server or provide as positional argument)"
+                        .into(),
+                )
+            })?;
             commands::openshift_login(
-                &server,
+                &server_url,
                 token.as_deref(),
                 username.as_deref(),
                 password.as_deref(),
