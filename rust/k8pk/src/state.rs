@@ -1,6 +1,5 @@
 //! Current state management for k8pk
 
-use crate::error::{K8pkError, Result};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
@@ -42,11 +41,6 @@ impl CurrentState {
             depth,
             config_path,
         }
-    }
-
-    /// Get the current context, returning an error if not set
-    pub fn require_context(&self) -> Result<&str> {
-        self.context.as_deref().ok_or(K8pkError::NotInContext)
     }
 
     /// Get the next depth level for recursive shells
