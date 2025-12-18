@@ -472,7 +472,15 @@ fn main() -> anyhow::Result<()> {
             } else {
                 // Fall back to current-context from kubeconfig if K8PK_CONTEXT is not set
                 let merged = kubeconfig::load_merged(&paths)?;
-                merged.current_context.ok_or(K8pkError::NotInContext)?
+                let ctx = merged
+                    .current_context
+                    .clone()
+                    .ok_or(K8pkError::NotInContext)?;
+                // Verify the context actually exists in the merged config
+                if merged.find_context(&ctx).is_none() {
+                    return Err(K8pkError::ContextNotFound(ctx).into());
+                }
+                ctx
             };
 
             let namespace = match namespace {
