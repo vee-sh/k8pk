@@ -259,13 +259,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -e
           TAG="${{ needs.create-release.outputs.tag }}"
           echo "Uploading to release $TAG..."
           
           # Upload each file (gh handles duplicates by overwriting)
+          # Retry logic for network issues
           for file in artifacts/*; do
             echo "Uploading $file..."
-            gh release upload "$TAG" "$file" --repo ${{ github.repository }} --clobber || true
+            for attempt in 1 2 3; do
+              if gh release upload "$TAG" "$file" --repo ${{ github.repository }} --clobber; then
+                echo "Successfully uploaded $file"
+                break
+              else
+                if [ $attempt -eq 3 ]; then
+                  echo "ERROR: Failed to upload $file after 3 attempts" >&2
+                  exit 1
+                fi
+                echo "Upload failed, retrying in 5 seconds (attempt $attempt/3)..." >&2
+                sleep 5
+              fi
+            done
           done
           
           echo "Done!"

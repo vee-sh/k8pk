@@ -124,6 +124,7 @@ pub fn ensure_isolated_kubeconfig(
 /// Print environment exports for a context
 ///
 /// For non-recursive switching: always reset to depth=1 (fresh k8pk session).
+/// Context names are automatically normalized for cleaner display.
 pub fn print_env_exports(
     context: &str,
     namespace: Option<&str>,
@@ -134,6 +135,19 @@ pub fn print_env_exports(
     // Always reset to depth 1 for non-recursive context/namespace switching
     // This prevents depth from accumulating when switching contexts
     let new_depth = 1;
+
+    // Always normalize context name for display (automatic normalization)
+    let display_context = {
+        // Load the kubeconfig to get server URL for better detection
+        let content = std::fs::read_to_string(kubeconfig)?;
+        let cfg: crate::kubeconfig::KubeConfig = serde_yaml_ng::from_str(&content)?;
+        let server_url = cfg
+            .clusters
+            .first()
+            .and_then(|c| crate::kubeconfig::extract_server_url_from_cluster(&c.rest));
+        let cluster_type = crate::kubeconfig::detect_cluster_type(context, server_url.as_deref());
+        crate::kubeconfig::friendly_context_name(context, cluster_type)
+    };
 
     // Isolate cache per context to avoid stale API discovery (fixes oc/kubectl cache conflicts)
     let cache_dir = kubeconfig
@@ -151,7 +165,7 @@ pub fn print_env_exports(
                  set -gx K8PK_DEPTH {};\n",
                 kubeconfig.display(),
                 cache_dir.display(),
-                context,
+                display_context,
                 new_depth
             );
             if let Some(ns) = namespace {
@@ -171,7 +185,7 @@ pub fn print_env_exports(
                  export K8PK_DEPTH={};\n",
                 kubeconfig.display(),
                 cache_dir.display(),
-                context,
+                display_context,
                 new_depth
             );
             if let Some(ns) = namespace {

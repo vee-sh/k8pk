@@ -643,9 +643,23 @@ fn spawn_cleaned_shell() -> Result<()> {
 }
 
 /// Spawn a new shell with context/namespace set
+/// Context names are automatically normalized for cleaner display.
 fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Result<()> {
     let state = CurrentState::from_env();
     let new_depth = state.next_depth();
+
+    // Always normalize context name for display (automatic normalization)
+    let display_context = {
+        // Load the kubeconfig to get server URL for better detection
+        let content = std::fs::read_to_string(kubeconfig)?;
+        let cfg: kubeconfig::KubeConfig = serde_yaml_ng::from_str(&content)?;
+        let server_url = cfg
+            .clusters
+            .first()
+            .and_then(|c| kubeconfig::extract_server_url_from_cluster(&c.rest));
+        let cluster_type = kubeconfig::detect_cluster_type(context, server_url.as_deref());
+        kubeconfig::friendly_context_name(context, cluster_type)
+    };
 
     // Run start hook if configured
     if let Ok(config) = config::load() {
@@ -664,7 +678,7 @@ fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Res
 
     let mut cmd = ProcCommand::new(&shell);
     cmd.env("KUBECONFIG", kubeconfig.as_os_str());
-    cmd.env("K8PK_CONTEXT", context);
+    cmd.env("K8PK_CONTEXT", &display_context);
     cmd.env("K8PK_DEPTH", new_depth.to_string());
 
     if let Some(ns) = namespace {

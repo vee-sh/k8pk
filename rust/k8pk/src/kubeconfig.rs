@@ -98,6 +98,20 @@ pub fn extract_context_refs(rest: &Yaml) -> Result<(String, String)> {
     Ok((cluster, user))
 }
 
+/// Extract server URL from a cluster's rest data
+pub fn extract_server_url_from_cluster(rest: &Yaml) -> Option<String> {
+    let Yaml::Mapping(map) = rest else {
+        return None;
+    };
+    let Yaml::Mapping(cluster_map) = map.get(Yaml::from("cluster"))? else {
+        return None;
+    };
+    match cluster_map.get(Yaml::from("server")) {
+        Some(Yaml::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
 /// Set the namespace for a context in a kubeconfig
 pub fn set_context_namespace(cfg: &mut KubeConfig, context_name: &str, ns: &str) -> Result<()> {
     if let Some(item) = cfg.contexts.iter_mut().find(|c| c.name == context_name) {
@@ -516,11 +530,20 @@ pub fn friendly_context_name(context_name: &str, cluster_type: &str) -> String {
             }
         }
         "ocp" => {
+            // OpenShift format: project/api-host:port/user -> project@host
+            // Example: alvarlamov-sandbox-dev/api-hwinf-k8s-os-pdx1-nvparkosdev-nvidia-com:6443/kube:admin
+            //          -> alvarlamov-sandbox-dev@hwinf-k8s-os-pdx1-nvparkosdev-nvidia-com
             let parts: Vec<&str> = context_name.split('/').collect();
             if parts.len() >= 2 {
-                let server = parts[1].trim_start_matches("api.");
+                let project = parts[0];
+                let server_part = parts[1];
+                // Remove "api." or "api-" prefix if present
+                let server = server_part
+                    .trim_start_matches("api.")
+                    .trim_start_matches("api-");
+                // Extract host (remove port)
                 if let Some(host) = server.split(':').next() {
-                    return host.to_string();
+                    return format!("{}@{}", project, host);
                 }
             }
         }
@@ -587,6 +610,14 @@ mod tests {
         assert_eq!(
             friendly_context_name("gke_my-project_us-central1_my-cluster", "gke"),
             "my-cluster"
+        );
+        // OpenShift format: project/api-host:port/user -> project@host
+        assert_eq!(
+            friendly_context_name(
+                "alvarlamov-sandbox-dev/api-hwinf-k8s-os-pdx1-nvparkosdev-nvidia-com:6443/kube:admin",
+                "ocp"
+            ),
+            "alvarlamov-sandbox-dev@hwinf-k8s-os-pdx1-nvparkosdev-nvidia-com"
         );
     }
 
