@@ -466,7 +466,14 @@ fn main() -> anyhow::Result<()> {
             output,
         } => {
             let state = CurrentState::from_env();
-            let context = state.require_context()?;
+            // Try to get context from K8PK_CONTEXT, or fall back to current-context from kubeconfig
+            let context = if let Some(ctx) = state.context {
+                ctx
+            } else {
+                // Fall back to current-context from kubeconfig if K8PK_CONTEXT is not set
+                let merged = kubeconfig::load_merged(&paths)?;
+                merged.current_context.ok_or(K8pkError::NotInContext)?
+            };
 
             let namespace = match namespace {
                 Some(ns) if ns == "-" => {
@@ -475,18 +482,18 @@ fn main() -> anyhow::Result<()> {
                 Some(ns) => ns,
                 None => {
                     // Interactive pick
-                    commands::pick_namespace(context, kubeconfig_env.as_deref())?
+                    commands::pick_namespace(&context, kubeconfig_env.as_deref())?
                 }
             };
 
-            commands::save_to_history(context, Some(&namespace))?;
+            commands::save_to_history(&context, Some(&namespace))?;
 
             let kubeconfig =
-                commands::ensure_isolated_kubeconfig(context, Some(&namespace), &paths)?;
+                commands::ensure_isolated_kubeconfig(&context, Some(&namespace), &paths)?;
 
             // Handle output format (recursive takes precedence)
             if recursive {
-                spawn_shell(context, Some(&namespace), &kubeconfig)?;
+                spawn_shell(&context, Some(&namespace), &kubeconfig)?;
             } else {
                 match output.as_deref() {
                     Some("json") => {
@@ -499,7 +506,7 @@ fn main() -> anyhow::Result<()> {
                     }
                     Some("env") => {
                         commands::print_env_exports(
-                            context,
+                            &context,
                             Some(&namespace),
                             &kubeconfig,
                             "bash",
@@ -509,10 +516,10 @@ fn main() -> anyhow::Result<()> {
                     Some("spawn") | None => {
                         // Auto-detect: if TTY, spawn shell; otherwise print exports
                         if io::stdout().is_terminal() {
-                            spawn_shell(context, Some(&namespace), &kubeconfig)?;
+                            spawn_shell(&context, Some(&namespace), &kubeconfig)?;
                         } else {
                             commands::print_env_exports(
-                                context,
+                                &context,
                                 Some(&namespace),
                                 &kubeconfig,
                                 "bash",
