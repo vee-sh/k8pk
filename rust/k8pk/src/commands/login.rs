@@ -4,7 +4,6 @@ use crate::error::{K8pkError, Result};
 use crate::kubeconfig::{self, KubeConfig};
 use inquire::{Confirm, Password, Select, Text};
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -101,7 +100,7 @@ pub struct ExecAuthConfig {
     pub api_version: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LoginResult {
     pub context_name: String,
     pub namespace: Option<String>,
@@ -297,7 +296,7 @@ pub fn login_wizard() -> Result<LoginResult> {
     let mut client_key = None;
     let mut certificate_authority = None;
     let mut exec = ExecAuthConfig::default();
-    let mut auth_mode = auth.as_str();
+    let mut auth_mode = auth.as_ref();
 
     if auth == "token" || auth == "userpass" {
         if Confirm::new("Use pass (password-store)?")
@@ -313,7 +312,7 @@ pub fn login_wizard() -> Result<LoginResult> {
         }
     }
 
-    match auth.as_str() {
+    match auth.as_ref() {
         "token" => {
             if pass_entry.is_none() {
                 token = Some(
