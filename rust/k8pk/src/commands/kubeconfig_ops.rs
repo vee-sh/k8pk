@@ -8,8 +8,55 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tracing::warn;
 
+#[derive(Debug, serde::Serialize)]
+pub struct MergeResult {
+    pub files: Vec<PathBuf>,
+    pub output: Option<PathBuf>,
+    pub overwrite: bool,
+    pub yaml: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct DiffResult {
+    pub file1: PathBuf,
+    pub file2: PathBuf,
+    pub only_in_1: Vec<String>,
+    pub only_in_2: Vec<String>,
+    pub in_both: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct LintIssue {
+    pub path: PathBuf,
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct LintResult {
+    pub errors: usize,
+    pub warnings: usize,
+    pub issues: Vec<LintIssue>,
+    pub failed: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CleanupResult {
+    pub removed: Vec<PathBuf>,
+    pub skipped: usize,
+    pub dry_run: bool,
+    pub all: bool,
+    pub orphaned: bool,
+    pub from_file: Option<PathBuf>,
+    pub found: bool,
+}
+
 /// Merge multiple kubeconfig files
-pub fn merge_files(files: &[PathBuf], output: Option<&Path>, overwrite: bool) -> Result<()> {
+pub fn merge_files(
+    files: &[PathBuf],
+    output: Option<&Path>,
+    overwrite: bool,
+) -> Result<MergeResult> {
     if files.is_empty() {
         return Err(K8pkError::Other("no files specified".into()));
     }
@@ -68,17 +115,25 @@ pub fn merge_files(files: &[PathBuf], output: Option<&Path>, overwrite: bool) ->
     let yaml = serde_yaml_ng::to_string(&result)?;
 
     if let Some(out) = output {
-        fs::write(out, yaml)?;
-        println!("Merged {} files into {}", files.len(), out.display());
+        fs::write(out, &yaml)?;
+        Ok(MergeResult {
+            files: files.to_vec(),
+            output: Some(out.to_path_buf()),
+            overwrite,
+            yaml: None,
+        })
     } else {
-        print!("{}", yaml);
+        Ok(MergeResult {
+            files: files.to_vec(),
+            output: None,
+            overwrite,
+            yaml: Some(yaml),
+        })
     }
-
-    Ok(())
 }
 
 /// Compare two kubeconfig files
-pub fn diff_files(file1: &Path, file2: &Path, diff_only: bool) -> Result<()> {
+pub fn diff_files(file1: &Path, file2: &Path, _diff_only: bool) -> Result<DiffResult> {
     let content1 = fs::read_to_string(file1)?;
     let content2 = fs::read_to_string(file2)?;
 
@@ -88,36 +143,30 @@ pub fn diff_files(file1: &Path, file2: &Path, diff_only: bool) -> Result<()> {
     let contexts1: HashSet<_> = cfg1.contexts.iter().map(|c| &c.name).collect();
     let contexts2: HashSet<_> = cfg2.contexts.iter().map(|c| &c.name).collect();
 
-    let only_in_1: Vec<_> = contexts1.difference(&contexts2).collect();
-    let only_in_2: Vec<_> = contexts2.difference(&contexts1).collect();
-    let in_both: Vec<_> = contexts1.intersection(&contexts2).collect();
+    let only_in_1: Vec<_> = contexts1
+        .difference(&contexts2)
+        .map(|s| (*s).clone())
+        .collect();
+    let only_in_2: Vec<_> = contexts2
+        .difference(&contexts1)
+        .map(|s| (*s).clone())
+        .collect();
+    let in_both: Vec<_> = contexts1
+        .intersection(&contexts2)
+        .map(|s| (*s).clone())
+        .collect();
 
-    if !only_in_1.is_empty() {
-        println!("Only in {}:", file1.display());
-        for name in &only_in_1 {
-            println!("  - {}", name);
-        }
-    }
-
-    if !only_in_2.is_empty() {
-        println!("Only in {}:", file2.display());
-        for name in &only_in_2 {
-            println!("  + {}", name);
-        }
-    }
-
-    if !diff_only && !in_both.is_empty() {
-        println!("In both ({} contexts):", in_both.len());
-        for name in &in_both {
-            println!("  = {}", name);
-        }
-    }
-
-    Ok(())
+    Ok(DiffResult {
+        file1: file1.to_path_buf(),
+        file2: file2.to_path_buf(),
+        only_in_1,
+        only_in_2,
+        in_both,
+    })
 }
 
 /// Lint kubeconfig files for issues
-pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<()> {
+pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<LintResult> {
     let paths: Vec<PathBuf> = if let Some(f) = file {
         vec![f.to_path_buf()]
     } else {
@@ -126,10 +175,15 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
 
     let mut warnings = 0;
     let mut errors = 0;
+    let mut issues = Vec::new();
 
     for path in &paths {
         if !path.exists() {
-            eprintln!("Error: File not found: {}", path.display());
+            issues.push(LintIssue {
+                path: path.to_path_buf(),
+                level: "error".into(),
+                message: "file not found".into(),
+            });
             errors += 1;
             continue;
         }
@@ -137,7 +191,11 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Error reading {}: {}", path.display(), e);
+                issues.push(LintIssue {
+                    path: path.to_path_buf(),
+                    level: "error".into(),
+                    message: format!("read error: {}", e),
+                });
                 errors += 1;
                 continue;
             }
@@ -146,7 +204,11 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
         let cfg: KubeConfig = match serde_yaml_ng::from_str(&content) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Error parsing {}: {}", path.display(), e);
+                issues.push(LintIssue {
+                    path: path.to_path_buf(),
+                    level: "error".into(),
+                    message: format!("parse error: {}", e),
+                });
                 errors += 1;
                 continue;
             }
@@ -155,6 +217,11 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
         // Check for empty contexts
         if cfg.contexts.is_empty() {
             warn!(path = %path.display(), "file has no contexts");
+            issues.push(LintIssue {
+                path: path.to_path_buf(),
+                level: "warning".into(),
+                message: "file has no contexts".into(),
+            });
             warnings += 1;
         }
 
@@ -186,6 +253,11 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
                     cluster = %cluster.name,
                     "orphaned cluster"
                 );
+                issues.push(LintIssue {
+                    path: path.to_path_buf(),
+                    level: "warning".into(),
+                    message: format!("orphaned cluster: {}", cluster.name),
+                });
                 warnings += 1;
             }
         }
@@ -197,6 +269,11 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
                     user = %user.name,
                     "orphaned user"
                 );
+                issues.push(LintIssue {
+                    path: path.to_path_buf(),
+                    level: "warning".into(),
+                    message: format!("orphaned user: {}", user.name),
+                });
                 warnings += 1;
             }
         }
@@ -209,18 +286,23 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
                     context = %current,
                     "current-context not found in contexts"
                 );
+                issues.push(LintIssue {
+                    path: path.to_path_buf(),
+                    level: "error".into(),
+                    message: format!("current-context not found: {}", current),
+                });
                 errors += 1;
             }
         }
     }
 
-    println!("Lint complete: {} errors, {} warnings", errors, warnings);
-
-    if errors > 0 || (strict && warnings > 0) {
-        Err(K8pkError::Other("lint failed".into()))
-    } else {
-        Ok(())
-    }
+    let failed = errors > 0 || (strict && warnings > 0);
+    Ok(LintResult {
+        errors,
+        warnings,
+        issues,
+        failed,
+    })
 }
 
 /// Cleanup old generated kubeconfig files
@@ -229,19 +311,41 @@ pub fn cleanup_generated(
     orphaned: bool,
     dry_run: bool,
     all: bool,
-    _from_file: Option<&Path>,
+    from_file: Option<&Path>,
     allowed_contexts: &[String],
-) -> Result<()> {
+) -> Result<CleanupResult> {
     let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
     let base = home.join(".local/share/k8pk");
 
     if !base.exists() {
-        println!("No generated configs directory found");
-        return Ok(());
+        return Ok(CleanupResult {
+            removed: Vec::new(),
+            skipped: 0,
+            dry_run,
+            all,
+            orphaned,
+            from_file: from_file.map(|p| p.to_path_buf()),
+            found: false,
+        });
     }
 
+    let allowed_contexts = if let Some(path) = from_file {
+        if !path.exists() {
+            return Err(K8pkError::KubeconfigNotFound(path.to_path_buf()));
+        }
+        let cfg = kubeconfig::load_merged(&[path.to_path_buf()])?;
+        cfg.context_names()
+    } else {
+        allowed_contexts.to_vec()
+    };
+
+    let allowed_sanitized: HashSet<String> = allowed_contexts
+        .iter()
+        .map(|ctx| kubeconfig::sanitize_filename(ctx))
+        .collect();
+
     let cutoff = SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60);
-    let mut removed = 0;
+    let mut removed = Vec::new();
     let mut skipped = 0;
 
     for entry in fs::read_dir(&base)? {
@@ -257,6 +361,14 @@ pub fn cleanup_generated(
             continue;
         }
 
+        let base_name = filename.trim_end_matches(".yaml").trim_end_matches(".yml");
+        let ctx_part = base_name.split('_').next().unwrap_or(base_name);
+
+        if from_file.is_some() && !allowed_sanitized.contains(ctx_part) {
+            skipped += 1;
+            continue;
+        }
+
         let should_remove = if all {
             true
         } else {
@@ -269,12 +381,7 @@ pub fn cleanup_generated(
             // Check orphaned if requested
             // Filename format: {context}.yaml or {context}_{namespace}.yaml
             let is_orphaned = if orphaned {
-                let base = filename.trim_end_matches(".yaml").trim_end_matches(".yml");
-                let ctx_part = base.split('_').next().unwrap_or(base);
-                !allowed_contexts.iter().any(|ctx| {
-                    let sanitized = kubeconfig::sanitize_filename(ctx);
-                    sanitized == ctx_part
-                })
+                !allowed_sanitized.contains(ctx_part)
             } else {
                 false
             };
@@ -284,22 +391,78 @@ pub fn cleanup_generated(
 
         if should_remove {
             if dry_run {
-                println!("Would remove: {}", path.display());
+                removed.push(path);
             } else {
                 fs::remove_file(&path)?;
-                println!("Removed: {}", path.display());
+                removed.push(path);
             }
-            removed += 1;
         } else {
             skipped += 1;
         }
     }
 
-    if dry_run {
-        println!("Dry run: would remove {} files, keep {}", removed, skipped);
-    } else {
-        println!("Cleaned up {} files, kept {}", removed, skipped);
-    }
+    Ok(CleanupResult {
+        removed,
+        skipped,
+        dry_run,
+        all,
+        orphaned,
+        from_file: from_file.map(|p| p.to_path_buf()),
+        found: true,
+    })
+}
 
-    Ok(())
+pub fn print_cleanup_summary(result: &CleanupResult) {
+    if !result.found {
+        println!("No generated configs directory found");
+        return;
+    }
+    if result.dry_run {
+        for path in &result.removed {
+            println!("Would remove: {}", path.display());
+        }
+        println!(
+            "Dry run: would remove {} files, keep {}",
+            result.removed.len(),
+            result.skipped
+        );
+    } else {
+        for path in &result.removed {
+            println!("Removed: {}", path.display());
+        }
+        println!(
+            "Cleaned up {} files, kept {}",
+            result.removed.len(),
+            result.skipped
+        );
+    }
+}
+
+pub fn print_merge_summary(result: &MergeResult) {
+    if let Some(out) = &result.output {
+        println!("Merged {} files into {}", result.files.len(), out.display());
+    } else if let Some(yaml) = &result.yaml {
+        print!("{}", yaml);
+    }
+}
+
+pub fn print_diff_summary(result: &DiffResult, diff_only: bool) {
+    if !result.only_in_1.is_empty() {
+        println!("Only in {}:", result.file1.display());
+        for name in &result.only_in_1 {
+            println!("  - {}", name);
+        }
+    }
+    if !result.only_in_2.is_empty() {
+        println!("Only in {}:", result.file2.display());
+        for name in &result.only_in_2 {
+            println!("  + {}", name);
+        }
+    }
+    if !diff_only && !result.in_both.is_empty() {
+        println!("In both ({} contexts):", result.in_both.len());
+        for name in &result.in_both {
+            println!("  = {}", name);
+        }
+    }
 }

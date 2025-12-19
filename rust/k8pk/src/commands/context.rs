@@ -162,9 +162,11 @@ pub fn print_env_exports(
                 "set -gx KUBECONFIG \"{}\";\n\
                  set -gx KUBECACHEDIR \"{}\";\n\
                  set -gx K8PK_CONTEXT \"{}\";\n\
+                 set -gx K8PK_CONTEXT_DISPLAY \"{}\";\n\
                  set -gx K8PK_DEPTH {};\n",
                 kubeconfig.display(),
                 cache_dir.display(),
+                context,
                 display_context,
                 new_depth
             );
@@ -182,9 +184,11 @@ pub fn print_env_exports(
                 "export KUBECONFIG=\"{}\";\n\
                  export KUBECACHEDIR=\"{}\";\n\
                  export K8PK_CONTEXT=\"{}\";\n\
+                 export K8PK_CONTEXT_DISPLAY=\"{}\";\n\
                  export K8PK_DEPTH={};\n",
                 kubeconfig.display(),
                 cache_dir.display(),
+                context,
                 display_context,
                 new_depth
             );
@@ -220,6 +224,7 @@ pub fn print_exit_commands(output: Option<&str>) -> Result<()> {
                     "KUBECACHEDIR",
                     "K8PK_CONTEXT",
                     "K8PK_NAMESPACE",
+                    "K8PK_CONTEXT_DISPLAY",
                     "K8PK_DEPTH",
                     "OC_NAMESPACE"
                 ],
@@ -241,6 +246,7 @@ pub fn print_exit_commands(output: Option<&str>) -> Result<()> {
                 println!("set -gx KUBECONFIG \"/dev/null\";");
                 println!("set -e KUBECACHEDIR;");
                 println!("set -e K8PK_CONTEXT;");
+                println!("set -e K8PK_CONTEXT_DISPLAY;");
                 println!("set -e K8PK_NAMESPACE;");
                 println!("set -e K8PK_DEPTH;");
                 println!("set -e OC_NAMESPACE;");
@@ -249,6 +255,7 @@ pub fn print_exit_commands(output: Option<&str>) -> Result<()> {
                 println!("export KUBECONFIG=\"/dev/null\";");
                 println!("unset KUBECACHEDIR;");
                 println!("unset K8PK_CONTEXT;");
+                println!("unset K8PK_CONTEXT_DISPLAY;");
                 println!("unset K8PK_NAMESPACE;");
                 println!("unset K8PK_DEPTH;");
                 println!("unset OC_NAMESPACE;");

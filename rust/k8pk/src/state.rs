@@ -9,6 +9,8 @@ use std::path::PathBuf;
 pub struct CurrentState {
     /// Current Kubernetes context name
     pub context: Option<String>,
+    /// Display-friendly context name
+    pub context_display: Option<String>,
     /// Current namespace
     pub namespace: Option<String>,
     /// Recursive shell depth (0 = not in a k8pk shell)
@@ -21,6 +23,7 @@ impl CurrentState {
     /// Load current state from environment variables
     pub fn from_env() -> Self {
         let context = env::var("K8PK_CONTEXT").ok();
+        let context_display = env::var("K8PK_CONTEXT_DISPLAY").ok();
         let namespace = env::var("K8PK_NAMESPACE").ok();
         let depth = env::var("K8PK_DEPTH")
             .ok()
@@ -37,6 +40,7 @@ impl CurrentState {
 
         Self {
             context,
+            context_display,
             namespace,
             depth,
             config_path,
@@ -54,6 +58,12 @@ impl CurrentState {
         if let Some(ref ctx) = self.context {
             map.insert(
                 "context".to_string(),
+                serde_json::Value::String(ctx.clone()),
+            );
+        }
+        if let Some(ref ctx) = self.context_display {
+            map.insert(
+                "context_display".to_string(),
                 serde_json::Value::String(ctx.clone()),
             );
         }

@@ -195,6 +195,7 @@ local function choose_context_and_spawn(window, pane)
               local tab_env = {
                 KUBECONFIG = env_vars.KUBECONFIG,
                 K8PK_CONTEXT = env_vars.K8PK_CONTEXT or ctx_id,
+                K8PK_CONTEXT_DISPLAY = env_vars.K8PK_CONTEXT_DISPLAY,
               }
               
               if env_vars.K8PK_NAMESPACE then

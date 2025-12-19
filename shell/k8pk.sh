@@ -48,7 +48,8 @@ kpick() {
     rm -f "$tmpfile"
     # Only print confirmation if K8PK_VERBOSE is set
     if [ -n "$K8PK_VERBOSE" ]; then
-      echo "Switched to ${K8PK_CONTEXT}${K8PK_NAMESPACE:+ ($K8PK_NAMESPACE)}" >&2
+      local display_ctx="${K8PK_CONTEXT_DISPLAY:-$K8PK_CONTEXT}"
+      echo "Switched to ${display_ctx}${K8PK_NAMESPACE:+ ($K8PK_NAMESPACE)}" >&2
     fi
   else
     local exit_code=$?
@@ -142,7 +143,8 @@ kns() {
 # Prompt helper function
 _k8pk_prompt() {
   if [ -n "${K8PK_CONTEXT:-}" ]; then
-    local prompt="[${K8PK_CONTEXT}"
+    local display_ctx="${K8PK_CONTEXT_DISPLAY:-$K8PK_CONTEXT}"
+    local prompt="[${display_ctx}"
     if [ -n "${K8PK_NAMESPACE:-}" ]; then
       prompt="${prompt}:${K8PK_NAMESPACE}"
     fi
@@ -171,7 +173,8 @@ kswitch() {
   fi
   # Only print confirmation if K8PK_VERBOSE is set
   if [ -n "$K8PK_VERBOSE" ]; then
-    echo "Switched to ${K8PK_CONTEXT}${K8PK_NAMESPACE:+ ($K8PK_NAMESPACE)}" >&2
+    local display_ctx="${K8PK_CONTEXT_DISPLAY:-$K8PK_CONTEXT}"
+    echo "Switched to ${display_ctx}${K8PK_NAMESPACE:+ ($K8PK_NAMESPACE)}" >&2
   fi
 }
 
@@ -187,4 +190,3 @@ kclean() {
   # Execute the cleanup commands automatically (silent - no output)
   eval "$(k8pk $args clean 2>/dev/null)" 2>/dev/null
 }
-

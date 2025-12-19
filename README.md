@@ -283,6 +283,47 @@ k8pk edit dev --editor nano  # Use specific editor
 k8pk login https://api.cluster.example.com:6443 --token $TOKEN
 k8pk login https://api.prod.example.com:6443 --name prod-ocp --token $TOKEN
 
+# Login to Kubernetes with client certs
+k8pk login --type k8s https://k8s.example.com:6443 \
+  --client-certificate ~/.kube/certs/client.crt \
+  --client-key ~/.kube/certs/client.key \
+  --certificate-authority ~/.kube/certs/ca.crt
+
+# Login to Kubernetes with exec auth
+k8pk login --type k8s --auth exec https://k8s.example.com:6443 \
+  --exec-command aws \
+  --exec-arg eks \
+  --exec-arg get-token \
+  --exec-arg --cluster-name \
+  --exec-arg prod \
+  --exec-env AWS_PROFILE=prod
+
+# Login to Kubernetes with exec preset (AWS EKS)
+k8pk login --type k8s --auth exec https://k8s.example.com:6443 \
+  --exec-preset aws-eks \
+  --exec-cluster prod \
+  --exec-region us-east-1
+
+# Use pass (password-store) to supply token or user/pass
+# Pass entry format:
+#   <token or password>
+#   token: <token>          # optional
+#   username: <username>    # optional
+#   password: <password>    # optional
+k8pk login --type k8s https://k8s.example.com:6443 --pass-entry k8pk/dev
+
+# Print kubeconfig without writing or switching
+k8pk login --type k8s https://k8s.example.com:6443 --token $TOKEN --dry-run
+
+# Show auth examples
+k8pk login --auth-help
+
+# Guided login wizard
+k8pk login --wizard
+
+# Validate credentials after login
+k8pk login --type k8s https://k8s.example.com:6443 --token $TOKEN --test --test-timeout 15
+
 # Organize a messy kubeconfig by cluster type
 k8pk organize --dry-run  # Preview what would be created
 k8pk organize            # Split into ~/.kube/organized/{eks,gke,ocp,aks,k8s}/
@@ -292,6 +333,11 @@ k8pk organize            # Split into ~/.kube/organized/{eks,gke,ocp,aks,k8s}/
 
 **Multi-cluster setup:** For managing EKS, GKE, OCP, and AKS together, see [MULTI_CLUSTER.md](MULTI_CLUSTER.md).
 
+**Context display:** Use `k8pk info ctx --display` to print the friendly context name (useful for prompts).
+
+**Quiet mode:** Add `--quiet` to `k8pk login` to suppress non-essential output (useful for scripts).
+**JSON output:** Many commands support `--json` for machine-readable output (e.g., `k8pk merge --json`, `k8pk cleanup --json`).
+
 ## Cross-Terminal Examples
 
 ### tmux
@@ -299,7 +345,7 @@ k8pk organize            # Split into ~/.kube/organized/{eks,gke,ocp,aks,k8s}/
 ```bash
 # New window with context
 eval "$(k8pk pick)"
-tmux new-window -n "⎈ $K8PK_CONTEXT:$K8PK_NAMESPACE" "$SHELL"
+tmux new-window -n "⎈ ${K8PK_CONTEXT_DISPLAY:-$K8PK_CONTEXT}:$K8PK_NAMESPACE" "$SHELL"
 ```
 
 ### kitty

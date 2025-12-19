@@ -7,13 +7,29 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, serde::Serialize)]
+pub struct OrganizeGroup {
+    pub cluster_type: String,
+    pub contexts: Vec<String>,
+    pub output_path: PathBuf,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct OrganizeResult {
+    pub source: PathBuf,
+    pub output_dir: PathBuf,
+    pub dry_run: bool,
+    pub remove_from_source: bool,
+    pub groups: Vec<OrganizeGroup>,
+}
+
 /// Organize a kubeconfig file into separate files by cluster type
 pub fn organize_by_cluster_type(
     file: Option<&Path>,
     output_dir: Option<&Path>,
     dry_run: bool,
     remove_from_source: bool,
-) -> Result<()> {
+) -> Result<OrganizeResult> {
     let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
 
     // Source file
@@ -36,7 +52,7 @@ pub fn organize_by_cluster_type(
 
     // Load source kubeconfig
     let content = fs::read_to_string(&source_path)?;
-    let cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
+    let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
 
     // Group contexts by cluster type
     let mut by_type: HashMap<&str, Vec<&NamedItem>> = HashMap::new();
@@ -57,19 +73,20 @@ pub fn organize_by_cluster_type(
         by_type.entry(cluster_type).or_default().push(ctx);
     }
 
-    println!("Organizing {} contexts:", cfg.contexts.len());
+    let mut groups = Vec::new();
 
     for (cluster_type, contexts) in &by_type {
         let filename = format!("{}.yaml", cluster_type);
         let dest_path = out_dir.join(&filename);
-
-        println!("  {} contexts -> {}", contexts.len(), dest_path.display());
+        let mut context_names: Vec<String> = contexts.iter().map(|c| c.name.clone()).collect();
+        context_names.sort();
 
         if dry_run {
-            for ctx in contexts {
-                let friendly = kubeconfig::friendly_context_name(&ctx.name, cluster_type);
-                println!("    - {} ({})", ctx.name, friendly);
-            }
+            groups.push(OrganizeGroup {
+                cluster_type: cluster_type.to_string(),
+                contexts: context_names,
+                output_path: dest_path,
+            });
             continue;
         }
 
@@ -100,25 +117,96 @@ pub fn organize_by_cluster_type(
         // Write file
         let yaml = serde_yaml_ng::to_string(&type_cfg)?;
         fs::write(&dest_path, yaml)?;
+        groups.push(OrganizeGroup {
+            cluster_type: cluster_type.to_string(),
+            contexts: context_names,
+            output_path: dest_path,
+        });
     }
+
+    drop(by_type);
 
     // Optionally remove from source
     if remove_from_source && !dry_run {
-        // Keep only contexts that weren't moved
-        // In this case, we moved all, so clear the file or just skip
-        println!("Source file left intact (use --remove-from-source to modify)");
+        let moved: std::collections::HashSet<String> =
+            cfg.contexts.iter().map(|c| c.name.clone()).collect();
+
+        cfg.contexts.retain(|c| !moved.contains(&c.name));
+        cfg.current_context = None;
+
+        let referenced_clusters: std::collections::HashSet<String> = cfg
+            .contexts
+            .iter()
+            .filter_map(|c| {
+                kubeconfig::extract_context_refs(&c.rest)
+                    .ok()
+                    .map(|(cl, _)| cl)
+            })
+            .collect();
+
+        let referenced_users: std::collections::HashSet<String> = cfg
+            .contexts
+            .iter()
+            .filter_map(|c| {
+                kubeconfig::extract_context_refs(&c.rest)
+                    .ok()
+                    .map(|(_, u)| u)
+            })
+            .collect();
+
+        cfg.clusters
+            .retain(|c| referenced_clusters.contains(&c.name));
+        cfg.users.retain(|u| referenced_users.contains(&u.name));
+
+        cfg.ensure_defaults(None);
+
+        let yaml = serde_yaml_ng::to_string(&cfg)?;
+        fs::write(&source_path, yaml)?;
+        // caller handles summary output
     }
 
-    if dry_run {
+    Ok(OrganizeResult {
+        source: source_path,
+        output_dir: out_dir,
+        dry_run,
+        remove_from_source,
+        groups,
+    })
+}
+
+pub fn print_organize_summary(result: &OrganizeResult) {
+    println!(
+        "Organizing {} contexts:",
+        result
+            .groups
+            .iter()
+            .map(|g| g.contexts.len())
+            .sum::<usize>()
+    );
+    for group in &result.groups {
+        println!(
+            "  {} contexts -> {}",
+            group.contexts.len(),
+            group.output_path.display()
+        );
+        if result.dry_run {
+            for ctx in &group.contexts {
+                let friendly = kubeconfig::friendly_context_name(ctx, &group.cluster_type);
+                println!("    - {} ({})", ctx, friendly);
+            }
+        }
+    }
+    if result.remove_from_source && !result.dry_run {
+        println!("Source file updated: {}", result.source.display());
+    }
+    if result.dry_run {
         println!("\nDry run complete. Use without --dry-run to create files.");
     } else {
         println!(
             "\nOrganization complete. Add {} to your KUBECONFIG path.",
-            out_dir.display()
+            result.output_dir.display()
         );
     }
-
-    Ok(())
 }
 
 /// Display info about contexts (the `which` command)

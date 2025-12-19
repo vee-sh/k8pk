@@ -4,15 +4,25 @@ use crate::error::{K8pkError, Result};
 use std::fs;
 use std::io::Write;
 use std::process::Command;
+use std::time::Duration;
 use tracing::info;
 
+#[derive(Debug, serde::Serialize)]
+pub struct UpdateResult {
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub updated: bool,
+    pub message: String,
+}
+
 /// Check for and optionally install k8pk updates
-pub fn check_and_update(check_only: bool, force: bool) -> Result<()> {
+pub fn check_and_update(check_only: bool, force: bool, quiet: bool) -> Result<UpdateResult> {
     let current_version = env!("CARGO_PKG_VERSION");
 
     // Get latest version from GitHub API
     let client = reqwest::blocking::Client::builder()
         .user_agent("k8pk-updater")
+        .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| K8pkError::Other(format!("failed to create HTTP client: {}", e)))?;
 
@@ -40,26 +50,44 @@ pub fn check_and_update(check_only: bool, force: bool) -> Result<()> {
     let latest_version = latest_tag.trim_start_matches('v');
 
     if latest_version == current_version && !force {
-        if check_only {
-            println!("k8pk is already up to date (v{})", current_version);
+        let message = if check_only {
+            format!("k8pk is already up to date (v{})", current_version)
         } else {
-            println!(
-                "k8pk is already at the latest version (v{})",
+            format!(
+                "k8pk is already at the latest version (v{}). Use --force to reinstall anyway",
                 current_version
-            );
-            println!("Use --force to reinstall anyway");
+            )
+        };
+        if !quiet {
+            println!("{}", message);
         }
-        return Ok(());
+        return Ok(UpdateResult {
+            current_version: current_version.to_string(),
+            latest_version: Some(latest_tag.to_string()),
+            updated: false,
+            message,
+        });
     }
 
     if check_only {
-        println!("Current version: v{}", current_version);
-        println!("Latest version:  {}", latest_tag);
-        println!("Update available!");
-        return Ok(());
+        let message = format!(
+            "Current version: v{}\nLatest version:  {}\nUpdate available!",
+            current_version, latest_tag
+        );
+        if !quiet {
+            println!("{}", message);
+        }
+        return Ok(UpdateResult {
+            current_version: current_version.to_string(),
+            latest_version: Some(latest_tag.to_string()),
+            updated: false,
+            message,
+        });
     }
 
-    println!("Updating from v{} to {}", current_version, latest_tag);
+    if !quiet {
+        println!("Updating from v{} to {}", current_version, latest_tag);
+    }
 
     // Detect platform
     let (os, arch) = detect_platform();
@@ -146,8 +174,16 @@ pub fn check_and_update(check_only: bool, force: bool) -> Result<()> {
         fs::set_permissions(&install_path, perms)?;
     }
 
-    println!("Updated to {}", latest_tag);
-    Ok(())
+    let message = format!("Updated to {}", latest_tag);
+    if !quiet {
+        println!("{}", message);
+    }
+    Ok(UpdateResult {
+        current_version: current_version.to_string(),
+        latest_version: Some(latest_tag.to_string()),
+        updated: true,
+        message,
+    })
 }
 
 fn detect_platform() -> (&'static str, &'static str) {

@@ -31,7 +31,8 @@ function kpick
   k8pk $args pick --output env 2>/dev/null | source
   # Only print confirmation if K8PK_VERBOSE is set
   if test -n "$K8PK_VERBOSE"
-    echo "Switched to $K8PK_CONTEXT"(test -n "$K8PK_NAMESPACE"; and echo " ($K8PK_NAMESPACE)"; or echo "") >&2
+    set -l display_ctx (test -n "$K8PK_CONTEXT_DISPLAY"; and echo "$K8PK_CONTEXT_DISPLAY"; or echo "$K8PK_CONTEXT")
+    echo "Switched to $display_ctx"(test -n "$K8PK_NAMESPACE"; and echo " ($K8PK_NAMESPACE)"; or echo "") >&2
   end
 end
 
@@ -54,7 +55,8 @@ function kswitch
   end
   # Only print confirmation if K8PK_VERBOSE is set
   if test -n "$K8PK_VERBOSE"
-    echo "Switched to $K8PK_CONTEXT"(test -n "$K8PK_NAMESPACE"; and echo " ($K8PK_NAMESPACE)"; or echo "") >&2
+    set -l display_ctx (test -n "$K8PK_CONTEXT_DISPLAY"; and echo "$K8PK_CONTEXT_DISPLAY"; or echo "$K8PK_CONTEXT")
+    echo "Switched to $display_ctx"(test -n "$K8PK_NAMESPACE"; and echo " ($K8PK_NAMESPACE)"; or echo "") >&2
   end
 end
 
@@ -90,7 +92,8 @@ end
 
 function _k8pk_prompt
   if test -n "$K8PK_CONTEXT"
-    set -l prompt "[$K8PK_CONTEXT"
+    set -l display_ctx (test -n "$K8PK_CONTEXT_DISPLAY"; and echo "$K8PK_CONTEXT_DISPLAY"; or echo "$K8PK_CONTEXT")
+    set -l prompt "[$display_ctx"
     if test -n "$K8PK_NAMESPACE"
       set prompt "$prompt:$K8PK_NAMESPACE"
     end

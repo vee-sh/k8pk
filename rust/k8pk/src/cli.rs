@@ -59,10 +59,20 @@ pub enum Command {
         /// Override the default namespace
         #[arg(long, value_name = "NS")]
         namespace: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Print the current context name
-    Current,
+    Current {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 
     /// List namespaces accessible in a context
     Namespaces {
@@ -140,6 +150,12 @@ pub enum Command {
         /// Prompt before each deletion
         #[arg(long, short = 'i', help = "Prompt before each deletion")]
         interactive: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Remove contexts from a kubeconfig file
@@ -163,6 +179,12 @@ pub enum Command {
         /// Preview changes without making them
         #[arg(long, help = "Preview changes without making them")]
         dry_run: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Rename a context in a kubeconfig file
@@ -179,6 +201,12 @@ pub enum Command {
         /// Preview changes without making them
         #[arg(long, help = "Preview changes without making them")]
         dry_run: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Copy a context from one kubeconfig file to another
@@ -198,6 +226,12 @@ pub enum Command {
         /// Preview changes without making them
         #[arg(long, help = "Preview changes without making them")]
         dry_run: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Merge multiple kubeconfig files into one
@@ -214,6 +248,12 @@ pub enum Command {
         /// Overwrite existing contexts with same name
         #[arg(long, help = "Overwrite existing contexts with same name")]
         overwrite: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Compare two kubeconfig files
@@ -227,6 +267,12 @@ pub enum Command {
         /// Only show differences (hide common contexts)
         #[arg(long, help = "Only show differences")]
         diff_only: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Execute a command in a specific context/namespace
@@ -252,11 +298,22 @@ pub enum Command {
     },
 
     /// Get information about current context/namespace
-    #[command(after_help = "What to show: ctx, ns, cluster, user, server, all (default)")]
+    #[command(
+        after_help = "What to show: ctx, ns, cluster, user, server, all (default)\n\n\
+        Examples:\n  \
+        k8pk info ctx --display\n  \
+        k8pk info all"
+    )]
     Info {
         /// What to show: ctx, ns, cluster, user, server, all
         #[arg(default_value = "all", value_name = "WHAT")]
         what: String,
+        /// Show friendly context display name (ctx only)
+        #[arg(long, help = "Show display context name (ctx only)")]
+        display: bool,
+        /// Show raw context name (ctx only)
+        #[arg(long, help = "Show raw context name (ctx only)")]
+        raw: bool,
     },
 
     /// Switch to context (with history support, use '-' for previous)
@@ -333,6 +390,12 @@ pub enum Command {
         /// Force update even if already on latest
         #[arg(long, help = "Force reinstall even if up to date")]
         force: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Export path to isolated kubeconfig file (for scripting)
@@ -342,6 +405,9 @@ pub enum Command {
         context: String,
         /// Namespace name
         namespace: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Generate shell completion scripts
@@ -368,6 +434,12 @@ pub enum Command {
         /// Enable additional checks (cert expiry, etc.)
         #[arg(long, help = "Enable additional checks (cert expiry, etc.)")]
         strict: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Edit kubeconfig files in your editor
@@ -381,14 +453,32 @@ pub enum Command {
         editor: Option<String>,
     },
 
-    /// Login to OpenShift cluster (saves to separate file)
+    /// Login to cluster (OCP or regular k8s)
     #[command(after_help = "Examples:\n  \
-        k8pk login --server https://api.cluster.example.com:6443 --token sha256~abc\n  \
-        k8pk login https://api.cluster.example.com:6443 --token sha256~abc\n  \
-        k8pk login https://api.cluster.example.com:6443 -u admin\n  \
-        k8pk login https://api.ocp.local:6443 --insecure-skip-tls-verify")]
+        k8pk login --type ocp --server https://api.cluster.example.com:6443 -u admin\n  \
+        k8pk login --type k8s --server https://k8s.example.com:6443 --token abc123\n  \
+        k8pk login --type ocp https://api.cluster.example.com:6443 --token sha256~abc\n  \
+        k8pk login --type ocp https://api.ocp.local:6443 --use-vault\n  \
+        k8pk login --type k8s https://k8s.example.com:6443 --pass-entry k8pk/dev\n  \
+        k8pk login --type k8s https://k8s.example.com:6443 --client-certificate ./client.crt --client-key ./client.key\n  \
+        k8pk login --type k8s https://k8s.example.com:6443 --auth exec --exec-command aws --exec-arg eks --exec-arg get-token\n  \
+        k8pk login --type k8s https://k8s.example.com:6443 --test\n  \
+        k8pk login --wizard\n  \
+        k8pk login --auth-help")]
     Login {
-        /// OpenShift API server URL
+        /// Cluster type: 'ocp' or 'k8s' (default: ocp)
+        #[arg(long, value_name = "TYPE", default_value = "ocp")]
+        login_type: String,
+        /// Authentication mode: auto | token | userpass | client-cert | exec
+        #[arg(long, value_name = "MODE", default_value = "auto")]
+        auth: String,
+        /// Show auth examples and exit
+        #[arg(long)]
+        auth_help: bool,
+        /// Use guided login wizard
+        #[arg(long)]
+        wizard: bool,
+        /// Server URL
         #[arg(long, value_name = "SERVER")]
         server: Option<String>,
         /// Server URL (positional argument, alternative to --server)
@@ -403,6 +493,33 @@ pub enum Command {
         /// Password for basic auth
         #[arg(short = 'p', long, value_name = "PASS")]
         password: Option<String>,
+        /// Read credentials from pass (password-store) entry
+        #[arg(long, value_name = "ENTRY")]
+        pass_entry: Option<String>,
+        /// Exec auth command (k8s only)
+        #[arg(long, value_name = "CMD")]
+        exec_command: Option<String>,
+        /// Exec auth argument (repeatable)
+        #[arg(long, action = clap::ArgAction::Append, value_name = "ARG")]
+        exec_arg: Vec<String>,
+        /// Exec auth environment variable (KEY=VALUE, repeatable)
+        #[arg(long, action = clap::ArgAction::Append, value_name = "KV")]
+        exec_env: Vec<String>,
+        /// Exec auth API version (k8s only)
+        #[arg(long, value_name = "VERSION")]
+        exec_api_version: Option<String>,
+        /// Exec auth preset: aws-eks | gke | aks
+        #[arg(long, value_name = "NAME")]
+        exec_preset: Option<String>,
+        /// Exec auth cluster name (aws-eks)
+        #[arg(long, value_name = "NAME")]
+        exec_cluster: Option<String>,
+        /// Exec auth server ID (aks)
+        #[arg(long, value_name = "ID")]
+        exec_server_id: Option<String>,
+        /// Exec auth region (aws-eks)
+        #[arg(long, value_name = "REGION")]
+        exec_region: Option<String>,
         /// Custom name for this context
         #[arg(
             long,
@@ -410,12 +527,39 @@ pub enum Command {
             help = "Custom name for context (default: derived from server)"
         )]
         name: Option<String>,
-        /// Directory to save kubeconfig (default: ~/.kube/k8pk/)
+        /// Directory to save kubeconfig (default: ~/.kube/ocp or ~/.kube/k8s)
         #[arg(long, value_name = "DIR")]
         output_dir: Option<PathBuf>,
         /// Skip TLS certificate verification
         #[arg(long, help = "Skip TLS certificate verification (insecure)")]
         insecure_skip_tls_verify: bool,
+        /// Use vault to store/retrieve credentials (OCP only)
+        #[arg(long, help = "Store/retrieve credentials from vault (OCP only)")]
+        use_vault: bool,
+        /// Certificate authority file
+        #[arg(long, value_name = "PATH")]
+        certificate_authority: Option<PathBuf>,
+        /// Client certificate file (k8s only)
+        #[arg(long, value_name = "PATH")]
+        client_certificate: Option<PathBuf>,
+        /// Client key file (k8s only)
+        #[arg(long, value_name = "PATH")]
+        client_key: Option<PathBuf>,
+        /// Print kubeconfig and exit without writing or switching
+        #[arg(long)]
+        dry_run: bool,
+        /// Validate credentials after login
+        #[arg(long)]
+        test: bool,
+        /// Timeout for credential test (seconds)
+        #[arg(long, default_value = "10", value_name = "SECS")]
+        test_timeout: u64,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Organize a messy kubeconfig into separate files by cluster type
@@ -437,6 +581,12 @@ pub enum Command {
         /// Remove contexts from source after copying
         #[arg(long, help = "Remove contexts from source after copying")]
         remove_from_source: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Show cluster type and source info for contexts

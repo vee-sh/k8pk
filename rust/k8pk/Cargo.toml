@@ -21,6 +21,7 @@ tempfile = "3.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indicatif = "0.17"  # Progress spinners
+shell-words = "1.1"
 
 [dev-dependencies]
 
