@@ -281,6 +281,7 @@ pub fn display_context_info(
 
 /// Login to OpenShift and save to separate file
 /// Returns the context name, namespace (if any), and kubeconfig path that was created
+#[allow(dead_code)]
 pub fn openshift_login(
     server: &str,
     token: Option<&str>,

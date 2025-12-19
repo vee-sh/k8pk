@@ -36,6 +36,7 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// List all available context names
     #[command(visible_alias = "ls")]

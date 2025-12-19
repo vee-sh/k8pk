@@ -441,10 +441,8 @@ fn main() -> anyhow::Result<()> {
                         {
                             println!("{}", ctx);
                         }
-                    } else {
-                        if let Some(ctx) = &state.context {
-                            println!("{}", ctx);
-                        }
+                    } else if let Some(ctx) = &state.context {
+                        println!("{}", ctx);
                     }
                 }
                 "ns" | "namespace" => {
@@ -1221,12 +1219,12 @@ fn rename_context_in_file(
         .ok_or_else(|| K8pkError::ContextNotFound(old_name.to_string()))?;
 
     if dry_run {
-        return Ok(RenameContextResult {
+        Ok(RenameContextResult {
             file: file_path.to_path_buf(),
             old_name: old_name.to_string(),
             new_name: new_name.to_string(),
             dry_run,
-        });
+        })
     } else {
         ctx.name = new_name.to_string();
 

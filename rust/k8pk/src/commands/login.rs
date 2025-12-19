@@ -134,6 +134,7 @@ impl std::str::FromStr for AuthMode {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn login(
     login_type: LoginType,
     server: &str,
@@ -296,23 +297,22 @@ pub fn login_wizard() -> Result<LoginResult> {
     let mut client_key = None;
     let mut certificate_authority = None;
     let mut exec = ExecAuthConfig::default();
-    let mut auth_mode = auth.as_ref();
+    let mut auth_mode = auth;
 
-    if auth == "token" || auth == "userpass" {
-        if Confirm::new("Use pass (password-store)?")
+    if (auth == "token" || auth == "userpass")
+        && Confirm::new("Use pass (password-store)?")
             .with_default(false)
             .prompt()
             .unwrap_or(false)
-        {
-            pass_entry = Some(
-                Text::new("pass entry name:")
-                    .prompt()
-                    .map_err(|_| K8pkError::Cancelled)?,
-            );
-        }
+    {
+        pass_entry = Some(
+            Text::new("pass entry name:")
+                .prompt()
+                .map_err(|_| K8pkError::Cancelled)?,
+        );
     }
 
-    match auth.as_ref() {
+    match auth {
         "token" => {
             if pass_entry.is_none() {
                 token = Some(
@@ -554,6 +554,7 @@ pub fn print_auth_help() {
 }
 
 /// Login to regular Kubernetes cluster
+#[allow(clippy::too_many_arguments)]
 fn k8s_login(
     server: &str,
     token: Option<&str>,
@@ -769,6 +770,7 @@ fn k8s_login(
 }
 
 /// Login to OpenShift cluster with enhanced auth support
+#[allow(clippy::too_many_arguments)]
 fn ocp_login(
     server: &str,
     token: Option<&str>,
@@ -991,6 +993,7 @@ fn ocp_login(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_auth(
     login_type: LoginType,
     token: Option<&str>,
