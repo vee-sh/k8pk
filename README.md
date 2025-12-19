@@ -306,10 +306,23 @@ k8pk login --type k8s --auth exec https://k8s.example.com:6443 \
 
 # Use pass (password-store) to supply token or user/pass
 # Pass entry format:
-#   <token or password>
-#   token: <token>          # optional
-#   username: <username>    # optional
-#   password: <password>    # optional
+#   First line: password or token (used if no other fields found)
+#   Additional lines (key:value format):
+#     token: <token>          # for token auth
+#     username: <username>     # or 'user:' for userpass auth
+#     password: <password>     # for userpass auth
+#
+# Example pass entry for token auth:
+#   $ pass show k8pk/dev
+#   sha256~abc123def456...
+#   token: sha256~abc123def456...
+#
+# Example pass entry for userpass auth:
+#   $ pass show k8pk/prod
+#   mySecretPassword123
+#   username: admin
+#   password: mySecretPassword123
+#
 k8pk login --type k8s https://k8s.example.com:6443 --pass-entry k8pk/dev
 
 # Print kubeconfig without writing or switching
