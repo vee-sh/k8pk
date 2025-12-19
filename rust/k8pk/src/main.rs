@@ -112,7 +112,7 @@ fn main() -> anyhow::Result<()> {
             if json {
                 let j = serde_json::json!({
                     "context": context,
-                    "namespace": namespace,
+                    "namespace": namespace.as_ref(),
                     "path": out.to_string_lossy()
                 });
                 println!("{}", serde_json::to_string_pretty(&j)?);
@@ -1095,7 +1095,13 @@ fn remove_contexts_from_file(
         let names: Vec<String> = cfg.contexts.iter().map(|c| c.name.clone()).collect();
         if names.is_empty() {
             println!("No contexts in file");
-            return Ok(());
+            return Ok(RemoveContextResult {
+                file: file_path.to_path_buf(),
+                removed_contexts: Vec::new(),
+                removed_clusters: Vec::new(),
+                removed_users: Vec::new(),
+                dry_run,
+            });
         }
         MultiSelect::new("Select contexts to remove:", names)
             .prompt()
