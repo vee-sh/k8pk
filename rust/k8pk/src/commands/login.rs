@@ -549,6 +549,19 @@ pub fn print_auth_help() {
     --exec-preset aws-eks --exec-cluster prod --exec-region us-east-1\n\
   k8pk login --type ocp --auth token https://api.ocp.example.com:6443 --token $TOKEN\n\
   k8pk login --type ocp --auth userpass https://api.ocp.example.com:6443 -u admin\n\
+  \n\
+  Using pass (password-store):\n\
+  # Token auth - pass entry format:\n\
+  #   sha256~abc123...\n\
+  #   token: sha256~abc123...\n\
+  k8pk login --type k8s --auth token https://k8s.example.com:6443 --pass-entry k8pk/dev\n\
+  \n\
+  # Userpass auth - pass entry format:\n\
+  #   myPassword\n\
+  #   username: admin\n\
+  #   password: myPassword\n\
+  k8pk login --type k8s --auth userpass https://k8s.example.com:6443 --pass-entry k8pk/prod\n\
+  \n\
   k8pk login --wizard"
     );
 }
@@ -1098,6 +1111,24 @@ fn validate_auth(
     Ok(())
 }
 
+/// Apply credentials from pass (password-store) entry.
+///
+/// Entry format:
+///   - First line: password or token (used as fallback if no specific fields found)
+///   - Additional lines: key:value pairs (case-insensitive keys)
+///     - `token:` - for token authentication
+///     - `username:` or `user:` - for username/password authentication
+///     - `password:` - for username/password authentication
+///
+/// Examples:
+///   Token auth entry:
+///     sha256~abc123...
+///     token: sha256~abc123...
+///
+///   Userpass auth entry:
+///     mySecretPassword
+///     username: admin
+///     password: mySecretPassword
 fn apply_pass_credentials(
     token: &mut Option<String>,
     username: &mut Option<String>,

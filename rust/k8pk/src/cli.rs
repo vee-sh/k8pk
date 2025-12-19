@@ -494,7 +494,12 @@ pub enum Command {
         /// Password for basic auth
         #[arg(short = 'p', long, value_name = "PASS")]
         password: Option<String>,
-        /// Read credentials from pass (password-store) entry
+        /// Read credentials from pass (password-store) entry.
+        /// Entry format: first line is password/token, additional lines are key:value pairs.
+        /// Supported keys: token, username (or user), password.
+        /// Example: 'pass show k8pk/dev' returns:
+        ///   sha256~abc123...
+        ///   token: sha256~abc123...
         #[arg(long, value_name = "ENTRY")]
         pass_entry: Option<String>,
         /// Exec auth command (k8s only)
