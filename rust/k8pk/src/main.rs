@@ -104,8 +104,8 @@ fn main() -> anyhow::Result<()> {
         } => {
             let merged = kubeconfig::load_merged(&paths)?;
             let mut pruned = kubeconfig::prune_to_context(&merged, &context)?;
-            if let Some(ns) = namespace {
-                kubeconfig::set_context_namespace(&mut pruned, &context, &ns)?;
+            if let Some(ref ns) = namespace {
+                kubeconfig::set_context_namespace(&mut pruned, &context, ns)?;
             }
             let yaml = serde_yaml_ng::to_string(&pruned)?;
             fs::write(&out, yaml)?;
