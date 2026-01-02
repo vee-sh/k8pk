@@ -1,0 +1,27 @@
+# Ghostty configuration example for k8pk integration
+# Place this in your Ghostty config file (usually ~/.config/ghostty/config or ~/.ghostty/config)
+#
+# This configuration adds keybindings to quickly switch Kubernetes contexts using k8pk's
+# interactive picker. The picker works natively in Ghostty using the inquire library.
+
+# Keybinding to open k8pk context picker
+# Press Ctrl+Shift+K to open the interactive context/namespace picker
+# This will spawn a new shell with the selected context
+keybind = "ctrl+shift+k", "spawn", "k8pk", "pick"
+
+# Alternative: Use kpick shell function (if you've sourced k8pk.sh)
+# This works in the current shell instead of spawning a new one
+# keybind = "ctrl+shift+k", "spawn", "bash", "-c", "source ~/.local/share/k8pk/k8pk.sh && kpick"
+
+# Optional: Add a keybinding to show current context info
+# keybind = "ctrl+shift+i", "spawn", "k8pk", "info", "all"
+
+# Optional: Add a keybinding to switch to previous context
+# keybind = "ctrl+shift+-", "spawn", "k8pk", "ctx", "-"
+
+# Window title integration (automatic via hooks in ~/.kube/k8pk.yaml)
+# Make sure you have configured hooks in your k8pk config:
+# hooks:
+#   start_ctx: 'echo -en "\033]1;⎈ $(k8pk info ctx --display)${K8PK_NAMESPACE:+:$K8PK_NAMESPACE}\007"'
+#   stop_ctx: 'echo -en "\033]1;$SHELL\007"'
+

@@ -389,6 +389,19 @@ Or use the shell prompt integration:
 export PROMPT_COMMAND='echo -en "\033]1;⎈ ${K8PK_CONTEXT_DISPLAY:-${K8PK_CONTEXT:-$SHELL}}${K8PK_NAMESPACE:+:$K8PK_NAMESPACE}\007"'
 ```
 
+### Ghostty
+
+Ghostty integration uses keybindings and the native interactive picker. See [ghostty/README.md](ghostty/README.md) for setup instructions.
+
+**Quick setup:**
+1. Add to `~/.config/ghostty/config`:
+   ```ini
+   keybind = "ctrl+shift+k", "spawn", "k8pk", "pick"
+   ```
+2. Configure hooks in `~/.kube/k8pk.yaml` for window title updates (see Ghostty section above)
+
+**Usage:** Press `CTRL+SHIFT+K` to open the picker. The native terminal UI works beautifully in Ghostty.
+
 ### Standalone
 
 Just use `kpick` or `kswitch` - they work in any terminal that runs your shell.

@@ -495,6 +495,10 @@ main() {
     echo ""
     if [ "$TERMINAL" = "wezterm" ]; then
         echo "  WezTerm: Press CTRL+SHIFT+K to open the picker"
+    elif [ "$TERMINAL" = "ghostty" ]; then
+        echo "  Ghostty: Add keybinding to ~/.config/ghostty/config:"
+        echo "    keybind = \"ctrl+shift+k\", \"spawn\", \"k8pk\", \"pick\""
+        echo "  See ghostty/README.md for full setup instructions"
     fi
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
