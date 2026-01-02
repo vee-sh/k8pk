@@ -28,9 +28,14 @@ configs:
 # Useful for terminal title updates, notifications, etc.
 hooks:
   # Run when entering a context (after spawn/pick)
-  start_ctx: 'echo -en "\033]1; `k8pk info ctx`|`k8pk info ns` \007"'
+  # OSC sequence for window title (works with Ghostty, kitty, iTerm2, etc.)
+  start_ctx: 'echo -en "\033]1;⎈ $(k8pk info ctx --display)${K8PK_NAMESPACE:+:$K8PK_NAMESPACE}\007"'
   # Run when exiting a context shell
-  stop_ctx: 'echo -en "\033]1; $SHELL \007"'
+  stop_ctx: 'echo -en "\033]1;$SHELL\007"'
+  
+  # Ghostty-specific: Update window title with context info
+  # Ghostty supports OSC sequences for window titles (OSC 1)
+  # The above start_ctx hook works automatically with Ghostty
 
 # Context aliases (short names for long context names)
 # Use short names in commands: k8pk ctx prod

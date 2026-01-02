@@ -103,6 +103,8 @@ detect_terminal() {
     # Check environment variables
     if [ -n "${TERM_PROGRAM:-}" ]; then
         TERMINAL="$TERM_PROGRAM"
+    elif [ -n "${GHOSTTY:-}" ]; then
+        TERMINAL="ghostty"
     elif [ -n "${WEZTERM_EXECUTABLE:-}" ]; then
         TERMINAL="wezterm"
     elif [ -n "${ITERM_SESSION_ID:-}" ]; then
@@ -115,6 +117,9 @@ detect_terminal() {
         TERMINAL="tmux"
     elif [ -n "${TERM:-}" ]; then
         case "$TERM" in
+            *ghostty*)
+                TERMINAL="ghostty"
+                ;;
             *wezterm*)
                 TERMINAL="wezterm"
                 ;;

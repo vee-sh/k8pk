@@ -4,7 +4,7 @@ Cross-terminal Kubernetes context/namespace switcher. Works in any terminal via 
 
 ## Features
 
-- **Cross-terminal**: Works in bash, zsh, fish, tmux, kitty, Alacritty, iTerm2, and more
+- **Cross-terminal**: Works in bash, zsh, fish, tmux, kitty, Ghostty, Alacritty, iTerm2, and more
 - **WezTerm integration**: Native plugin with in-terminal selectors and per-tab isolation
 - **Interactive picker**: Built-in UI with arrow key navigation and type-to-search (no external dependencies needed)
 - **Namespace support**: Pick context and namespace (kubie-like)
@@ -368,6 +368,25 @@ tmux new-window -n "⎈ ${K8PK_CONTEXT_DISPLAY:-$K8PK_CONTEXT}:$K8PK_NAMESPACE" 
 kitty @ launch --type=tab --tab-title "⎈ $(k8pk pick --output json | jq -r '.context')" \
   --env=KUBECONFIG=$(k8pk env --context dev --namespace prod | grep KUBECONFIG | cut -d= -f2) \
   $SHELL
+```
+
+### Ghostty
+
+Ghostty automatically updates window titles via OSC sequences. Configure hooks in `~/.kube/k8pk.yaml`:
+
+```yaml
+hooks:
+  # Update window title with context and namespace
+  start_ctx: 'echo -en "\033]1;⎈ $(k8pk info ctx --display)$([ -n "$K8PK_NAMESPACE" ] && echo ":$K8PK_NAMESPACE" || echo "")\007"'
+  stop_ctx: 'echo -en "\033]1;$SHELL\007"'
+```
+
+Or use the shell prompt integration:
+
+```bash
+# In your shell config (.bashrc, .zshrc, etc.)
+# Update Ghostty window title when context changes
+export PROMPT_COMMAND='echo -en "\033]1;⎈ ${K8PK_CONTEXT_DISPLAY:-${K8PK_CONTEXT:-$SHELL}}${K8PK_NAMESPACE:+:$K8PK_NAMESPACE}\007"'
 ```
 
 ### Standalone
