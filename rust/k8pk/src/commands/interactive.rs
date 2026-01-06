@@ -49,7 +49,8 @@ fn pick_cluster_with_namespace(
         }
 
         // Get server URL for better cluster detection
-        let server_url = if let Ok((cluster_name, _)) = kubeconfig::extract_context_refs(&ctx.rest) {
+        let server_url = if let Ok((cluster_name, _)) = kubeconfig::extract_context_refs(&ctx.rest)
+        {
             cfg.clusters
                 .iter()
                 .find(|c| c.name == cluster_name)
@@ -59,7 +60,7 @@ fn pick_cluster_with_namespace(
         };
 
         let base_cluster = kubeconfig::extract_base_cluster_name(&ctx.name, server_url.as_deref());
-        
+
         // Extract namespace from context if present
         let namespace = if let serde_yaml_ng::Value::Mapping(map) = &ctx.rest {
             if let Some(serde_yaml_ng::Value::Mapping(ctx_map)) =
@@ -78,7 +79,7 @@ fn pick_cluster_with_namespace(
 
         cluster_groups
             .entry(base_cluster)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((&ctx.name, namespace));
     }
 
@@ -93,17 +94,18 @@ fn pick_cluster_with_namespace(
             // Find a representative context for this cluster to get server URL
             let rep_ctx = cluster_groups[base].first().map(|(name, _)| *name);
             let server_url = rep_ctx.and_then(|name| {
-                cfg.contexts
-                    .iter()
-                    .find(|c| c.name == name)
-                    .and_then(|c| {
-                        kubeconfig::extract_context_refs(&c.rest).ok().and_then(|(cluster_name, _)| {
+                cfg.contexts.iter().find(|c| c.name == name).and_then(|c| {
+                    kubeconfig::extract_context_refs(&c.rest)
+                        .ok()
+                        .and_then(|(cluster_name, _)| {
                             cfg.clusters
                                 .iter()
                                 .find(|cl| cl.name == cluster_name)
-                                .and_then(|cl| kubeconfig::extract_server_url_from_cluster(&cl.rest))
+                                .and_then(|cl| {
+                                    kubeconfig::extract_server_url_from_cluster(&cl.rest)
+                                })
                         })
-                    })
+                })
             });
             let cluster_type = kubeconfig::detect_cluster_type(base, server_url.as_deref());
             let display = kubeconfig::friendly_context_name(base, cluster_type);
@@ -115,20 +117,18 @@ fn pick_cluster_with_namespace(
     cluster_choices.sort_by(|a, b| a.1.cmp(&b.1));
 
     // Mark current cluster if any
-    let current_base = current.and_then(|ctx| {
-        let server_url = cfg
-            .contexts
-            .iter()
-            .find(|c| c.name == ctx)
-            .and_then(|c| {
-                kubeconfig::extract_context_refs(&c.rest).ok().and_then(|(cluster_name, _)| {
+    let current_base = current.map(|ctx| {
+        let server_url = cfg.contexts.iter().find(|c| c.name == ctx).and_then(|c| {
+            kubeconfig::extract_context_refs(&c.rest)
+                .ok()
+                .and_then(|(cluster_name, _)| {
                     cfg.clusters
                         .iter()
                         .find(|cl| cl.name == cluster_name)
                         .and_then(|cl| kubeconfig::extract_server_url_from_cluster(&cl.rest))
                 })
-            });
-        Some(kubeconfig::extract_base_cluster_name(ctx, server_url.as_deref()))
+        });
+        kubeconfig::extract_base_cluster_name(ctx, server_url.as_deref())
     });
 
     let cluster_display: Vec<String> = cluster_choices
@@ -151,7 +151,10 @@ fn pick_cluster_with_namespace(
     let selected_base = cluster_choices
         .iter()
         .find(|(_, display)| {
-            display == selected_display.strip_suffix(" *").unwrap_or(&selected_display)
+            display
+                == selected_display
+                    .strip_suffix(" *")
+                    .unwrap_or(&selected_display)
         })
         .map(|(base, _)| base.clone())
         .ok_or_else(|| K8pkError::Other("Selected cluster not found".into()))?;
