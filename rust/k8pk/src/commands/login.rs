@@ -952,10 +952,6 @@ fn ocp_login(
         return Err(K8pkError::CommandFailed("oc login failed".into()));
     }
 
-    // Refresh token: get a new token from the cluster
-    // This ensures we always have a fresh token
-    refresh_ocp_token(&kubeconfig_path, &context_name)?;
-
     // Rename context in the generated file and extract namespace
     let mut namespace = None;
     if kubeconfig_path.exists() {
@@ -994,6 +990,11 @@ fn ocp_login(
         let yaml = serde_yaml_ng::to_string(&cfg)?;
         fs::write(&kubeconfig_path, yaml)?;
     }
+
+    // Refresh token: get a new token from the cluster
+    // This ensures we always have a fresh token
+    // Do this after renaming the context so we can find it by name
+    refresh_ocp_token(&kubeconfig_path, &context_name)?;
 
     if test {
         test_ocp_auth(&kubeconfig_path, test_timeout)?;
@@ -1359,8 +1360,17 @@ fn refresh_ocp_token(kubeconfig_path: &Path, context_name: &str) -> Result<()> {
     let content = fs::read_to_string(kubeconfig_path)?;
     let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
 
-    // Find the user associated with the context
-    if let Some(ctx) = cfg.contexts.iter().find(|c| c.name == context_name) {
+    // Find the user associated with the current context (or the specified context name)
+    // First try to find by context_name, but if that fails, use the current context
+    let target_context = if let Some(ctx) = cfg.contexts.iter().find(|c| c.name == context_name) {
+        Some(ctx)
+    } else if let Some(current_ctx_name) = &cfg.current_context {
+        cfg.contexts.iter().find(|c| c.name == *current_ctx_name)
+    } else {
+        cfg.contexts.first()
+    };
+
+    if let Some(ctx) = target_context {
         if let Ok((_, user_name)) = kubeconfig::extract_context_refs(&ctx.rest) {
             if let Some(user) = cfg.users.iter_mut().find(|u| u.name == user_name) {
                 // Update token in user config
