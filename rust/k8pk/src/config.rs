@@ -19,6 +19,8 @@ pub struct K8pkConfig {
     pub hooks: Option<HooksSection>,
     #[serde(default)]
     pub aliases: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub pick: Option<PickSection>,
 }
 
 /// Hooks configuration section
@@ -28,6 +30,14 @@ pub struct HooksSection {
     pub start_ctx: Option<String>,
     #[serde(default)]
     pub stop_ctx: Option<String>,
+}
+
+/// Pick configuration section
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct PickSection {
+    /// Show only clusters (group contexts by base cluster name)
+    #[serde(default)]
+    pub clusters_only: bool,
 }
 
 /// Configs section for kubeconfig file discovery

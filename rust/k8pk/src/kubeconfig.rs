@@ -515,6 +515,54 @@ pub fn detect_cluster_type(context_name: &str, server_url: Option<&str>) -> &'st
     "k8s"
 }
 
+/// Extract base cluster name from a context name (removes namespace suffixes)
+/// This helps group namespace-specific contexts under their base cluster
+pub fn extract_base_cluster_name(context_name: &str, server_url: Option<&str>) -> String {
+    let cluster_type = detect_cluster_type(context_name, server_url);
+    
+    match cluster_type {
+        "ocp" => {
+            // OpenShift format: project/api-host:port/user or project/api-host:port/user/namespace
+            // Extract up to the server part (first two parts separated by /)
+            let parts: Vec<&str> = context_name.split('/').collect();
+            if parts.len() >= 2 {
+                // Return project/server-part (base cluster identifier)
+                return format!("{}/{}", parts[0], parts[1]);
+            }
+        }
+        "eks" => {
+            // EKS format: arn:aws:eks:region:account:cluster/cluster-name or cluster-name/namespace
+            if context_name.contains("cluster/") {
+                // Full ARN format - extract cluster name
+                if let Some(cluster_part) = context_name.split("cluster/").last() {
+                    // If there's a namespace suffix (cluster-name/namespace), remove it
+                    return cluster_part.split('/').next().unwrap_or(cluster_part).to_string();
+                }
+            } else if context_name.contains('/') {
+                // cluster-name/namespace format - extract base
+                return context_name.split('/').next().unwrap_or(context_name).to_string();
+            }
+        }
+        "gke" => {
+            // GKE format: gke_project_zone_cluster or gke_project_zone_cluster_namespace
+            // Namespace contexts might have an extra suffix
+            let parts: Vec<&str> = context_name.split('_').collect();
+            if parts.len() >= 4 {
+                // Return base cluster (first 4 parts: gke_project_zone_cluster)
+                return parts[0..4].join("_");
+            }
+        }
+        _ => {
+            // Generic: cluster-name or cluster-name/namespace
+            if context_name.contains('/') {
+                return context_name.split('/').next().unwrap_or(context_name).to_string();
+            }
+        }
+    }
+    
+    context_name.to_string()
+}
+
 /// Generate a friendly name for a context
 pub fn friendly_context_name(context_name: &str, cluster_type: &str) -> String {
     match cluster_type {
