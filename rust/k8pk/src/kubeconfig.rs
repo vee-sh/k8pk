@@ -519,7 +519,7 @@ pub fn detect_cluster_type(context_name: &str, server_url: Option<&str>) -> &'st
 /// This helps group namespace-specific contexts under their base cluster
 pub fn extract_base_cluster_name(context_name: &str, server_url: Option<&str>) -> String {
     let cluster_type = detect_cluster_type(context_name, server_url);
-    
+
     match cluster_type {
         "ocp" => {
             // OpenShift format: project/api-host:port/user or project/api-host:port/user/namespace
@@ -536,11 +536,19 @@ pub fn extract_base_cluster_name(context_name: &str, server_url: Option<&str>) -
                 // Full ARN format - extract cluster name
                 if let Some(cluster_part) = context_name.split("cluster/").last() {
                     // If there's a namespace suffix (cluster-name/namespace), remove it
-                    return cluster_part.split('/').next().unwrap_or(cluster_part).to_string();
+                    return cluster_part
+                        .split('/')
+                        .next()
+                        .unwrap_or(cluster_part)
+                        .to_string();
                 }
             } else if context_name.contains('/') {
                 // cluster-name/namespace format - extract base
-                return context_name.split('/').next().unwrap_or(context_name).to_string();
+                return context_name
+                    .split('/')
+                    .next()
+                    .unwrap_or(context_name)
+                    .to_string();
             }
         }
         "gke" => {
@@ -555,11 +563,15 @@ pub fn extract_base_cluster_name(context_name: &str, server_url: Option<&str>) -
         _ => {
             // Generic: cluster-name or cluster-name/namespace
             if context_name.contains('/') {
-                return context_name.split('/').next().unwrap_or(context_name).to_string();
+                return context_name
+                    .split('/')
+                    .next()
+                    .unwrap_or(context_name)
+                    .to_string();
             }
         }
     }
-    
+
     context_name.to_string()
 }
 
