@@ -696,6 +696,38 @@ fn main() -> anyhow::Result<()> {
             generate_completions(&shell)?;
         }
 
+        Command::Config {
+            init,
+            show,
+            path,
+            edit,
+        } => {
+            if path {
+                let config_path = config::config_path()?;
+                println!("{}", config_path.display());
+            } else if init {
+                let config_path = config::init_config()?;
+                println!("Config file initialized at: {}", config_path.display());
+            } else if show {
+                let cfg = config::load_uncached()?;
+                let yaml = serde_yaml_ng::to_string(&cfg)?;
+                println!("{}", yaml);
+            } else if edit {
+                commands::edit_config()?;
+            } else {
+                // Default: show path and suggest actions
+                let config_path = config::config_path()?;
+                if config_path.exists() {
+                    println!("Config file: {}", config_path.display());
+                    println!("\nUse 'k8pk config edit' to edit interactively");
+                    println!("Use 'k8pk config show' to view current config");
+                } else {
+                    println!("Config file not found: {}", config_path.display());
+                    println!("\nUse 'k8pk config init' to create a default config file");
+                }
+            }
+        }
+
         Command::Lint {
             file,
             strict,

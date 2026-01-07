@@ -120,6 +120,76 @@ pub fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Generate a default config template with comments
+pub fn generate_template() -> String {
+    r#"# k8pk configuration file
+# This file is located at ~/.kube/k8pk.yaml
+# All parameters are optional and have sensible defaults
+
+# Kubeconfig file discovery patterns
+# These patterns are used to find kubeconfig files to load
+configs:
+  # Include patterns (globs supported, ~ expands to home directory)
+  include:
+    - "~/.kube/config"
+    - "~/.kube/*.yml"
+    - "~/.kube/*.yaml"
+    - "~/.kube/configs/*.yml"
+    - "~/.kube/configs/*.yaml"
+  
+  # Exclude patterns (files matching these won't be loaded)
+  exclude:
+    - "~/.kube/k8pk.yaml"
+
+# Shell hooks (commands to run when entering/leaving contexts)
+# Uncomment and customize as needed
+# hooks:
+#   # Command to run when switching to a context
+#   # Example: "notify-send 'Switched to {}'"
+#   start_ctx: ""
+#   
+#   # Command to run when leaving a context
+#   # Example: "echo 'Leaving context'"
+#   stop_ctx: ""
+
+# Context aliases (short names for long context names)
+# Uncomment and add your aliases:
+# aliases:
+#   prod: "arn:aws:eks:us-east-1:123456789:cluster/production"
+#   dev: "gke_my-project_us-central1_dev-cluster"
+#   staging: "ocp-staging/api.example.com:6443/admin"
+
+# Picker configuration
+# Uncomment to enable clusters_only mode:
+# pick:
+#   # When true, shows only clusters (groups contexts by base cluster name)
+#   # instead of showing all namespace-specific contexts
+#   # Useful when you have thousands of namespace contexts
+#   clusters_only: false
+"#
+    .to_string()
+}
+
+/// Initialize config file if it doesn't exist
+pub fn init_config() -> Result<PathBuf> {
+    let path = config_path()?;
+
+    if path.exists() {
+        return Ok(path);
+    }
+
+    // Create parent directory if needed
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    // Write template
+    let template = generate_template();
+    fs::write(&path, template)?;
+
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

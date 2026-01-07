@@ -443,6 +443,27 @@ pub enum Command {
         quiet: bool,
     },
 
+    /// Manage k8pk configuration
+    #[command(after_help = "Examples:\n  \
+        k8pk config init          # Create default config file\n  \
+        k8pk config edit          # Interactive config editor\n  \
+        k8pk config show          # Show current config\n  \
+        k8pk config path          # Show config file path")]
+    Config {
+        /// Initialize config file with template
+        #[arg(long, help = "Create default config file if it doesn't exist")]
+        init: bool,
+        /// Show current configuration
+        #[arg(long, help = "Show current configuration")]
+        show: bool,
+        /// Show config file path
+        #[arg(long, help = "Show config file path")]
+        path: bool,
+        /// Edit configuration interactively
+        #[arg(long, short = 'e', help = "Open interactive config editor")]
+        edit: bool,
+    },
+
     /// Edit kubeconfig files in your editor
     Edit {
         /// Context to edit (opens its source file)
