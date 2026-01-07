@@ -115,35 +115,9 @@ fn pick_cluster_with_namespace(
                 })
                 .unwrap_or((None, ""));
 
-            // Generate display name: use friendly name from first context, or cluster key
-            let display = if let Some(url) = server_url.as_ref() {
-                let cluster_type = kubeconfig::detect_cluster_type(context_name, Some(url));
-                // Try to extract a nice name from the server URL or context
-                if cluster_key.starts_with("http://") || cluster_key.starts_with("https://") {
-                    // Extract hostname from URL
-                    cluster_key
-                        .trim_start_matches("https://")
-                        .trim_start_matches("http://")
-                        .split('/')
-                        .next()
-                        .unwrap_or(cluster_key)
-                        .split(':')
-                        .next()
-                        .unwrap_or(cluster_key)
-                        .to_string()
-                } else {
-                    // Use friendly context name
-                    kubeconfig::friendly_context_name(context_name, cluster_type)
-                }
-            } else {
-                // Fallback: use the cluster key or first context name
-                if cluster_key.contains('/') || cluster_key.contains('@') {
-                    let cluster_type = kubeconfig::detect_cluster_type(context_name, None);
-                    kubeconfig::friendly_context_name(context_name, cluster_type)
-                } else {
-                    cluster_key.clone()
-                }
-            };
+            // Generate display name: use the cluster key (base cluster name) as the display name
+            // This ensures we show the grouped cluster name, not individual context names
+            let display = cluster_key.clone();
             (cluster_key.clone(), display)
         })
         .collect();

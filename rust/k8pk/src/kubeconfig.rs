@@ -605,16 +605,18 @@ pub fn extract_base_cluster_name(context_name: &str, server_url: Option<&str>) -
                         // Return first 3 parts as base cluster
                         return format!("{}-{}-{}", parts[0], parts[1], parts[2]);
                     }
-                } else if !has_node_indicator && parts.len() >= 3 {
+                } else if !has_node_indicator {
                     // For contexts that look like base clusters (no node indicators),
-                    // check if parts[2] is a number - if so, it's likely a base cluster
+                    // check if the last part is a number - if so, it's likely a base cluster
                     // Examples:
-                    //   rno-hwinf-01 -> rno-hwinf-01 (already base)
-                    //   sc-hwinf-02 -> sc-hwinf-02 (already base)
-                    //   sbx-alexv-aws-01 -> sbx-alexv-aws-01 (already base)
-                    if parts[2].chars().all(|c| c.is_ascii_digit()) && parts.len() == 3 {
-                        // This is already a base cluster name (3 parts ending in number)
-                        return context_name.to_string();
+                    //   rno-hwinf-01 -> rno-hwinf-01 (already base, 3 parts)
+                    //   sc-hwinf-02 -> sc-hwinf-02 (already base, 3 parts)
+                    //   sbx-alexv-aws-01 -> sbx-alexv-aws-01 (already base, 4 parts)
+                    if let Some(last_part) = parts.last() {
+                        if last_part.chars().all(|c| c.is_ascii_digit()) {
+                            // This is already a base cluster name (ends in number, no node indicators)
+                            return context_name.to_string();
+                        }
                     }
                 }
             }
