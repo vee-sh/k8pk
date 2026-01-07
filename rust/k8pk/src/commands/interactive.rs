@@ -134,10 +134,10 @@ fn pick_cluster_with_namespace(
                         .trim_start_matches("http://")
                         .split('/')
                         .next()
-                        .unwrap_or(&cluster_key)
+                        .unwrap_or(cluster_key)
                         .split(':')
                         .next()
-                        .unwrap_or(&cluster_key)
+                        .unwrap_or(cluster_key)
                         .to_string()
                 } else {
                     // Use friendly context name
