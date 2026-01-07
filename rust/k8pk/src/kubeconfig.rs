@@ -598,10 +598,23 @@ pub fn extract_base_cluster_name(context_name: &str, server_url: Option<&str>) -
                     // Examples:
                     //   pdx-hwinf-01-pdx01-hw-k8s-controller-01 -> pdx-hwinf-01
                     //   rno-hwinf-01-rno-hw-k8s-master-01 -> rno-hwinf-01
+                    //   sc-hwinf-01-dc2-hw-k8s-master-04 -> sc-hwinf-01
+                    //   sc-hwinf-01-dc7-hw-k8s-master-07 -> sc-hwinf-01
                     // Check if parts[2] is a number (cluster number like "01")
                     if parts.len() >= 3 && parts[2].chars().all(|c| c.is_ascii_digit()) {
                         // Return first 3 parts as base cluster
                         return format!("{}-{}-{}", parts[0], parts[1], parts[2]);
+                    }
+                } else if !has_node_indicator && parts.len() >= 3 {
+                    // For contexts that look like base clusters (no node indicators),
+                    // check if parts[2] is a number - if so, it's likely a base cluster
+                    // Examples:
+                    //   rno-hwinf-01 -> rno-hwinf-01 (already base)
+                    //   sc-hwinf-02 -> sc-hwinf-02 (already base)
+                    //   sbx-alexv-aws-01 -> sbx-alexv-aws-01 (already base)
+                    if parts[2].chars().all(|c| c.is_ascii_digit()) && parts.len() == 3 {
+                        // This is already a base cluster name (3 parts ending in number)
+                        return context_name.to_string();
                     }
                 }
             }
@@ -719,11 +732,25 @@ mod tests {
 
     #[test]
     fn test_extract_base_cluster_name_rancher() {
-        // Rancher Prime patterns
+        // Rancher Prime patterns - base clusters
         assert_eq!(
             extract_base_cluster_name("pdx-hwinf-01", None),
             "pdx-hwinf-01"
         );
+        assert_eq!(
+            extract_base_cluster_name("rno-hwinf-01", None),
+            "rno-hwinf-01"
+        );
+        assert_eq!(
+            extract_base_cluster_name("sc-hwinf-02", None),
+            "sc-hwinf-02"
+        );
+        assert_eq!(
+            extract_base_cluster_name("sbx-alexv-aws-01", None),
+            "sbx-alexv-aws-01"
+        );
+
+        // Rancher Prime patterns - node contexts
         assert_eq!(
             extract_base_cluster_name("pdx-hwinf-01-pdx01-hw-k8s-controller-01", None),
             "pdx-hwinf-01"
@@ -739,6 +766,14 @@ mod tests {
         assert_eq!(
             extract_base_cluster_name("rno-hwinf-01-rno-hw-k8s-master-02", None),
             "rno-hwinf-01"
+        );
+        assert_eq!(
+            extract_base_cluster_name("sc-hwinf-01-dc2-hw-k8s-master-04", None),
+            "sc-hwinf-01"
+        );
+        assert_eq!(
+            extract_base_cluster_name("sc-hwinf-01-dc7-hw-k8s-master-07", None),
+            "sc-hwinf-01"
         );
     }
 

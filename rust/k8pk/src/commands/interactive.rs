@@ -60,18 +60,10 @@ fn pick_cluster_with_namespace(
             None
         };
 
-        // Use server URL as the primary grouping key (normalized)
-        // This groups all contexts pointing to the same cluster server
-        let cluster_key = if let Some(url) = server_url.as_ref() {
-            // Normalize server URL (remove protocol, trailing slashes, etc.)
-            url.trim_start_matches("https://")
-                .trim_start_matches("http://")
-                .trim_end_matches('/')
-                .to_string()
-        } else {
-            // Fallback to base cluster name extraction if no server URL
-            kubeconfig::extract_base_cluster_name(&ctx.name, server_url.as_deref())
-        };
+        // For clusters_only mode, always use base cluster name extraction for grouping
+        // This ensures contexts from the same logical cluster are grouped together,
+        // even if they point to different physical nodes/servers (like Rancher Prime)
+        let cluster_key = kubeconfig::extract_base_cluster_name(&ctx.name, server_url.as_deref());
 
         // Extract namespace from context if present
         let namespace = if let serde_yaml_ng::Value::Mapping(map) = &ctx.rest {
@@ -159,28 +151,8 @@ fn pick_cluster_with_namespace(
     // Sort by display name
     cluster_choices.sort_by(|a, b| a.1.cmp(&b.1));
 
-    // Mark current cluster if any
-    let current_cluster_key = current.and_then(|ctx| {
-        cfg.contexts.iter().find(|c| c.name == ctx).map(|c| {
-            let server_url =
-                kubeconfig::extract_context_refs(&c.rest)
-                    .ok()
-                    .and_then(|(cluster_name, _)| {
-                        cfg.clusters
-                            .iter()
-                            .find(|cl| cl.name == cluster_name)
-                            .and_then(|cl| kubeconfig::extract_server_url_from_cluster(&cl.rest))
-                    });
-            if let Some(url) = server_url {
-                url.trim_start_matches("https://")
-                    .trim_start_matches("http://")
-                    .trim_end_matches('/')
-                    .to_string()
-            } else {
-                kubeconfig::extract_base_cluster_name(ctx, server_url.as_deref())
-            }
-        })
-    });
+    // Mark current cluster if any (use same logic as grouping)
+    let current_cluster_key = current.map(|ctx| kubeconfig::extract_base_cluster_name(ctx, None));
 
     let cluster_display: Vec<String> = cluster_choices
         .iter()
