@@ -572,8 +572,8 @@ pub fn extract_base_cluster_name(context_name: &str, server_url: Option<&str>) -
 
             // Rancher Prime pattern: base-cluster-location-type-number
             // Examples:
-            //   pdx-hwinf-01-pdx01-hw-k8s-controller-01 -> pdx-hwinf-01
-            //   rno-hwinf-01-rno-hw-k8s-master-01 -> rno-hwinf-01
+            //   test-cluster-01-dc01-hw-k8s-controller-01 -> test-cluster-01
+            //   test-cluster-02-dc02-hw-k8s-master-01 -> test-cluster-02
             // Pattern: if we see a base cluster name followed by location/type/number pattern,
             // extract just the base cluster (first part before the location identifier)
             if context_name.contains('-') {
@@ -596,10 +596,10 @@ pub fn extract_base_cluster_name(context_name: &str, server_url: Option<&str>) -
                 if has_node_indicator && parts.len() > 3 {
                     // For node contexts, the base cluster is typically the first 3 parts
                     // Examples:
-                    //   pdx-hwinf-01-pdx01-hw-k8s-controller-01 -> pdx-hwinf-01
-                    //   rno-hwinf-01-rno-hw-k8s-master-01 -> rno-hwinf-01
-                    //   sc-hwinf-01-dc2-hw-k8s-master-04 -> sc-hwinf-01
-                    //   sc-hwinf-01-dc7-hw-k8s-master-07 -> sc-hwinf-01
+                    //   test-cluster-01-dc01-hw-k8s-controller-01 -> test-cluster-01
+                    //   test-cluster-02-dc02-hw-k8s-master-01 -> test-cluster-02
+                    //   test-cluster-03-dc2-hw-k8s-master-04 -> test-cluster-03
+                    //   test-cluster-03-dc7-hw-k8s-master-07 -> test-cluster-03
                     // Check if parts[2] is a number (cluster number like "01")
                     if parts.len() >= 3 && parts[2].chars().all(|c| c.is_ascii_digit()) {
                         // Return first 3 parts as base cluster
@@ -609,9 +609,9 @@ pub fn extract_base_cluster_name(context_name: &str, server_url: Option<&str>) -
                     // For contexts that look like base clusters (no node indicators),
                     // check if the last part is a number - if so, it's likely a base cluster
                     // Examples:
-                    //   rno-hwinf-01 -> rno-hwinf-01 (already base, 3 parts)
-                    //   sc-hwinf-02 -> sc-hwinf-02 (already base, 3 parts)
-                    //   sbx-alexv-aws-01 -> sbx-alexv-aws-01 (already base, 4 parts)
+                    //   test-cluster-01 -> test-cluster-01 (already base, 3 parts)
+                    //   test-cluster-02 -> test-cluster-02 (already base, 3 parts)
+                    //   test-cluster-aws-01 -> test-cluster-aws-01 (already base, 4 parts)
                     if let Some(last_part) = parts.last() {
                         if last_part.chars().all(|c| c.is_ascii_digit()) {
                             // This is already a base cluster name (ends in number, no node indicators)
@@ -736,46 +736,46 @@ mod tests {
     fn test_extract_base_cluster_name_rancher() {
         // Rancher Prime patterns - base clusters
         assert_eq!(
-            extract_base_cluster_name("pdx-hwinf-01", None),
-            "pdx-hwinf-01"
+            extract_base_cluster_name("test-cluster-01", None),
+            "test-cluster-01"
         );
         assert_eq!(
-            extract_base_cluster_name("rno-hwinf-01", None),
-            "rno-hwinf-01"
+            extract_base_cluster_name("test-cluster-02", None),
+            "test-cluster-02"
         );
         assert_eq!(
-            extract_base_cluster_name("sc-hwinf-02", None),
-            "sc-hwinf-02"
+            extract_base_cluster_name("test-cluster-04", None),
+            "test-cluster-04"
         );
         assert_eq!(
-            extract_base_cluster_name("sbx-alexv-aws-01", None),
-            "sbx-alexv-aws-01"
+            extract_base_cluster_name("test-cluster-aws-01", None),
+            "test-cluster-aws-01"
         );
 
         // Rancher Prime patterns - node contexts
         assert_eq!(
-            extract_base_cluster_name("pdx-hwinf-01-pdx01-hw-k8s-controller-01", None),
-            "pdx-hwinf-01"
+            extract_base_cluster_name("test-cluster-01-dc01-hw-k8s-controller-01", None),
+            "test-cluster-01"
         );
         assert_eq!(
-            extract_base_cluster_name("pdx-hwinf-01-pdx01-hw-k8s-controller-02", None),
-            "pdx-hwinf-01"
+            extract_base_cluster_name("test-cluster-01-dc01-hw-k8s-controller-02", None),
+            "test-cluster-01"
         );
         assert_eq!(
-            extract_base_cluster_name("rno-hwinf-01-rno-hw-k8s-master-01", None),
-            "rno-hwinf-01"
+            extract_base_cluster_name("test-cluster-02-dc02-hw-k8s-master-01", None),
+            "test-cluster-02"
         );
         assert_eq!(
-            extract_base_cluster_name("rno-hwinf-01-rno-hw-k8s-master-02", None),
-            "rno-hwinf-01"
+            extract_base_cluster_name("test-cluster-02-dc02-hw-k8s-master-02", None),
+            "test-cluster-02"
         );
         assert_eq!(
-            extract_base_cluster_name("sc-hwinf-01-dc2-hw-k8s-master-04", None),
-            "sc-hwinf-01"
+            extract_base_cluster_name("test-cluster-03-dc2-hw-k8s-master-04", None),
+            "test-cluster-03"
         );
         assert_eq!(
-            extract_base_cluster_name("sc-hwinf-01-dc7-hw-k8s-master-07", None),
-            "sc-hwinf-01"
+            extract_base_cluster_name("test-cluster-03-dc7-hw-k8s-master-07", None),
+            "test-cluster-03"
         );
     }
 
