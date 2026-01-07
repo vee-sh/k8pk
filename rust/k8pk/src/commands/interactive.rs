@@ -92,34 +92,11 @@ fn pick_cluster_with_namespace(
     }
 
     // Build cluster list with display names
+    // Use the cluster key (base cluster name) as the display name
+    // This ensures we show the grouped cluster name, not individual context names
     let mut cluster_choices: Vec<(String, String)> = cluster_groups
         .keys()
-        .map(|cluster_key| {
-            // Find a representative context for this cluster to get info
-            let rep_ctx = cluster_groups[cluster_key].first().map(|(name, _)| *name);
-            let (server_url, context_name) = rep_ctx
-                .and_then(|name| {
-                    cfg.contexts.iter().find(|c| c.name == name).map(|c| {
-                        let server_url = kubeconfig::extract_context_refs(&c.rest).ok().and_then(
-                            |(cluster_name, _)| {
-                                cfg.clusters
-                                    .iter()
-                                    .find(|cl| cl.name == cluster_name)
-                                    .and_then(|cl| {
-                                        kubeconfig::extract_server_url_from_cluster(&cl.rest)
-                                    })
-                            },
-                        );
-                        (server_url, c.name.as_str())
-                    })
-                })
-                .unwrap_or((None, ""));
-
-            // Generate display name: use the cluster key (base cluster name) as the display name
-            // This ensures we show the grouped cluster name, not individual context names
-            let display = cluster_key.clone();
-            (cluster_key.clone(), display)
-        })
+        .map(|cluster_key| (cluster_key.clone(), cluster_key.clone()))
         .collect();
 
     // Sort by display name
