@@ -1,0 +1,78 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]  # Run checks on every push to main
+  pull_request:
+    branches: [main]  # Lint/test PRs before merge
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/k8pk/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/k8pk/Cargo.lock') }}
+      - name: Check
+        working-directory: rust/k8pk
+        run: cargo check --locked
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        working-directory: rust/k8pk
+        run: cargo fmt --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/k8pk/target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('rust/k8pk/Cargo.lock') }}
+      - name: Clippy
+        working-directory: rust/k8pk
+        run: cargo clippy --locked -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/k8pk/target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('rust/k8pk/Cargo.lock') }}
+      - name: Run tests
+        working-directory: rust/k8pk
+        run: cargo test --locked
+
