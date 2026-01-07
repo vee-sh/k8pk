@@ -161,7 +161,7 @@ fn pick_cluster_with_namespace(
 
     // Mark current cluster if any
     let current_cluster_key = current.and_then(|ctx| {
-        cfg.contexts.iter().find(|c| c.name == ctx).and_then(|c| {
+        cfg.contexts.iter().find(|c| c.name == ctx).map(|c| {
             let server_url =
                 kubeconfig::extract_context_refs(&c.rest)
                     .ok()
@@ -171,14 +171,14 @@ fn pick_cluster_with_namespace(
                             .find(|cl| cl.name == cluster_name)
                             .and_then(|cl| kubeconfig::extract_server_url_from_cluster(&cl.rest))
                     });
-            Some(if let Some(url) = server_url {
+            if let Some(url) = server_url {
                 url.trim_start_matches("https://")
                     .trim_start_matches("http://")
                     .trim_end_matches('/')
                     .to_string()
             } else {
                 kubeconfig::extract_base_cluster_name(ctx, server_url.as_deref())
-            })
+            }
         })
     });
 
