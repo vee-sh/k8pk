@@ -39,7 +39,8 @@ fn pick_cluster_with_namespace(
 
     let current = cfg.current_context.as_deref();
 
-    // Group contexts by base cluster name
+    // Group contexts by cluster server URL (primary) or base cluster name (fallback)
+    // This ensures contexts pointing to the same cluster are grouped together
     let mut cluster_groups: HashMap<String, Vec<(&str, Option<String>)>> = HashMap::new();
     let mut seen_contexts = HashSet::new();
 
@@ -59,7 +60,18 @@ fn pick_cluster_with_namespace(
             None
         };
 
-        let base_cluster = kubeconfig::extract_base_cluster_name(&ctx.name, server_url.as_deref());
+        // Use server URL as the primary grouping key (normalized)
+        // This groups all contexts pointing to the same cluster server
+        let cluster_key = if let Some(url) = server_url.as_ref() {
+            // Normalize server URL (remove protocol, trailing slashes, etc.)
+            url.trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .trim_end_matches('/')
+                .to_string()
+        } else {
+            // Fallback to base cluster name extraction if no server URL
+            kubeconfig::extract_base_cluster_name(&ctx.name, server_url.as_deref())
+        };
 
         // Extract namespace from context if present
         let namespace = if let serde_yaml_ng::Value::Mapping(map) = &ctx.rest {
@@ -78,7 +90,7 @@ fn pick_cluster_with_namespace(
         };
 
         cluster_groups
-            .entry(base_cluster)
+            .entry(cluster_key)
             .or_default()
             .push((&ctx.name, namespace));
     }
@@ -90,26 +102,57 @@ fn pick_cluster_with_namespace(
     // Build cluster list with display names
     let mut cluster_choices: Vec<(String, String)> = cluster_groups
         .keys()
-        .map(|base| {
-            // Find a representative context for this cluster to get server URL
-            let rep_ctx = cluster_groups[base].first().map(|(name, _)| *name);
-            let server_url = rep_ctx.and_then(|name| {
-                cfg.contexts.iter().find(|c| c.name == name).and_then(|c| {
-                    kubeconfig::extract_context_refs(&c.rest)
-                        .ok()
-                        .and_then(|(cluster_name, _)| {
-                            cfg.clusters
-                                .iter()
-                                .find(|cl| cl.name == cluster_name)
-                                .and_then(|cl| {
-                                    kubeconfig::extract_server_url_from_cluster(&cl.rest)
-                                })
-                        })
+        .map(|cluster_key| {
+            // Find a representative context for this cluster to get info
+            let rep_ctx = cluster_groups[cluster_key].first().map(|(name, _)| *name);
+            let (server_url, context_name) = rep_ctx
+                .and_then(|name| {
+                    cfg.contexts.iter().find(|c| c.name == name).map(|c| {
+                        let server_url = kubeconfig::extract_context_refs(&c.rest).ok().and_then(
+                            |(cluster_name, _)| {
+                                cfg.clusters
+                                    .iter()
+                                    .find(|cl| cl.name == cluster_name)
+                                    .and_then(|cl| {
+                                        kubeconfig::extract_server_url_from_cluster(&cl.rest)
+                                    })
+                            },
+                        );
+                        (server_url, c.name.as_str())
+                    })
                 })
-            });
-            let cluster_type = kubeconfig::detect_cluster_type(base, server_url.as_deref());
-            let display = kubeconfig::friendly_context_name(base, cluster_type);
-            (base.clone(), display)
+                .unwrap_or((None, ""));
+
+            // Generate display name: use friendly name from first context, or cluster key
+            let display = if let Some(url) = server_url.as_ref() {
+                let cluster_type = kubeconfig::detect_cluster_type(context_name, Some(url));
+                // Try to extract a nice name from the server URL or context
+                if cluster_key.starts_with("http://") || cluster_key.starts_with("https://") {
+                    // Extract hostname from URL
+                    cluster_key
+                        .trim_start_matches("https://")
+                        .trim_start_matches("http://")
+                        .split('/')
+                        .next()
+                        .unwrap_or(&cluster_key)
+                        .split(':')
+                        .next()
+                        .unwrap_or(&cluster_key)
+                        .to_string()
+                } else {
+                    // Use friendly context name
+                    kubeconfig::friendly_context_name(context_name, cluster_type)
+                }
+            } else {
+                // Fallback: use the cluster key or first context name
+                if cluster_key.contains('/') || cluster_key.contains('@') {
+                    let cluster_type = kubeconfig::detect_cluster_type(context_name, None);
+                    kubeconfig::friendly_context_name(context_name, cluster_type)
+                } else {
+                    cluster_key.clone()
+                }
+            };
+            (cluster_key.clone(), display)
         })
         .collect();
 
@@ -117,24 +160,36 @@ fn pick_cluster_with_namespace(
     cluster_choices.sort_by(|a, b| a.1.cmp(&b.1));
 
     // Mark current cluster if any
-    let current_base = current.map(|ctx| {
-        let server_url = cfg.contexts.iter().find(|c| c.name == ctx).and_then(|c| {
-            kubeconfig::extract_context_refs(&c.rest)
-                .ok()
-                .and_then(|(cluster_name, _)| {
-                    cfg.clusters
-                        .iter()
-                        .find(|cl| cl.name == cluster_name)
-                        .and_then(|cl| kubeconfig::extract_server_url_from_cluster(&cl.rest))
-                })
-        });
-        kubeconfig::extract_base_cluster_name(ctx, server_url.as_deref())
+    let current_cluster_key = current.and_then(|ctx| {
+        cfg.contexts.iter().find(|c| c.name == ctx).and_then(|c| {
+            let server_url =
+                kubeconfig::extract_context_refs(&c.rest)
+                    .ok()
+                    .and_then(|(cluster_name, _)| {
+                        cfg.clusters
+                            .iter()
+                            .find(|cl| cl.name == cluster_name)
+                            .and_then(|cl| kubeconfig::extract_server_url_from_cluster(&cl.rest))
+                    });
+            Some(if let Some(url) = server_url {
+                url.trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .trim_end_matches('/')
+                    .to_string()
+            } else {
+                kubeconfig::extract_base_cluster_name(ctx, server_url.as_deref())
+            })
+        })
     });
 
     let cluster_display: Vec<String> = cluster_choices
         .iter()
-        .map(|(base, display)| {
-            if current_base.as_ref().map(|b| b == base).unwrap_or(false) {
+        .map(|(key, display)| {
+            if current_cluster_key
+                .as_ref()
+                .map(|k| k == key)
+                .unwrap_or(false)
+            {
                 format!("{} *", display)
             } else {
                 display.clone()
@@ -148,7 +203,7 @@ fn pick_cluster_with_namespace(
         .prompt()
         .map_err(|_| K8pkError::Cancelled)?;
 
-    let selected_base = cluster_choices
+    let selected_key = cluster_choices
         .iter()
         .find(|(_, display)| {
             display
@@ -156,11 +211,11 @@ fn pick_cluster_with_namespace(
                     .strip_suffix(" *")
                     .unwrap_or(&selected_display)
         })
-        .map(|(base, _)| base.clone())
+        .map(|(key, _)| key.clone())
         .ok_or_else(|| K8pkError::Other("Selected cluster not found".into()))?;
 
     // Get contexts for this cluster
-    let cluster_contexts = &cluster_groups[&selected_base];
+    let cluster_contexts = &cluster_groups[&selected_key];
 
     // Find default namespace (context with namespace set, or first context)
     let default_ns = cluster_contexts

@@ -449,20 +449,8 @@ pub enum Command {
         k8pk config edit          # Interactive config editor\n  \
         k8pk config show          # Show current config\n  \
         k8pk config path          # Show config file path")]
-    Config {
-        /// Initialize config file with template
-        #[arg(long, help = "Create default config file if it doesn't exist")]
-        init: bool,
-        /// Show current configuration
-        #[arg(long, help = "Show current configuration")]
-        show: bool,
-        /// Show config file path
-        #[arg(long, help = "Show config file path")]
-        path: bool,
-        /// Edit configuration interactively
-        #[arg(long, short = 'e', help = "Open interactive config editor")]
-        edit: bool,
-    },
+    #[command(subcommand)]
+    Config(ConfigCommand),
 
     /// Edit kubeconfig files in your editor
     Edit {
@@ -629,4 +617,16 @@ pub enum Command {
         #[arg(long, help = "Output as JSON")]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// Create default config file if it doesn't exist
+    Init,
+    /// Show current configuration
+    Show,
+    /// Show config file path
+    Path,
+    /// Open interactive config editor
+    Edit,
 }
