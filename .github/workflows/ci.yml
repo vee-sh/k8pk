@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    tags: ['v*']  # Only trigger on version tags for releases
+    branches: [main]  # Run checks on every push to main
+    tags: ['v*']  # Also trigger on version tags for releases
   pull_request:
     branches: [main]  # Lint/test PRs before merge
   workflow_dispatch:
@@ -93,7 +94,8 @@ jobs:
   # ============================================
   create-release:
     name: Create Release
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != ''
+    # Only create release on tag pushes or manual dispatch with tag, and only if all checks pass
+    if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '') && always() && (needs.check.result == 'success' && needs.fmt.result == 'success' && needs.clippy.result == 'success' && needs.test.result == 'success')
     needs: [check, fmt, clippy, test]
     runs-on: ubuntu-latest
     outputs:
@@ -120,6 +122,8 @@ jobs:
   # ============================================
   build:
     name: Build ${{ matrix.target }}
+    # Only build if release was created successfully
+    if: needs.create-release.result == 'success'
     needs: [create-release]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -242,6 +246,8 @@ jobs:
   # ============================================
   upload-release:
     name: Upload Release Assets
+    # Only upload if release and builds succeeded
+    if: needs.create-release.result == 'success'
     needs: [create-release, build]
     runs-on: ubuntu-latest
     steps:
@@ -289,7 +295,8 @@ jobs:
   # ============================================
   homebrew:
     name: Update Homebrew
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Only update homebrew if release was created and assets uploaded
+    if: startsWith(github.ref, 'refs/tags/v') && needs.upload-release.result == 'success'
     needs: [upload-release]
     runs-on: ubuntu-latest
     steps:
