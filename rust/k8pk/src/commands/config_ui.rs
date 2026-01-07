@@ -100,7 +100,7 @@ pub fn edit_config() -> Result<()> {
         let action = Select::new(&prompt, choices)
             .with_page_size(10)
             .prompt()
-            .map_err(|e| handle_inquire_error(e))?;
+            .map_err(handle_inquire_error)?;
 
         match action {
             "View current config" => view_config(&config, &original_config)?,
@@ -151,7 +151,7 @@ pub fn edit_config() -> Result<()> {
                         .with_default(false)
                         .with_help_message("All changes will be lost")
                         .prompt()
-                        .map_err(|e| handle_inquire_error(e))?
+                        .map_err(handle_inquire_error)?
                     {
                         println!("{}", "Exited without saving changes.".bright_red());
                         return Ok(());
@@ -328,7 +328,7 @@ fn edit_picker_settings(config: &mut K8pkConfig, changes: &mut ChangeTracker) ->
                  instead of all namespace contexts. Useful when you have thousands of namespace contexts.",
             )
             .prompt()
-            .map_err(|e| handle_inquire_error(e))?;
+            .map_err(handle_inquire_error)?;
 
         if new_value != clusters_only {
             config.pick = Some(PickSection {
@@ -346,7 +346,7 @@ fn edit_picker_settings(config: &mut K8pkConfig, changes: &mut ChangeTracker) ->
         let choices = vec!["Edit again", "Back"];
         let action = Select::new("What would you like to do?", choices)
             .prompt()
-            .map_err(|e| handle_inquire_error(e))?;
+            .map_err(handle_inquire_error)?;
 
         if action == "Back" {
             break;
@@ -400,7 +400,7 @@ fn edit_kubeconfig_patterns(config: &mut K8pkConfig, changes: &mut ChangeTracker
 
         let action = Select::new("What would you like to do?", choices)
             .prompt()
-            .map_err(|e| handle_inquire_error(e))?;
+            .map_err(handle_inquire_error)?;
 
         match action {
             "View current patterns" => {
@@ -430,7 +430,7 @@ fn edit_kubeconfig_patterns(config: &mut K8pkConfig, changes: &mut ChangeTracker
                     )
                     .with_validator(|input: &str| validate_pattern(input))
                     .prompt()
-                    .map_err(|e| handle_inquire_error(e))?;
+                    .map_err(handle_inquire_error)?;
 
                 if !pattern.is_empty() {
                     config.configs.include.push(pattern.clone());
@@ -446,7 +446,7 @@ fn edit_kubeconfig_patterns(config: &mut K8pkConfig, changes: &mut ChangeTracker
                 let selected =
                     MultiSelect::new("Select patterns to remove:", config.configs.include.clone())
                         .prompt()
-                        .map_err(|e| handle_inquire_error(e))?;
+                        .map_err(handle_inquire_error)?;
 
                 if !selected.is_empty() {
                     config.configs.include.retain(|p| !selected.contains(p));
@@ -465,7 +465,7 @@ fn edit_kubeconfig_patterns(config: &mut K8pkConfig, changes: &mut ChangeTracker
                     )
                     .with_validator(|input: &str| validate_pattern(input))
                     .prompt()
-                    .map_err(|e| handle_inquire_error(e))?;
+                    .map_err(handle_inquire_error)?;
 
                 if !pattern.is_empty() {
                     config.configs.exclude.push(pattern.clone());
@@ -481,7 +481,7 @@ fn edit_kubeconfig_patterns(config: &mut K8pkConfig, changes: &mut ChangeTracker
                 let selected =
                     MultiSelect::new("Select patterns to remove:", config.configs.exclude.clone())
                         .prompt()
-                        .map_err(|e| handle_inquire_error(e))?;
+                        .map_err(handle_inquire_error)?;
 
                 if !selected.is_empty() {
                     config.configs.exclude.retain(|p| !selected.contains(p));
@@ -497,7 +497,7 @@ fn edit_kubeconfig_patterns(config: &mut K8pkConfig, changes: &mut ChangeTracker
                     .with_default(false)
                     .with_help_message("This will remove all custom patterns")
                     .prompt()
-                    .map_err(|e| handle_inquire_error(e))?
+                    .map_err(handle_inquire_error)?
                 {
                     config.configs = config::ConfigsSection::default();
                     changes.patterns_changed = true;
@@ -538,7 +538,7 @@ fn edit_hooks(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<()
                  Example: echo -en \"\\033]1;⎈ ${K8PK_CONTEXT}\\007\"",
             )
             .prompt()
-            .map_err(|e| handle_inquire_error(e))?;
+            .map_err(handle_inquire_error)?;
 
         let start_changed = hooks.start_ctx.as_deref() != Some(&new_start);
         hooks.start_ctx = if new_start.is_empty() {
@@ -555,7 +555,7 @@ fn edit_hooks(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<()
                  Example: echo -en \"\\033]1;$SHELL\\007\"",
             )
             .prompt()
-            .map_err(|e| handle_inquire_error(e))?;
+            .map_err(handle_inquire_error)?;
 
         let stop_changed = hooks.stop_ctx.as_deref() != Some(&new_stop);
         hooks.stop_ctx = if new_stop.is_empty() {
@@ -578,7 +578,7 @@ fn edit_hooks(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<()
         let choices = vec!["Edit again", "Back"];
         let action = Select::new("What would you like to do?", choices)
             .prompt()
-            .map_err(|e| handle_inquire_error(e))?;
+            .map_err(handle_inquire_error)?;
 
         if action == "Back" {
             break;
@@ -628,7 +628,7 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
 
         let action = Select::new("What would you like to do?", choices)
             .prompt()
-            .map_err(|e| handle_inquire_error(e))?;
+            .map_err(handle_inquire_error)?;
 
         match action {
             "View aliases" => {
@@ -680,7 +680,7 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                         },
                     )
                     .prompt()
-                    .map_err(|e| handle_inquire_error(e))?;
+                    .map_err(handle_inquire_error)?;
 
                 if alias.is_empty() {
                     continue;
@@ -688,14 +688,13 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
 
                 // Check if alias already exists
                 if let Some(ref aliases) = config.aliases {
-                    if aliases.contains_key(&alias) {
-                        if !Confirm::new(&format!("Alias '{}' already exists. Overwrite?", alias))
+                    if aliases.contains_key(&alias)
+                        && !Confirm::new(&format!("Alias '{}' already exists. Overwrite?", alias))
                             .with_default(false)
                             .prompt()
-                            .map_err(|e| handle_inquire_error(e))?
-                        {
-                            continue;
-                        }
+                            .map_err(handle_inquire_error)?
+                    {
+                        continue;
                     }
                 }
 
@@ -713,7 +712,7 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                                 available_contexts.len()
                             ))
                             .prompt()
-                            .map_err(|e| handle_inquire_error(e))?;
+                            .map_err(handle_inquire_error)?;
 
                     match selection_method {
                         "Select from available contexts" => {
@@ -725,7 +724,7 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                                         "Use arrow keys to navigate, Enter to select",
                                     )
                                     .prompt()
-                                    .map_err(|e| handle_inquire_error(e))?;
+                                    .map_err(handle_inquire_error)?;
                             selected
                         }
                         "Enter context name manually" => {
@@ -742,7 +741,7 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                             let manual_context = Text::new("Full context name:")
                                 .with_help_message(&context_help)
                                 .prompt()
-                                .map_err(|e| handle_inquire_error(e))?;
+                                .map_err(handle_inquire_error)?;
 
                             if manual_context.is_empty() {
                                 println!("{}", "Alias creation cancelled.".bright_red());
@@ -750,18 +749,17 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                             }
 
                             // Validate context exists if we have access to contexts
-                            if !available_contexts.contains(&manual_context) {
-                                if !Confirm::new(&format!(
+                            if !available_contexts.contains(&manual_context)
+                                && !Confirm::new(&format!(
                                     "Context '{}' not found in available contexts. Add anyway?",
                                     manual_context
                                 ))
                                 .with_default(false)
                                 .with_help_message("The context might be in a file not yet loaded")
                                 .prompt()
-                                .map_err(|e| handle_inquire_error(e))?
-                                {
-                                    continue;
-                                }
+                                .map_err(handle_inquire_error)?
+                            {
+                                continue;
                             }
                             manual_context
                         }
@@ -777,7 +775,7 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                     let manual_context = Text::new("Full context name:")
                         .with_help_message(context_help)
                         .prompt()
-                        .map_err(|e| handle_inquire_error(e))?;
+                        .map_err(handle_inquire_error)?;
 
                     if manual_context.is_empty() {
                         println!("{}", "Alias creation cancelled.".bright_red());
@@ -801,7 +799,7 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                     .insert(alias.clone(), context.clone());
                 changes.aliases_changed = true;
                 println!();
-                println!("{}", format!("Alias added successfully!").bright_green());
+                println!("{}", "Alias added successfully!".bright_green());
                 println!(
                     "  {} {} {}",
                     alias.bright_cyan().bold(),
@@ -819,7 +817,7 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                     let alias_names: Vec<String> = aliases.keys().cloned().collect();
                     let selected = MultiSelect::new("Select aliases to remove:", alias_names)
                         .prompt()
-                        .map_err(|e| handle_inquire_error(e))?;
+                        .map_err(handle_inquire_error)?;
 
                     if !selected.is_empty() {
                         for alias in &selected {
@@ -842,7 +840,7 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                     .with_default(false)
                     .with_help_message("This action cannot be undone")
                     .prompt()
-                    .map_err(|e| handle_inquire_error(e))?
+                    .map_err(handle_inquire_error)?
                 {
                     config.aliases = None;
                     changes.aliases_changed = true;
@@ -867,7 +865,7 @@ fn reset_to_defaults(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Re
     if !Confirm::new("Are you sure you want to reset all settings to defaults?")
         .with_default(false)
         .prompt()
-        .map_err(|e| handle_inquire_error(e))?
+        .map_err(handle_inquire_error)?
     {
         return Ok(false);
     }
@@ -876,7 +874,7 @@ fn reset_to_defaults(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Re
     if !Confirm::new("This cannot be undone. Type 'yes' to confirm:")
         .with_default(false)
         .prompt()
-        .map_err(|e| handle_inquire_error(e))?
+        .map_err(handle_inquire_error)?
     {
         return Ok(false);
     }
