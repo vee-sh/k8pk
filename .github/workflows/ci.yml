@@ -92,7 +92,7 @@ jobs:
   create-release:
     name: Create Release
     # Only create release on tag pushes or manual dispatch with tag, and only if all checks pass
-    if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '') && (needs.check.result == 'success' && needs.fmt.result == 'success' && needs.clippy.result == 'success' && needs.test.result == 'success')
+    if: always() && (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '') && needs.check.result == 'success' && needs.fmt.result == 'success' && needs.clippy.result == 'success' && needs.test.result == 'success'
     needs: [check, fmt, clippy, test]
     runs-on: ubuntu-latest
     outputs:
