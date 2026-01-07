@@ -95,7 +95,7 @@ jobs:
   create-release:
     name: Create Release
     # Only create release on tag pushes or manual dispatch with tag, and only if all checks pass
-    if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '') && always() && (needs.check.result == 'success' && needs.fmt.result == 'success' && needs.clippy.result == 'success' && needs.test.result == 'success')
+    if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '') && (needs.check.result == 'success' && needs.fmt.result == 'success' && needs.clippy.result == 'success' && needs.test.result == 'success')
     needs: [check, fmt, clippy, test]
     runs-on: ubuntu-latest
     outputs:
@@ -122,8 +122,8 @@ jobs:
   # ============================================
   build:
     name: Build ${{ matrix.target }}
-    # Only build if release was created successfully
-    if: needs.create-release.result == 'success'
+    # Only build on tag pushes and if release was created successfully
+    if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '') && needs.create-release.result == 'success'
     needs: [create-release]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -246,8 +246,8 @@ jobs:
   # ============================================
   upload-release:
     name: Upload Release Assets
-    # Only upload if release and builds succeeded
-    if: needs.create-release.result == 'success'
+    # Only upload on tag pushes and if release and builds succeeded
+    if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '') && needs.create-release.result == 'success'
     needs: [create-release, build]
     runs-on: ubuntu-latest
     steps:
