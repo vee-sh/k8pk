@@ -1441,11 +1441,17 @@ fn rancher_get_token(
 ) -> Result<String> {
     let client = reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(insecure)
+        .redirect(reqwest::redirect::Policy::none()) // Don't follow redirects for POST requests
         .build()
         .map_err(|e| K8pkError::Other(format!("Failed to create HTTP client: {}", e)))?;
 
     // Rancher API v3 login endpoint
-    let login_url = format!("{}/v3-public/localProviders/local?action=login", server);
+    // Ensure server URL doesn't have trailing slash (except for root)
+    let server_clean = server.trim_end_matches('/');
+    let login_url = format!(
+        "{}/v3-public/localProviders/local?action=login",
+        server_clean
+    );
 
     let mut request_body = serde_json::Map::new();
     request_body.insert(
@@ -1459,20 +1465,29 @@ fn rancher_get_token(
 
     let response = client
         .post(&login_url)
+        .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
         .map_err(|e| K8pkError::Other(format!("Failed to send request to Rancher API: {}", e)))?;
 
-    if !response.status().is_success() {
+    let status = response.status();
+    let response_text = response
+        .text()
+        .map_err(|e| K8pkError::Other(format!("Failed to read response body: {}", e)))?;
+
+    if !status.is_success() {
         return Err(K8pkError::Other(format!(
-            "Rancher authentication failed: {}",
-            response.status()
+            "Rancher authentication failed with status {}: {}",
+            status, response_text
         )));
     }
 
-    let json: serde_json::Value = response
-        .json()
-        .map_err(|e| K8pkError::Other(format!("Failed to parse Rancher API response: {}", e)))?;
+    let json: serde_json::Value = serde_json::from_str(&response_text).map_err(|e| {
+        K8pkError::Other(format!(
+            "Failed to parse Rancher API response as JSON: {}. Response: {}",
+            e, response_text
+        ))
+    })?;
 
     // Extract token from response
     // Rancher API can return token in different locations:
