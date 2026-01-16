@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.11.3] - 2026-01-15
+
+### Fixed
+- Add Accept: application/json header for Rancher API requests
+- Allow redirects (3xx) for Rancher login requests
+- Should fix 401 Unauthorized errors when credentials are correct
+
 ## [0.11.2] - 2026-01-15
 
 ### Fixed
