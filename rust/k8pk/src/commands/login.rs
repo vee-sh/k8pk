@@ -1441,7 +1441,6 @@ fn rancher_get_token(
 ) -> Result<String> {
     let client = reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(insecure)
-        .redirect(reqwest::redirect::Policy::none()) // Don't follow redirects for POST requests
         .build()
         .map_err(|e| K8pkError::Other(format!("Failed to create HTTP client: {}", e)))?;
 
@@ -1466,6 +1465,7 @@ fn rancher_get_token(
     let response = client
         .post(&login_url)
         .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
         .json(&request_body)
         .send()
         .map_err(|e| K8pkError::Other(format!("Failed to send request to Rancher API: {}", e)))?;
