@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.11.2] - 2026-01-15
+
+### Fixed
+- Improved Rancher API request handling (explicit Content-Type header, no redirects)
+- Clean server URL to remove trailing slashes
+- Better error messages with full response text for debugging authentication failures
+
 ## [0.11.1] - 2026-01-15
 
 ### Fixed
