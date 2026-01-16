@@ -463,10 +463,12 @@ pub enum Command {
         editor: Option<String>,
     },
 
-    /// Login to cluster (OCP or regular k8s)
+    /// Login to cluster (OCP, K8s, GKE, or Rancher)
     #[command(after_help = "Examples:\n  \
         k8pk login --type ocp --server https://api.cluster.example.com:6443 -u admin\n  \
         k8pk login --type k8s --server https://k8s.example.com:6443 --token abc123\n  \
+        k8pk login --type gke --server https://gke.example.com:443\n  \
+        k8pk login --type rancher --server https://rancher.example.com -u admin -p secret\n  \
         k8pk login --type ocp https://api.cluster.example.com:6443 --token sha256~abc\n  \
         k8pk login --type ocp https://api.ocp.local:6443 --use-vault\n  \
         k8pk login --type k8s https://k8s.example.com:6443 --pass-entry k8pk/dev\n  \
@@ -477,7 +479,7 @@ pub enum Command {
         k8pk login --auth-help")]
     Login {
         /// Cluster type: 'ocp', 'k8s', 'gke', or 'rancher' (default: ocp)
-        #[arg(long, value_name = "TYPE", default_value = "ocp")]
+        #[arg(long = "type", value_name = "TYPE", default_value = "ocp")]
         login_type: String,
         /// Authentication mode: auto | token | userpass | client-cert | exec
         #[arg(long, value_name = "MODE", default_value = "auto")]
