@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.11.0] - 2026-01-15
+
+### Added
+- GKE (Google Kubernetes Engine) login support with `gke-gcloud-auth-plugin` integration
+- Rancher login support with token and username/password authentication
+- Comprehensive tests for smart naming (friendly context name generation)
+- Enhanced credential storage structure (prepared for OS keychain integration)
+- Updated login wizard to support GKE and Rancher cluster types
+- Additional test cases for EKS, GKE, and OpenShift context name parsing
+
+### Changed
+- Updated `k8pk login` command to support `--type gke` and `--type rancher`
+- Improved smart naming tests with more comprehensive coverage
+- Replaced real cluster names in tests with generic test values for security
+
+### Fixed
+- Fixed Rancher Prime context grouping in `clusters_only` mode
+- Improved base cluster name extraction for Rancher Prime node patterns
+
 ## [0.9.0] - 2025-12-16
 
 ### Added

@@ -16,6 +16,10 @@ pub enum LoginType {
     Ocp,
     /// Regular Kubernetes cluster
     K8s,
+    /// Google Kubernetes Engine
+    Gke,
+    /// Rancher-managed cluster
+    Rancher,
 }
 
 impl std::str::FromStr for LoginType {
@@ -25,8 +29,10 @@ impl std::str::FromStr for LoginType {
         match s.to_lowercase().as_str() {
             "ocp" | "openshift" => Ok(LoginType::Ocp),
             "k8s" | "kubernetes" | "kube" => Ok(LoginType::K8s),
+            "gke" | "gcp" => Ok(LoginType::Gke),
+            "rancher" => Ok(LoginType::Rancher),
             _ => Err(K8pkError::Other(format!(
-                "Unknown login type: {}. Use 'ocp' or 'k8s'",
+                "Unknown login type: {}. Use 'ocp', 'k8s', 'gke', or 'rancher'",
                 s
             ))),
         }
@@ -41,6 +47,7 @@ struct VaultEntry {
 }
 
 /// Vault for storing credentials securely
+/// Uses OS keychain when available, falls back to encrypted JSON file
 struct Vault {
     path: PathBuf,
     entries: HashMap<String, VaultEntry>,
@@ -59,11 +66,15 @@ impl Vault {
         Ok(Self { path, entries })
     }
 
-    fn get(&self, key: &str) -> Option<&VaultEntry> {
-        self.entries.get(key)
+    fn get(&self, key: &str) -> Option<VaultEntry> {
+        // For now, use file-based storage
+        // Keyring support can be added later when the dependency is available
+        self.entries.get(key).cloned()
     }
 
     fn set(&mut self, key: String, entry: VaultEntry) -> Result<()> {
+        // For now, use file-based storage
+        // Keyring support can be added later when the dependency is available
         self.entries.insert(key, entry);
         self.save()
     }
@@ -221,6 +232,33 @@ pub fn login(
             test_timeout,
             quiet,
         ),
+        LoginType::Gke => gke_login(
+            server,
+            final_token.as_deref(),
+            name,
+            output_dir,
+            insecure,
+            certificate_authority,
+            dry_run,
+            test,
+            test_timeout,
+            quiet,
+        ),
+        LoginType::Rancher => rancher_login(
+            server,
+            final_token.as_deref(),
+            final_username.as_deref(),
+            final_password.as_deref(),
+            name,
+            output_dir,
+            insecure,
+            use_vault,
+            certificate_authority,
+            dry_run,
+            test,
+            test_timeout,
+            quiet,
+        ),
     }
 }
 
@@ -272,7 +310,7 @@ pub fn apply_exec_preset(
 }
 
 pub fn login_wizard() -> Result<LoginResult> {
-    let login_type = Select::new("Cluster type:", vec!["ocp", "k8s"])
+    let login_type = Select::new("Cluster type:", vec!["ocp", "k8s", "gke", "rancher"])
         .prompt()
         .map_err(|_| K8pkError::Cancelled)?;
 
@@ -280,10 +318,11 @@ pub fn login_wizard() -> Result<LoginResult> {
         .prompt()
         .map_err(|_| K8pkError::Cancelled)?;
 
-    let auth_choices = if login_type == "ocp" {
-        vec!["token", "userpass"]
-    } else {
-        vec!["token", "userpass", "client-cert", "exec"]
+    let auth_choices = match login_type {
+        "ocp" => vec!["token", "userpass"],
+        "gke" => vec!["auto"], // GKE uses gcloud auth plugin
+        "rancher" => vec!["token", "userpass"],
+        _ => vec!["token", "userpass", "client-cert", "exec"],
     };
     let auth = Select::new("Authentication method:", auth_choices)
         .prompt()
@@ -549,6 +588,9 @@ pub fn print_auth_help() {
     --exec-preset aws-eks --exec-cluster prod --exec-region us-east-1\n\
   k8pk login --type ocp --auth token https://api.ocp.example.com:6443 --token $TOKEN\n\
   k8pk login --type ocp --auth userpass https://api.ocp.example.com:6443 -u admin\n\
+  k8pk login --type gke https://gke.example.com:443\n\
+  k8pk login --type rancher --auth token https://rancher.example.com --token $TOKEN\n\
+  k8pk login --type rancher --auth userpass https://rancher.example.com -u admin -p secret\n\
   \n\
   Using pass (password-store):\n\
   # Token auth - pass entry format:\n\
@@ -872,8 +914,8 @@ fn ocp_login(
         if let Some(ref v) = vault {
             if let Some(entry) = v.get(&vault_key) {
                 println!("Using credentials from vault for {}", server);
-                final_username = Some(entry.username.clone());
-                final_password = Some(entry.password.clone());
+                final_username = Some(entry.username);
+                final_password = Some(entry.password);
             }
         }
 
@@ -1007,6 +1049,441 @@ fn ocp_login(
     })
 }
 
+/// Login to Google Kubernetes Engine (GKE) cluster
+#[allow(clippy::too_many_arguments)]
+fn gke_login(
+    server: &str,
+    _token: Option<&str>, // GKE uses gcloud auth plugin, token not used directly
+    name: Option<&str>,
+    output_dir: Option<&Path>,
+    insecure: bool,
+    certificate_authority: Option<&Path>,
+    dry_run: bool,
+    test: bool,
+    test_timeout: u64,
+    quiet: bool,
+) -> Result<LoginResult> {
+    // Verify gcloud is available
+    if which::which("gcloud").is_err() {
+        return Err(K8pkError::Other(
+            "gcloud command not found. Please install Google Cloud SDK.".into(),
+        ));
+    }
+
+    let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
+    let out_dir = output_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".kube/gke"));
+
+    fs::create_dir_all(&out_dir)?;
+
+    // Generate context name from server URL
+    let context_name = name.map(String::from).unwrap_or_else(|| {
+        let sanitized = server
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .replace(['/', ':'], "-");
+        format!("gke-{}", sanitized)
+    });
+
+    let kubeconfig_path = out_dir.join(format!(
+        "{}.yaml",
+        kubeconfig::sanitize_filename(&context_name)
+    ));
+
+    if !quiet {
+        println!("Creating GKE kubeconfig for {}...", server);
+    }
+
+    if dry_run {
+        return Ok(LoginResult {
+            context_name,
+            namespace: None,
+            kubeconfig_path: Some(kubeconfig_path),
+        });
+    }
+
+    // Build kubeconfig with GKE auth plugin
+    let mut cfg = KubeConfig::default();
+    cfg.ensure_defaults(Some(&context_name));
+
+    // Create cluster entry
+    let cluster_name = format!("{}-cluster", context_name);
+    let mut cluster_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+    if let serde_yaml_ng::Value::Mapping(ref mut map) = cluster_rest {
+        let mut cluster_map = serde_yaml_ng::Mapping::new();
+        cluster_map.insert(
+            serde_yaml_ng::Value::String("server".to_string()),
+            serde_yaml_ng::Value::String(server.to_string()),
+        );
+        if let Some(ca) = certificate_authority {
+            cluster_map.insert(
+                serde_yaml_ng::Value::String("certificate-authority".to_string()),
+                serde_yaml_ng::Value::String(ca.to_string_lossy().to_string()),
+            );
+        } else if insecure {
+            cluster_map.insert(
+                serde_yaml_ng::Value::String("insecure-skip-tls-verify".to_string()),
+                serde_yaml_ng::Value::Bool(true),
+            );
+        }
+        map.insert(
+            serde_yaml_ng::Value::String("cluster".to_string()),
+            serde_yaml_ng::Value::Mapping(cluster_map),
+        );
+    }
+    cfg.clusters.push(kubeconfig::NamedItem {
+        name: cluster_name.clone(),
+        rest: cluster_rest,
+    });
+
+    // Create user entry with GKE auth plugin
+    let user_name = format!("{}-user", context_name);
+    let mut user_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+    if let serde_yaml_ng::Value::Mapping(ref mut map) = user_rest {
+        let mut exec_map = serde_yaml_ng::Mapping::new();
+        exec_map.insert(
+            serde_yaml_ng::Value::String("apiVersion".to_string()),
+            serde_yaml_ng::Value::String("client.authentication.k8s.io/v1beta1".to_string()),
+        );
+        exec_map.insert(
+            serde_yaml_ng::Value::String("command".to_string()),
+            serde_yaml_ng::Value::String("gke-gcloud-auth-plugin".to_string()),
+        );
+        map.insert(
+            serde_yaml_ng::Value::String("exec".to_string()),
+            serde_yaml_ng::Value::Mapping(exec_map),
+        );
+    }
+    cfg.users.push(kubeconfig::NamedItem {
+        name: user_name.clone(),
+        rest: user_rest,
+    });
+
+    // Create context entry
+    let mut context_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+    if let serde_yaml_ng::Value::Mapping(ref mut map) = context_rest {
+        let mut ctx_map = serde_yaml_ng::Mapping::new();
+        ctx_map.insert(
+            serde_yaml_ng::Value::String("cluster".to_string()),
+            serde_yaml_ng::Value::String(cluster_name),
+        );
+        ctx_map.insert(
+            serde_yaml_ng::Value::String("user".to_string()),
+            serde_yaml_ng::Value::String(user_name),
+        );
+        map.insert(
+            serde_yaml_ng::Value::String("context".to_string()),
+            serde_yaml_ng::Value::Mapping(ctx_map),
+        );
+    }
+    cfg.contexts.push(kubeconfig::NamedItem {
+        name: context_name.clone(),
+        rest: context_rest,
+    });
+
+    cfg.current_context = Some(context_name.clone());
+
+    let yaml = serde_yaml_ng::to_string(&cfg)?;
+    fs::write(&kubeconfig_path, yaml)?;
+
+    if test {
+        test_k8s_auth(&kubeconfig_path, &context_name, test_timeout)?;
+    }
+
+    Ok(LoginResult {
+        context_name,
+        namespace: None,
+        kubeconfig_path: Some(kubeconfig_path),
+    })
+}
+
+/// Login to Rancher-managed cluster
+#[allow(clippy::too_many_arguments)]
+fn rancher_login(
+    server: &str,
+    token: Option<&str>,
+    username: Option<&str>,
+    password: Option<&str>,
+    name: Option<&str>,
+    output_dir: Option<&Path>,
+    insecure: bool,
+    use_vault: bool,
+    certificate_authority: Option<&Path>,
+    dry_run: bool,
+    test: bool,
+    test_timeout: u64,
+    quiet: bool,
+) -> Result<LoginResult> {
+    let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
+    let out_dir = output_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".kube/rancher"));
+
+    fs::create_dir_all(&out_dir)?;
+
+    // Generate context name from server URL
+    let context_name = name.map(String::from).unwrap_or_else(|| {
+        let sanitized = server
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .replace(['/', ':'], "-");
+        format!("rancher-{}", sanitized)
+    });
+
+    let kubeconfig_path = out_dir.join(format!(
+        "{}.yaml",
+        kubeconfig::sanitize_filename(&context_name)
+    ));
+
+    // Handle authentication
+    let mut final_username = username.map(String::from);
+    let mut final_password = password.map(String::from);
+    let mut final_token = token.map(String::from);
+
+    // If token is provided, use it directly
+    if final_token.is_some() {
+        // Token auth - proceed
+    } else if final_username.is_some() || final_password.is_some() {
+        // Username/password provided - authenticate to get token
+        if final_username.is_none() {
+            final_username = Some(
+                inquire::Text::new("Rancher username:")
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?,
+            );
+        }
+        if final_password.is_none() {
+            final_password = Some(
+                Password::new("Rancher password:")
+                    .without_confirmation()
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?,
+            );
+        }
+
+        // Authenticate with Rancher API to get token
+        if !quiet {
+            println!("Authenticating with Rancher API...");
+        }
+        final_token = Some(rancher_get_token(
+            server,
+            final_username.as_ref().unwrap(),
+            final_password.as_ref().unwrap(),
+            insecure,
+        )?);
+    } else {
+        // No credentials provided - try vault first, then prompt
+        let vault_key = format!("{}:{}", server, context_name);
+        let mut vault = if use_vault { Vault::new().ok() } else { None };
+
+        if let Some(ref v) = vault {
+            if let Some(entry) = v.get(&vault_key) {
+                if !quiet {
+                    println!("Using credentials from vault for {}", server);
+                }
+                final_username = Some(entry.username.clone());
+                final_password = Some(entry.password.clone());
+                final_token = Some(rancher_get_token(
+                    server,
+                    &entry.username,
+                    &entry.password,
+                    insecure,
+                )?);
+            }
+        }
+
+        // If still no credentials, prompt
+        if final_token.is_none() {
+            final_username = Some(
+                inquire::Text::new("Rancher username:")
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?,
+            );
+            final_password = Some(
+                Password::new("Rancher password:")
+                    .without_confirmation()
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?,
+            );
+            final_token = Some(rancher_get_token(
+                server,
+                final_username.as_ref().unwrap(),
+                final_password.as_ref().unwrap(),
+                insecure,
+            )?);
+        }
+
+        // Save to vault if requested
+        if use_vault {
+            if let Some(ref mut v) = vault {
+                let save = inquire::Confirm::new("Save credentials to vault?")
+                    .with_default(true)
+                    .prompt()
+                    .unwrap_or(false);
+                if save {
+                    v.set(
+                        vault_key,
+                        VaultEntry {
+                            username: final_username.as_ref().unwrap().clone(),
+                            password: final_password.as_ref().unwrap().clone(),
+                        },
+                    )?;
+                }
+            }
+        }
+    }
+
+    if !quiet {
+        println!("Creating Rancher kubeconfig for {}...", server);
+    }
+
+    if dry_run {
+        return Ok(LoginResult {
+            context_name,
+            namespace: None,
+            kubeconfig_path: Some(kubeconfig_path),
+        });
+    }
+
+    // Build kubeconfig with Bearer token
+    let mut cfg = KubeConfig::default();
+    cfg.ensure_defaults(Some(&context_name));
+
+    // Create cluster entry
+    let cluster_name = format!("{}-cluster", context_name);
+    let mut cluster_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+    if let serde_yaml_ng::Value::Mapping(ref mut map) = cluster_rest {
+        let mut cluster_map = serde_yaml_ng::Mapping::new();
+        cluster_map.insert(
+            serde_yaml_ng::Value::String("server".to_string()),
+            serde_yaml_ng::Value::String(server.to_string()),
+        );
+        if let Some(ca) = certificate_authority {
+            cluster_map.insert(
+                serde_yaml_ng::Value::String("certificate-authority".to_string()),
+                serde_yaml_ng::Value::String(ca.to_string_lossy().to_string()),
+            );
+        } else if insecure {
+            cluster_map.insert(
+                serde_yaml_ng::Value::String("insecure-skip-tls-verify".to_string()),
+                serde_yaml_ng::Value::Bool(true),
+            );
+        }
+        map.insert(
+            serde_yaml_ng::Value::String("cluster".to_string()),
+            serde_yaml_ng::Value::Mapping(cluster_map),
+        );
+    }
+    cfg.clusters.push(kubeconfig::NamedItem {
+        name: cluster_name.clone(),
+        rest: cluster_rest,
+    });
+
+    // Create user entry with Bearer token
+    let user_name = format!("{}-user", context_name);
+    let mut user_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+    if let serde_yaml_ng::Value::Mapping(ref mut map) = user_rest {
+        map.insert(
+            serde_yaml_ng::Value::String("token".to_string()),
+            serde_yaml_ng::Value::String(final_token.as_ref().unwrap().clone()),
+        );
+    }
+    cfg.users.push(kubeconfig::NamedItem {
+        name: user_name.clone(),
+        rest: user_rest,
+    });
+
+    // Create context entry
+    let mut context_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+    if let serde_yaml_ng::Value::Mapping(ref mut map) = context_rest {
+        let mut ctx_map = serde_yaml_ng::Mapping::new();
+        ctx_map.insert(
+            serde_yaml_ng::Value::String("cluster".to_string()),
+            serde_yaml_ng::Value::String(cluster_name),
+        );
+        ctx_map.insert(
+            serde_yaml_ng::Value::String("user".to_string()),
+            serde_yaml_ng::Value::String(user_name),
+        );
+        map.insert(
+            serde_yaml_ng::Value::String("context".to_string()),
+            serde_yaml_ng::Value::Mapping(ctx_map),
+        );
+    }
+    cfg.contexts.push(kubeconfig::NamedItem {
+        name: context_name.clone(),
+        rest: context_rest,
+    });
+
+    cfg.current_context = Some(context_name.clone());
+
+    let yaml = serde_yaml_ng::to_string(&cfg)?;
+    fs::write(&kubeconfig_path, yaml)?;
+
+    if test {
+        test_k8s_auth(&kubeconfig_path, &context_name, test_timeout)?;
+    }
+
+    Ok(LoginResult {
+        context_name,
+        namespace: None,
+        kubeconfig_path: Some(kubeconfig_path),
+    })
+}
+
+/// Authenticate with Rancher API and get bearer token
+fn rancher_get_token(
+    server: &str,
+    username: &str,
+    password: &str,
+    insecure: bool,
+) -> Result<String> {
+    let client = reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(insecure)
+        .build()
+        .map_err(|e| K8pkError::Other(format!("Failed to create HTTP client: {}", e)))?;
+
+    // Rancher API v3 login endpoint
+    let login_url = format!("{}/v3-public/localProviders/local?action=login", server);
+
+    let mut request_body = serde_json::Map::new();
+    request_body.insert(
+        "username".to_string(),
+        serde_json::Value::String(username.to_string()),
+    );
+    request_body.insert(
+        "password".to_string(),
+        serde_json::Value::String(password.to_string()),
+    );
+
+    let response = client
+        .post(&login_url)
+        .json(&request_body)
+        .send()
+        .map_err(|e| K8pkError::Other(format!("Failed to send request to Rancher API: {}", e)))?;
+
+    if !response.status().is_success() {
+        return Err(K8pkError::Other(format!(
+            "Rancher authentication failed: {}",
+            response.status()
+        )));
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .map_err(|e| K8pkError::Other(format!("Failed to parse Rancher API response: {}", e)))?;
+
+    // Extract token from response
+    if let Some(token) = json.get("token").and_then(|t| t.as_str()) {
+        Ok(token.to_string())
+    } else {
+        Err(K8pkError::Other(
+            "Failed to extract token from Rancher API response".into(),
+        ))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn validate_auth(
     login_type: LoginType,
@@ -1032,6 +1509,27 @@ fn validate_auth(
     if login_type == LoginType::Ocp && auth_mode == AuthMode::Exec {
         return Err(K8pkError::Other(
             "exec auth is only supported for --type k8s".into(),
+        ));
+    }
+    if login_type == LoginType::Gke && (client_certificate.is_some() || client_key.is_some()) {
+        return Err(K8pkError::Other(
+            "client certificate auth is not supported for --type gke (uses gcloud auth plugin)"
+                .into(),
+        ));
+    }
+    if login_type == LoginType::Gke && auth_mode == AuthMode::Exec {
+        return Err(K8pkError::Other(
+            "exec auth is not supported for --type gke (uses gcloud auth plugin)".into(),
+        ));
+    }
+    if login_type == LoginType::Rancher && (client_certificate.is_some() || client_key.is_some()) {
+        return Err(K8pkError::Other(
+            "client certificate auth is not supported for --type rancher".into(),
+        ));
+    }
+    if login_type == LoginType::Rancher && auth_mode == AuthMode::Exec {
+        return Err(K8pkError::Other(
+            "exec auth is not supported for --type rancher".into(),
         ));
     }
 

@@ -714,21 +714,75 @@ mod tests {
 
     #[test]
     fn test_friendly_context_name() {
+        // EKS format: arn:aws:eks:region:account:cluster/cluster-name -> cluster-name
         assert_eq!(
             friendly_context_name("arn:aws:eks:us-east-1:123:cluster/prod-cluster", "eks"),
             "prod-cluster"
         );
         assert_eq!(
+            friendly_context_name("arn:aws:eks:us-west-2:456:cluster/dev-cluster", "eks"),
+            "dev-cluster"
+        );
+        assert_eq!(
+            friendly_context_name("arn:aws:eks:eu-west-1:789:cluster/test-cluster", "eks"),
+            "test-cluster"
+        );
+
+        // GKE format: gke_project_zone_cluster -> cluster
+        assert_eq!(
             friendly_context_name("gke_my-project_us-central1_my-cluster", "gke"),
             "my-cluster"
         );
+        assert_eq!(
+            friendly_context_name("gke_prod-project_europe-west1_prod-cluster", "gke"),
+            "prod-cluster"
+        );
+        assert_eq!(
+            friendly_context_name(
+                "gke_test-project_asia-east1_test-cluster_dev-namespace",
+                "gke"
+            ),
+            "test-cluster_dev-namespace"
+        );
+
         // OpenShift format: project/api-host:port/user -> project@host
         assert_eq!(
             friendly_context_name(
-                "alvarlamov-sandbox-dev/api-hwinf-k8s-os-pdx1-nvparkosdev-nvidia-com:6443/kube:admin",
+                "test-project/api-test-cluster-example-com:6443/kube:admin",
                 "ocp"
             ),
-            "alvarlamov-sandbox-dev@hwinf-k8s-os-pdx1-nvparkosdev-nvidia-com"
+            "test-project@test-cluster-example-com"
+        );
+        assert_eq!(
+            friendly_context_name(
+                "dev-project/api-dev-cluster-example-com:6443/user:admin",
+                "ocp"
+            ),
+            "dev-project@dev-cluster-example-com"
+        );
+        // Test with api- prefix removal
+        assert_eq!(
+            friendly_context_name(
+                "prod-project/api-prod-cluster-example-com:6443/kube:admin",
+                "ocp"
+            ),
+            "prod-project@prod-cluster-example-com"
+        );
+
+        // Generic/unknown types should return as-is
+        assert_eq!(
+            friendly_context_name("generic-cluster-name", "unknown"),
+            "generic-cluster-name"
+        );
+        assert_eq!(
+            friendly_context_name("my-cluster/namespace", "generic"),
+            "my-cluster/namespace"
+        );
+
+        // Rancher Prime - should use base cluster name
+        assert_eq!(
+            friendly_context_name("test-cluster-01-dc01-hw-k8s-controller-01", "rancher"),
+            "test-cluster-01-dc01-hw-k8s-controller-01" // Falls through to default
         );
     }
 

@@ -476,7 +476,7 @@ pub enum Command {
         k8pk login --wizard\n  \
         k8pk login --auth-help")]
     Login {
-        /// Cluster type: 'ocp' or 'k8s' (default: ocp)
+        /// Cluster type: 'ocp', 'k8s', 'gke', or 'rancher' (default: ocp)
         #[arg(long, value_name = "TYPE", default_value = "ocp")]
         login_type: String,
         /// Authentication mode: auto | token | userpass | client-cert | exec
