@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.11.1] - 2026-01-15
+
+### Fixed
+- Changed `--login-type` flag to `--type` for better UX (shorter, more intuitive)
+- Improved Rancher token extraction to handle different API response formats
+- Enhanced error messages for Rancher authentication failures
+
 ## [0.11.0] - 2026-01-15
 
 ### Added

@@ -1475,12 +1475,26 @@ fn rancher_get_token(
         .map_err(|e| K8pkError::Other(format!("Failed to parse Rancher API response: {}", e)))?;
 
     // Extract token from response
-    if let Some(token) = json.get("token").and_then(|t| t.as_str()) {
-        Ok(token.to_string())
+    // Rancher API can return token in different locations:
+    // 1. Top-level "token" field
+    // 2. Nested in "data" object: data.token
+    // 3. In response body directly
+    let token = json
+        .get("token")
+        .or_else(|| json.get("data").and_then(|d| d.get("token")))
+        .and_then(|t| t.as_str())
+        .map(|t| t.to_string());
+
+    if let Some(t) = token {
+        Ok(t)
     } else {
-        Err(K8pkError::Other(
-            "Failed to extract token from Rancher API response".into(),
-        ))
+        // Provide more helpful error message with response body for debugging
+        let response_preview = serde_json::to_string_pretty(&json)
+            .unwrap_or_else(|_| "Unable to format response".to_string());
+        Err(K8pkError::Other(format!(
+            "Failed to extract token from Rancher API response. Response: {}",
+            response_preview
+        )))
     }
 }
 
