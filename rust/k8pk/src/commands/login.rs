@@ -1207,7 +1207,8 @@ fn rancher_auth_provider_path(provider: &str) -> &'static str {
     match provider.to_lowercase().as_str() {
         "activedirectory" | "ad" => "activeDirectoryProviders/activedirectory",
         "openldap" | "ldap" => "openLdapProviders/openldap",
-        "local" | _ => "localProviders/local",
+        "local" => "localProviders/local",
+        _ => "localProviders/local",
     }
 }
 
@@ -1470,10 +1471,7 @@ fn rancher_get_token(
 
     let server_clean = server.trim_end_matches('/');
     let provider_path = rancher_auth_provider_path(provider);
-    let login_url = format!(
-        "{}/v3-public/{}?action=login",
-        server_clean, provider_path
-    );
+    let login_url = format!("{}/v3-public/{}?action=login", server_clean, provider_path);
 
     let mut request_body = serde_json::Map::new();
     request_body.insert(
@@ -1553,7 +1551,9 @@ fn rancher_get_token(
                 "Authenticated with Rancher (provider: {}).",
                 if provider.eq_ignore_ascii_case("local") {
                     "local"
-                } else if provider.eq_ignore_ascii_case("activedirectory") || provider.eq_ignore_ascii_case("ad") {
+                } else if provider.eq_ignore_ascii_case("activedirectory")
+                    || provider.eq_ignore_ascii_case("ad")
+                {
                     "activedirectory"
                 } else {
                     provider
@@ -1908,27 +1908,23 @@ fn infer_login_type_from_context(context_name: &str) -> Option<LoginType> {
 
 /// Re-login for a context whose session is dead. Prompts for password (and username for rancher/ocp).
 /// Only supported for contexts whose names start with rancher-, ocp-, or gke-.
-pub fn try_relogin(
-    context: &str,
-    _namespace: Option<&str>,
-    paths: &[PathBuf],
-) -> Result<()> {
+pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -> Result<()> {
     let merged = kubeconfig::load_merged(paths)?;
-    let server = kubeconfig::get_server_for_context(&merged, context).ok_or_else(|| {
-        K8pkError::Other("Cannot determine server URL for re-login".into())
-    })?;
+    let server = kubeconfig::get_server_for_context(&merged, context)
+        .ok_or_else(|| K8pkError::Other("Cannot determine server URL for re-login".into()))?;
 
     let login_type = infer_login_type_from_context(context).ok_or_else(|| {
-        K8pkError::Other(
-            "Re-login only supported for rancher-, ocp-, or gke- contexts".into(),
-        )
+        K8pkError::Other("Re-login only supported for rancher-, ocp-, or gke- contexts".into())
     })?;
 
     let exec = ExecAuthConfig::default();
 
     match login_type {
         LoginType::Rancher | LoginType::Ocp => {
-            eprintln!("Session expired for '{}'. Re-login (username and password).", context);
+            eprintln!(
+                "Session expired for '{}'. Re-login (username and password).",
+                context
+            );
             let username = Text::new("Username:")
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
@@ -1960,7 +1956,10 @@ pub fn try_relogin(
             )?;
         }
         LoginType::Gke => {
-            eprintln!("Session expired for '{}'. Re-authenticating with GKE...", context);
+            eprintln!(
+                "Session expired for '{}'. Re-authenticating with GKE...",
+                context
+            );
             login(
                 LoginType::Gke,
                 &server,

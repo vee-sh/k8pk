@@ -179,8 +179,11 @@ fn main() -> anyhow::Result<()> {
             if commands::check_session_alive(&kubeconfig, &context, 8).is_err() {
                 if io::stdin().is_terminal() {
                     commands::try_relogin(&context, namespace.as_deref(), &paths)?;
-                    kubeconfig =
-                        commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
+                    kubeconfig = commands::ensure_isolated_kubeconfig(
+                        &context,
+                        namespace.as_deref(),
+                        &paths,
+                    )?;
                 } else {
                     return Err(K8pkError::Other(
                         "Session expired and not interactive; run 'k8pk login' to refresh".into(),
@@ -529,8 +532,11 @@ fn main() -> anyhow::Result<()> {
             if commands::check_session_alive(&kubeconfig, &context, 8).is_err() {
                 if io::stdin().is_terminal() {
                     commands::try_relogin(&context, namespace.as_deref(), &paths)?;
-                    kubeconfig =
-                        commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
+                    kubeconfig = commands::ensure_isolated_kubeconfig(
+                        &context,
+                        namespace.as_deref(),
+                        &paths,
+                    )?;
                 } else {
                     return Err(K8pkError::Other(
                         "Session expired and not interactive; run 'k8pk login' to refresh".into(),
