@@ -165,6 +165,7 @@ pub fn login(
     dry_run: bool,
     test: bool,
     test_timeout: u64,
+    rancher_auth_provider: &str,
     quiet: bool,
 ) -> Result<LoginResult> {
     let mut final_token = token.map(str::to_string);
@@ -254,6 +255,7 @@ pub fn login(
             insecure,
             use_vault,
             certificate_authority,
+            rancher_auth_provider,
             dry_run,
             test,
             test_timeout,
@@ -571,6 +573,7 @@ pub fn login_wizard() -> Result<LoginResult> {
         dry_run,
         test,
         test_timeout,
+        "local", // rancher_auth_provider (wizard default; use CLI for activedirectory)
         false,
     )
 }
@@ -591,6 +594,7 @@ pub fn print_auth_help() {
   k8pk login --type gke https://gke.example.com:443\n\
   k8pk login --type rancher --auth token https://rancher.example.com --token $TOKEN\n\
   k8pk login --type rancher --auth userpass https://rancher.example.com -u admin -p secret\n\
+  k8pk login --type rancher --rancher-auth-provider activedirectory https://rancher.example.com -u user -p pass\n\
   \n\
   Using pass (password-store):\n\
   # Token auth - pass entry format:\n\
@@ -1198,6 +1202,15 @@ fn gke_login(
     })
 }
 
+/// Rancher auth provider API path suffix (v3-public/{suffix}?action=login)
+fn rancher_auth_provider_path(provider: &str) -> &'static str {
+    match provider.to_lowercase().as_str() {
+        "activedirectory" | "ad" => "activeDirectoryProviders/activedirectory",
+        "openldap" | "ldap" => "openLdapProviders/openldap",
+        "local" | _ => "localProviders/local",
+    }
+}
+
 /// Login to Rancher-managed cluster
 #[allow(clippy::too_many_arguments)]
 fn rancher_login(
@@ -1210,6 +1223,7 @@ fn rancher_login(
     insecure: bool,
     use_vault: bool,
     certificate_authority: Option<&Path>,
+    rancher_auth_provider: &str,
     dry_run: bool,
     test: bool,
     test_timeout: u64,
@@ -1271,6 +1285,8 @@ fn rancher_login(
             final_username.as_ref().unwrap(),
             final_password.as_ref().unwrap(),
             insecure,
+            rancher_auth_provider,
+            quiet,
         )?);
     } else {
         // No credentials provided - try vault first, then prompt
@@ -1289,6 +1305,8 @@ fn rancher_login(
                     &entry.username,
                     &entry.password,
                     insecure,
+                    rancher_auth_provider,
+                    quiet,
                 )?);
             }
         }
@@ -1311,6 +1329,8 @@ fn rancher_login(
                 final_username.as_ref().unwrap(),
                 final_password.as_ref().unwrap(),
                 insecure,
+                rancher_auth_provider,
+                quiet,
             )?);
         }
 
@@ -1432,24 +1452,27 @@ fn rancher_login(
     })
 }
 
-/// Authenticate with Rancher API and get bearer token
+/// Authenticate with Rancher API and get bearer token.
+/// Uses Rancher v3-public login: /v3-public/{providerPath}?action=login
+/// (see https://ranchermanager.docs.rancher.com/api/api-tokens and Rancher auth provider docs)
 fn rancher_get_token(
     server: &str,
     username: &str,
     password: &str,
     insecure: bool,
+    provider: &str,
+    quiet: bool,
 ) -> Result<String> {
     let client = reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(insecure)
         .build()
         .map_err(|e| K8pkError::Other(format!("Failed to create HTTP client: {}", e)))?;
 
-    // Rancher API v3 login endpoint
-    // Ensure server URL doesn't have trailing slash (except for root)
     let server_clean = server.trim_end_matches('/');
+    let provider_path = rancher_auth_provider_path(provider);
     let login_url = format!(
-        "{}/v3-public/localProviders/local?action=login",
-        server_clean
+        "{}/v3-public/{}?action=login",
+        server_clean, provider_path
     );
 
     let mut request_body = serde_json::Map::new();
@@ -1475,6 +1498,34 @@ fn rancher_get_token(
         .text()
         .map_err(|e| K8pkError::Other(format!("Failed to read response body: {}", e)))?;
 
+    // On 401 with local provider, try activedirectory once (common for RKE2 / Rancher Prime)
+    if status.as_u16() == 401 && provider.eq_ignore_ascii_case("local") {
+        if !quiet {
+            println!("Local provider returned 401, trying Active Directory provider (common for RKE2/Rancher Prime)...");
+        }
+        return rancher_get_token(
+            server,
+            username,
+            password,
+            insecure,
+            "activedirectory",
+            quiet,
+        );
+    }
+
+    if status.as_u16() == 401 {
+        let hint = if provider.eq_ignore_ascii_case("activedirectory") {
+            " Try --rancher-auth-provider local if your Rancher uses local users only."
+        } else {
+            ""
+        };
+        return Err(K8pkError::Other(format!(
+            "Rancher authentication failed with status 401 Unauthorized: {}{}",
+            response_text.trim(),
+            hint
+        )));
+    }
+
     if !status.is_success() {
         return Err(K8pkError::Other(format!(
             "Rancher authentication failed with status {}: {}",
@@ -1489,11 +1540,7 @@ fn rancher_get_token(
         ))
     })?;
 
-    // Extract token from response
-    // Rancher API can return token in different locations:
-    // 1. Top-level "token" field
-    // 2. Nested in "data" object: data.token
-    // 3. In response body directly
+    // Extract token from response (Rancher returns token or data.token)
     let token = json
         .get("token")
         .or_else(|| json.get("data").and_then(|d| d.get("token")))
@@ -1501,9 +1548,20 @@ fn rancher_get_token(
         .map(|t| t.to_string());
 
     if let Some(t) = token {
+        if !quiet {
+            println!(
+                "Authenticated with Rancher (provider: {}).",
+                if provider.eq_ignore_ascii_case("local") {
+                    "local"
+                } else if provider.eq_ignore_ascii_case("activedirectory") || provider.eq_ignore_ascii_case("ad") {
+                    "activedirectory"
+                } else {
+                    provider
+                }
+            );
+        }
         Ok(t)
     } else {
-        // Provide more helpful error message with response body for debugging
         let response_preview = serde_json::to_string_pretty(&json)
             .unwrap_or_else(|_| "Unable to format response".to_string());
         Err(K8pkError::Other(format!(
@@ -1820,6 +1878,120 @@ fn build_exec_auth(exec: &ExecAuthConfig) -> Result<serde_yaml_ng::Value> {
     }
 
     Ok(serde_yaml_ng::Value::Mapping(map))
+}
+
+/// Default timeout (seconds) for session liveness check when picking a context
+const SESSION_CHECK_TIMEOUT_SECS: u64 = 8;
+
+/// Check if the session (credentials) for the given context is still alive.
+/// Runs a quick auth can-i; returns Ok(()) if alive, Err if expired/unreachable.
+pub fn check_session_alive(
+    kubeconfig_path: &Path,
+    context_name: &str,
+    timeout_secs: u64,
+) -> Result<()> {
+    test_k8s_auth(kubeconfig_path, context_name, timeout_secs)
+}
+
+/// Infer login type from context name (prefix) for re-login
+fn infer_login_type_from_context(context_name: &str) -> Option<LoginType> {
+    if context_name.starts_with("rancher-") {
+        Some(LoginType::Rancher)
+    } else if context_name.starts_with("ocp-") {
+        Some(LoginType::Ocp)
+    } else if context_name.starts_with("gke-") {
+        Some(LoginType::Gke)
+    } else {
+        None
+    }
+}
+
+/// Re-login for a context whose session is dead. Prompts for password (and username for rancher/ocp).
+/// Only supported for contexts whose names start with rancher-, ocp-, or gke-.
+pub fn try_relogin(
+    context: &str,
+    _namespace: Option<&str>,
+    paths: &[PathBuf],
+) -> Result<()> {
+    let merged = kubeconfig::load_merged(paths)?;
+    let server = kubeconfig::get_server_for_context(&merged, context).ok_or_else(|| {
+        K8pkError::Other("Cannot determine server URL for re-login".into())
+    })?;
+
+    let login_type = infer_login_type_from_context(context).ok_or_else(|| {
+        K8pkError::Other(
+            "Re-login only supported for rancher-, ocp-, or gke- contexts".into(),
+        )
+    })?;
+
+    let exec = ExecAuthConfig::default();
+
+    match login_type {
+        LoginType::Rancher | LoginType::Ocp => {
+            eprintln!("Session expired for '{}'. Re-login (username and password).", context);
+            let username = Text::new("Username:")
+                .prompt()
+                .map_err(|_| K8pkError::Cancelled)?;
+            let password = Password::new("Password:")
+                .without_confirmation()
+                .prompt()
+                .map_err(|_| K8pkError::Cancelled)?;
+            login(
+                login_type,
+                &server,
+                None,
+                Some(&username),
+                Some(&password),
+                Some(context),
+                None,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                "userpass",
+                &exec,
+                false,
+                false,
+                SESSION_CHECK_TIMEOUT_SECS,
+                "local",
+                false,
+            )?;
+        }
+        LoginType::Gke => {
+            eprintln!("Session expired for '{}'. Re-authenticating with GKE...", context);
+            login(
+                LoginType::Gke,
+                &server,
+                None,
+                None,
+                None,
+                Some(context),
+                None,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                "auto",
+                &exec,
+                false,
+                false,
+                SESSION_CHECK_TIMEOUT_SECS,
+                "local",
+                false,
+            )?;
+        }
+        LoginType::K8s => {
+            return Err(K8pkError::Other(
+                "Re-login for generic k8s contexts is not supported; run 'k8pk login --type k8s' manually".into(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn test_k8s_auth(kubeconfig_path: &Path, context_name: &str, timeout_secs: u64) -> Result<()> {

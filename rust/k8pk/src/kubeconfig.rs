@@ -112,6 +112,14 @@ pub fn extract_server_url_from_cluster(rest: &Yaml) -> Option<String> {
     }
 }
 
+/// Get server URL for a context from merged kubeconfig (for re-login)
+pub fn get_server_for_context(cfg: &KubeConfig, context_name: &str) -> Option<String> {
+    let ctx = cfg.find_context(context_name)?;
+    let (cluster_name, _) = extract_context_refs(&ctx.rest).ok()?;
+    let cluster = cfg.find_cluster(&cluster_name)?;
+    extract_server_url_from_cluster(&cluster.rest)
+}
+
 /// Set the namespace for a context in a kubeconfig
 pub fn set_context_namespace(cfg: &mut KubeConfig, context_name: &str, ns: &str) -> Result<()> {
     if let Some(item) = cfg.contexts.iter_mut().find(|c| c.name == context_name) {

@@ -173,8 +173,21 @@ fn main() -> anyhow::Result<()> {
             let (context, namespace) =
                 commands::pick_context_namespace(&merged, kubeconfig_env.as_deref())?;
 
-            let kubeconfig =
+            let mut kubeconfig =
                 commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
+
+            if commands::check_session_alive(&kubeconfig, &context, 8).is_err() {
+                if io::stdin().is_terminal() {
+                    commands::try_relogin(&context, namespace.as_deref(), &paths)?;
+                    kubeconfig =
+                        commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
+                } else {
+                    return Err(K8pkError::Other(
+                        "Session expired and not interactive; run 'k8pk login' to refresh".into(),
+                    )
+                    .into());
+                }
+            }
 
             match output.as_deref() {
                 Some("env") => {
@@ -510,10 +523,23 @@ fn main() -> anyhow::Result<()> {
                 }
             };
 
-            commands::save_to_history(&context, namespace.as_deref())?;
-
-            let kubeconfig =
+            let mut kubeconfig =
                 commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
+
+            if commands::check_session_alive(&kubeconfig, &context, 8).is_err() {
+                if io::stdin().is_terminal() {
+                    commands::try_relogin(&context, namespace.as_deref(), &paths)?;
+                    kubeconfig =
+                        commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
+                } else {
+                    return Err(K8pkError::Other(
+                        "Session expired and not interactive; run 'k8pk login' to refresh".into(),
+                    )
+                    .into());
+                }
+            }
+
+            commands::save_to_history(&context, namespace.as_deref())?;
 
             // Handle output format (recursive takes precedence)
             if recursive {
@@ -769,6 +795,7 @@ fn main() -> anyhow::Result<()> {
             dry_run,
             test,
             test_timeout,
+            rancher_auth_provider,
             quiet,
             json,
         } => {
@@ -865,6 +892,7 @@ fn main() -> anyhow::Result<()> {
                 dry_run,
                 test,
                 test_timeout,
+                rancher_auth_provider.as_str(),
                 effective_quiet,
             )?;
 

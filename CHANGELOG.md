@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.11.4] - 2026-01-31
+
+### Added
+- `--rancher-auth-provider` for Rancher login: `local` (default), `activedirectory`, `openldap` (Rancher API v3-public provider paths per Rancher docs)
+- Session liveness check when picking a context (Pick or Ctx): if the session is expired/dead, prompt for re-login (username and password for rancher/ocp; GKE re-auth via gcloud). Only in interactive (TTY) mode; non-interactive fails with a hint to run `k8pk login`.
+
+### Fixed
+- RKE2 / Rancher Prime auth: when local provider returns 401, automatically try Active Directory provider (common for AD-backed Rancher)
+- Clearer 401 error message suggesting `--rancher-auth-provider activedirectory` for AD-backed Rancher
+
 ## [0.11.3] - 2026-01-15
 
 ### Fixed

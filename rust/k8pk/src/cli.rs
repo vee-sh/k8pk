@@ -571,6 +571,9 @@ pub enum Command {
         /// Timeout for credential test (seconds)
         #[arg(long, default_value = "10", value_name = "SECS")]
         test_timeout: u64,
+        /// Rancher auth provider (rancher only): local | activedirectory | openldap (default: local; use activedirectory for AD-backed Rancher/RKE2)
+        #[arg(long, value_name = "PROVIDER", default_value = "local")]
+        rancher_auth_provider: String,
         /// Suppress non-essential output
         #[arg(long)]
         quiet: bool,
