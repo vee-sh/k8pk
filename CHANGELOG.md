@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.11.8] - 2026-01-31
+
+### Fixed
+- Suppress noisy kubectl error output during session liveness check (auth failures now silent unless debug)
+- Fix Rancher re-login: prompt for Rancher server URL when cluster URL doesn't contain `/k8s/clusters` (non-proxy URLs)
+- Fix OCP re-login: use the written kubeconfig directly instead of rebuilding from merged config (fixes stale credentials in spawned shell)
+- Separate handling for Rancher and OCP re-login flows for better URL handling
+
 ## [0.11.5] - 2026-01-31
 
 ### Added
