@@ -271,7 +271,27 @@ pub fn resolve_paths(
         }
     }
 
-    // Priority 5: Default fallback
+    // Priority 5: k8pk-generated kubeconfig directories (login outputs)
+    if let Some(home) = dirs_next::home_dir() {
+        let k8pk_dirs = [
+            home.join(".kube/rancher"),
+            home.join(".kube/ocp"),
+            home.join(".kube/gke"),
+            home.join(".kube/k8s"),
+        ];
+        for dir in &k8pk_dirs {
+            if dir.exists() && dir.is_dir() {
+                for p in scan_directory(dir)? {
+                    if !visited.contains(&p) {
+                        paths.push(p.clone());
+                        visited.insert(p);
+                    }
+                }
+            }
+        }
+    }
+
+    // Priority 6: Default fallback
     if paths.is_empty() {
         let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
         let default = home.join(".kube").join("config");

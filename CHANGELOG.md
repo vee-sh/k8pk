@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.11.11] - 2026-01-31
+
+### Fixed
+- Auto-include `~/.kube/rancher/`, `~/.kube/ocp/`, `~/.kube/gke/`, `~/.kube/k8s/` in kubeconfig search paths (fixes re-login not persisting)
+
 ## [0.11.10] - 2026-01-31
 
 ### Fixed
