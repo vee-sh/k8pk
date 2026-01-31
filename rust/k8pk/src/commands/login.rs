@@ -1157,9 +1157,14 @@ fn gke_login(
             serde_yaml_ng::Value::String("command".to_string()),
             serde_yaml_ng::Value::String("gke-gcloud-auth-plugin".to_string()),
         );
-        map.insert(
+        let mut user_map = serde_yaml_ng::Mapping::new();
+        user_map.insert(
             serde_yaml_ng::Value::String("exec".to_string()),
             serde_yaml_ng::Value::Mapping(exec_map),
+        );
+        map.insert(
+            serde_yaml_ng::Value::String("user".to_string()),
+            serde_yaml_ng::Value::Mapping(user_map),
         );
     }
     cfg.users.push(kubeconfig::NamedItem {
@@ -1413,9 +1418,14 @@ fn rancher_login(
     let user_name = format!("{}-user", context_name);
     let mut user_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
     if let serde_yaml_ng::Value::Mapping(ref mut map) = user_rest {
-        map.insert(
+        let mut user_map = serde_yaml_ng::Mapping::new();
+        user_map.insert(
             serde_yaml_ng::Value::String("token".to_string()),
             serde_yaml_ng::Value::String(final_token.as_ref().unwrap().clone()),
+        );
+        map.insert(
+            serde_yaml_ng::Value::String("user".to_string()),
+            serde_yaml_ng::Value::Mapping(user_map),
         );
     }
     cfg.users.push(kubeconfig::NamedItem {
