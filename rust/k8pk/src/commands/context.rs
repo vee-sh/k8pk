@@ -2,6 +2,7 @@
 
 use crate::error::{K8pkError, Result};
 use crate::kubeconfig;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,29 @@ pub fn get_previous_context() -> Result<Option<String>> {
 pub fn get_previous_namespace() -> Result<Option<String>> {
     let history = load_history()?;
     Ok(history.namespace_history.get(1).cloned())
+}
+
+/// Stored cluster type for re-login: "ocp", "rancher", "gke", or "k8s".
+/// Used when context name has no type prefix (e.g. legacy OCP contexts).
+pub fn get_context_type(context: &str) -> Result<Option<String>> {
+    let history = load_history()?;
+    Ok(history.context_types.get(context).cloned())
+}
+
+/// Save cluster type for a context so re-login uses the correct flow next time.
+pub fn save_context_type(context: &str, type_str: &str) -> Result<()> {
+    let history_path = history_file_path()?;
+    let mut history = load_history()?;
+    history
+        .context_types
+        .insert(context.to_string(), type_str.to_string());
+    let yaml = serde_yaml_ng::to_string(&history)?;
+    let parent = history_path.parent().ok_or(K8pkError::NoHomeDir)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(yaml.as_bytes())?;
+    temp.persist(&history_path)
+        .map_err(|e| K8pkError::Io(e.error))?;
+    Ok(())
 }
 
 /// Match contexts by pattern (supports wildcards)
@@ -273,6 +297,9 @@ struct History {
     context_history: Vec<String>,
     #[serde(default)]
     namespace_history: Vec<String>,
+    /// Context name -> cluster type for re-login: "ocp", "rancher", "gke", "k8s"
+    #[serde(default)]
+    context_types: HashMap<String, String>,
 }
 
 fn history_file_path() -> Result<PathBuf> {
@@ -334,5 +361,6 @@ mod tests {
         let history = History::default();
         assert!(history.context_history.is_empty());
         assert!(history.namespace_history.is_empty());
+        assert!(history.context_types.is_empty());
     }
 }

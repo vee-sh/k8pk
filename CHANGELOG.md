@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.11.5] - 2026-01-31
+
+### Added
+- Re-login for any context (generic k8s: token or user/pass) when session is dead; no longer limited to rancher-/ocp-/gke- prefixes
+- Stored cluster type for re-login: when type is unknown (e.g. legacy OCP context), prompt "Cluster type: ocp / rancher / gke / k8s (generic)" and save it in history so next re-login uses the correct flow
+
+### Changed
+- Re-login now checks stored type first (from previous re-login), then infers from context name prefix, then prompts if unknown
+- After every successful re-login the cluster type is saved for that context
+
 ## [0.11.4] - 2026-01-31
 
 ### Added

@@ -1906,21 +1906,63 @@ fn infer_login_type_from_context(context_name: &str) -> Option<LoginType> {
     }
 }
 
-/// Re-login for a context whose session is dead. Prompts for password (and username for rancher/ocp).
-/// Only supported for contexts whose names start with rancher-, ocp-, or gke-.
+/// Parse stored type string ("ocp", "rancher", "gke", "k8s") to LoginType
+fn parse_stored_type(s: &str) -> Option<LoginType> {
+    match s.to_lowercase().as_str() {
+        "ocp" | "openshift" => Some(LoginType::Ocp),
+        "rancher" => Some(LoginType::Rancher),
+        "gke" | "gcp" => Some(LoginType::Gke),
+        "k8s" | "kube" | "kubernetes" => Some(LoginType::K8s),
+        _ => None,
+    }
+}
+
+fn login_type_to_str(lt: LoginType) -> &'static str {
+    match lt {
+        LoginType::Ocp => "ocp",
+        LoginType::K8s => "k8s",
+        LoginType::Gke => "gke",
+        LoginType::Rancher => "rancher",
+    }
+}
+
+/// Re-login for a context whose session is dead. Uses stored type (from previous re-login) if set,
+/// else infers from context name prefix; prompts for cluster type when unknown (e.g. legacy OCP).
 pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -> Result<()> {
+    use crate::commands::context;
+
     let merged = kubeconfig::load_merged(paths)?;
     let server = kubeconfig::get_server_for_context(&merged, context)
         .ok_or_else(|| K8pkError::Other("Cannot determine server URL for re-login".into()))?;
 
-    let login_type = infer_login_type_from_context(context).ok_or_else(|| {
-        K8pkError::Other("Re-login only supported for rancher-, ocp-, or gke- contexts".into())
-    })?;
+    let mut login_type = context::get_context_type(context)?
+        .as_ref()
+        .and_then(|s| parse_stored_type(s))
+        .or_else(|| infer_login_type_from_context(context));
+
+    if login_type.is_none() {
+        eprintln!(
+            "Unknown cluster type for '{}'. Choose type for re-login (saved for next time):",
+            context
+        );
+        let choice = Select::new(
+            "Cluster type:",
+            vec!["ocp (OpenShift)", "rancher", "gke", "k8s (generic)"],
+        )
+        .prompt()
+        .map_err(|_| K8pkError::Cancelled)?;
+        login_type = match choice {
+            "ocp (OpenShift)" => Some(LoginType::Ocp),
+            "rancher" => Some(LoginType::Rancher),
+            "gke" => Some(LoginType::Gke),
+            _ => None,
+        };
+    }
 
     let exec = ExecAuthConfig::default();
 
     match login_type {
-        LoginType::Rancher | LoginType::Ocp => {
+        Some(LoginType::Rancher) | Some(LoginType::Ocp) => {
             eprintln!(
                 "Session expired for '{}'. Re-login (username and password).",
                 context
@@ -1932,8 +1974,9 @@ pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -
                 .without_confirmation()
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
+            let lt = login_type.unwrap();
             login(
-                login_type,
+                lt,
                 &server,
                 None,
                 Some(&username),
@@ -1954,8 +1997,9 @@ pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -
                 "local",
                 false,
             )?;
+            context::save_context_type(context, login_type_to_str(lt))?;
         }
-        LoginType::Gke => {
+        Some(LoginType::Gke) => {
             eprintln!(
                 "Session expired for '{}'. Re-authenticating with GKE...",
                 context
@@ -1982,11 +2026,75 @@ pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -
                 "local",
                 false,
             )?;
+            context::save_context_type(context, "gke")?;
         }
-        LoginType::K8s => {
-            return Err(K8pkError::Other(
-                "Re-login for generic k8s contexts is not supported; run 'k8pk login --type k8s' manually".into(),
-            ));
+        Some(LoginType::K8s) | None => {
+            eprintln!(
+                "Session expired for '{}'. Re-login (token or username/password).",
+                context
+            );
+            let auth_choice = Select::new("Auth:", vec!["token", "userpass"])
+                .prompt()
+                .map_err(|_| K8pkError::Cancelled)?;
+            if auth_choice == "token" {
+                let token = Password::new("Token:")
+                    .without_confirmation()
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?;
+                login(
+                    LoginType::K8s,
+                    &server,
+                    Some(&token),
+                    None,
+                    None,
+                    Some(context),
+                    None,
+                    false,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "token",
+                    &exec,
+                    false,
+                    false,
+                    SESSION_CHECK_TIMEOUT_SECS,
+                    "local",
+                    false,
+                )?;
+            } else {
+                let username = Text::new("Username:")
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?;
+                let password = Password::new("Password:")
+                    .without_confirmation()
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?;
+                login(
+                    LoginType::K8s,
+                    &server,
+                    None,
+                    Some(&username),
+                    Some(&password),
+                    Some(context),
+                    None,
+                    false,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "userpass",
+                    &exec,
+                    false,
+                    false,
+                    SESSION_CHECK_TIMEOUT_SECS,
+                    "local",
+                    false,
+                )?;
+            }
+            context::save_context_type(context, "k8s")?;
         }
     }
 
