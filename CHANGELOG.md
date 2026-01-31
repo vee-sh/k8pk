@@ -4,10 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
-## [0.11.9] - 2026-01-31
+## [0.11.10] - 2026-01-31
 
 ### Fixed
 - Fix Rancher/GKE kubeconfig: user entries now correctly nest credentials under `user:` key (was missing, causing `system:unauthenticated` errors)
+- Add AD username format hints in Rancher re-login prompt
+- Add retry option when Rancher auth fails with 401
+
+## [0.11.9] - 2026-01-31
+
+### Fixed
+- (Incomplete release - use 0.11.10)
 
 ## [0.11.8] - 2026-01-31
 
