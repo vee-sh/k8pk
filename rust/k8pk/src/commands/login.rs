@@ -2005,14 +2005,15 @@ pub fn try_relogin(
                     .prompt()
                     .map_err(|_| K8pkError::Cancelled)?
             };
-            let username = Text::new("Username:")
+            let username = Text::new("Username (for AD try DOMAIN\\user or user@domain.com):")
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
             let password = Password::new("Password:")
                 .without_confirmation()
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
-            let res = login(
+            // Try authentication - first attempt
+            let auth_result = login(
                 LoginType::Rancher,
                 &rancher_server,
                 None,
@@ -2034,7 +2035,61 @@ pub fn try_relogin(
                 "local",
                 false,
                 Some(&server), // cluster URL for kubeconfig
-            )?;
+            );
+            // If auth fails, offer to retry with different credentials
+            let res = match auth_result {
+                Ok(r) => r,
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    if err_msg.contains("401") || err_msg.contains("Unauthorized") {
+                        eprintln!("Authentication failed. Common issues:");
+                        eprintln!("  - For AD: try DOMAIN\\username or username@domain.com");
+                        eprintln!("  - Check if your account has Rancher access");
+                        eprintln!("  - Verify password is correct");
+                        let retry = inquire::Confirm::new("Retry with different credentials?")
+                            .with_default(true)
+                            .prompt()
+                            .unwrap_or(false);
+                        if retry {
+                            let username2 =
+                                Text::new("Username (for AD try DOMAIN\\user or user@domain.com):")
+                                    .prompt()
+                                    .map_err(|_| K8pkError::Cancelled)?;
+                            let password2 = Password::new("Password:")
+                                .without_confirmation()
+                                .prompt()
+                                .map_err(|_| K8pkError::Cancelled)?;
+                            login(
+                                LoginType::Rancher,
+                                &rancher_server,
+                                None,
+                                Some(&username2),
+                                Some(&password2),
+                                Some(context),
+                                None,
+                                false,
+                                false,
+                                None,
+                                None,
+                                None,
+                                None,
+                                "userpass",
+                                &exec,
+                                false,
+                                false,
+                                SESSION_CHECK_TIMEOUT_SECS,
+                                "local",
+                                false,
+                                Some(&server),
+                            )?
+                        } else {
+                            return Err(e);
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
             written_path = res.kubeconfig_path;
             context::save_context_type(context, "rancher")?;
         }
