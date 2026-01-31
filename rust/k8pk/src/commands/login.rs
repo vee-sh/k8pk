@@ -167,6 +167,7 @@ pub fn login(
     test_timeout: u64,
     rancher_auth_provider: &str,
     quiet: bool,
+    rancher_cluster_server: Option<&str>, // re-login: server = login API base, this = kubeconfig cluster URL
 ) -> Result<LoginResult> {
     let mut final_token = token.map(str::to_string);
     let mut final_username = username.map(str::to_string);
@@ -260,6 +261,7 @@ pub fn login(
             test,
             test_timeout,
             quiet,
+            rancher_cluster_server,
         ),
     }
 }
@@ -575,6 +577,7 @@ pub fn login_wizard() -> Result<LoginResult> {
         test_timeout,
         "local", // rancher_auth_provider (wizard default; use CLI for activedirectory)
         false,
+        None, // rancher_cluster_server (wizard: single server)
     )
 }
 
@@ -1212,7 +1215,9 @@ fn rancher_auth_provider_path(provider: &str) -> &'static str {
     }
 }
 
-/// Login to Rancher-managed cluster
+/// Login to Rancher-managed cluster.
+/// When cluster_server_override is Some (re-login), server is the Rancher base URL for the login API
+/// and cluster_server_override is the cluster URL for the kubeconfig.
 #[allow(clippy::too_many_arguments)]
 fn rancher_login(
     server: &str,
@@ -1229,7 +1234,10 @@ fn rancher_login(
     test: bool,
     test_timeout: u64,
     quiet: bool,
+    cluster_server_override: Option<&str>,
 ) -> Result<LoginResult> {
+    let cluster_server = cluster_server_override.unwrap_or(server);
+
     let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
     let out_dir = output_dir
         .map(PathBuf::from)
@@ -1237,9 +1245,9 @@ fn rancher_login(
 
     fs::create_dir_all(&out_dir)?;
 
-    // Generate context name from server URL
+    // Generate context name from cluster server URL (or name if provided)
     let context_name = name.map(String::from).unwrap_or_else(|| {
-        let sanitized = server
+        let sanitized = cluster_server
             .trim_start_matches("https://")
             .trim_start_matches("http://")
             .replace(['/', ':'], "-");
@@ -1297,7 +1305,7 @@ fn rancher_login(
         if let Some(ref v) = vault {
             if let Some(entry) = v.get(&vault_key) {
                 if !quiet {
-                    println!("Using credentials from vault for {}", server);
+                    println!("Using credentials from vault for {}", cluster_server);
                 }
                 final_username = Some(entry.username.clone());
                 final_password = Some(entry.password.clone());
@@ -1356,7 +1364,7 @@ fn rancher_login(
     }
 
     if !quiet {
-        println!("Creating Rancher kubeconfig for {}...", server);
+        println!("Creating Rancher kubeconfig for {}...", cluster_server);
     }
 
     if dry_run {
@@ -1371,14 +1379,14 @@ fn rancher_login(
     let mut cfg = KubeConfig::default();
     cfg.ensure_defaults(Some(&context_name));
 
-    // Create cluster entry
+    // Create cluster entry (use cluster_server so re-login keeps original cluster URL)
     let cluster_name = format!("{}-cluster", context_name);
     let mut cluster_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
     if let serde_yaml_ng::Value::Mapping(ref mut map) = cluster_rest {
         let mut cluster_map = serde_yaml_ng::Mapping::new();
         cluster_map.insert(
             serde_yaml_ng::Value::String("server".to_string()),
-            serde_yaml_ng::Value::String(server.to_string()),
+            serde_yaml_ng::Value::String(cluster_server.to_string()),
         );
         if let Some(ca) = certificate_authority {
             cluster_map.insert(
@@ -1451,6 +1459,17 @@ fn rancher_login(
         namespace: None,
         kubeconfig_path: Some(kubeconfig_path),
     })
+}
+
+/// Extract Rancher server base URL from a cluster URL for the login API.
+/// Cluster URLs are often https://host/k8s/clusters/c-xxx; login must use https://host.
+/// Returns (base_url, is_rancher_proxy) where is_rancher_proxy indicates if the URL contains /k8s/clusters.
+fn rancher_server_base_url(server: &str) -> (String, bool) {
+    if let Some(idx) = server.find("/k8s/clusters") {
+        (server[..idx].trim_end_matches('/').to_string(), true)
+    } else {
+        (server.trim_end_matches('/').to_string(), false)
+    }
 }
 
 /// Authenticate with Rancher API and get bearer token.
@@ -1917,18 +1936,14 @@ fn parse_stored_type(s: &str) -> Option<LoginType> {
     }
 }
 
-fn login_type_to_str(lt: LoginType) -> &'static str {
-    match lt {
-        LoginType::Ocp => "ocp",
-        LoginType::K8s => "k8s",
-        LoginType::Gke => "gke",
-        LoginType::Rancher => "rancher",
-    }
-}
-
 /// Re-login for a context whose session is dead. Uses stored type (from previous re-login) if set,
 /// else infers from context name prefix; prompts for cluster type when unknown (e.g. legacy OCP).
-pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -> Result<()> {
+/// Returns the kubeconfig path that was written so the caller can use it when building the isolated kubeconfig.
+pub fn try_relogin(
+    context: &str,
+    _namespace: Option<&str>,
+    paths: &[PathBuf],
+) -> Result<Option<PathBuf>> {
     use crate::commands::context;
 
     let merged = kubeconfig::load_merged(paths)?;
@@ -1960,9 +1975,60 @@ pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -
     }
 
     let exec = ExecAuthConfig::default();
+    #[allow(unused_assignments)]
+    let mut written_path: Option<PathBuf> = None;
 
     match login_type {
-        Some(LoginType::Rancher) | Some(LoginType::Ocp) => {
+        Some(LoginType::Rancher) => {
+            eprintln!(
+                "Session expired for '{}'. Re-login (username and password).",
+                context
+            );
+            // For Rancher, we need the Rancher server base URL for the login API
+            let (base, is_proxy_url) = rancher_server_base_url(&server);
+            let rancher_server = if is_proxy_url {
+                base
+            } else {
+                // Cluster URL doesn't contain /k8s/clusters - ask user for Rancher server
+                eprintln!("Cluster URL does not appear to be a Rancher proxy URL.");
+                Text::new("Rancher server URL (e.g., https://rancher.example.com):")
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?
+            };
+            let username = Text::new("Username:")
+                .prompt()
+                .map_err(|_| K8pkError::Cancelled)?;
+            let password = Password::new("Password:")
+                .without_confirmation()
+                .prompt()
+                .map_err(|_| K8pkError::Cancelled)?;
+            let res = login(
+                LoginType::Rancher,
+                &rancher_server,
+                None,
+                Some(&username),
+                Some(&password),
+                Some(context),
+                None,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                "userpass",
+                &exec,
+                false,
+                false,
+                SESSION_CHECK_TIMEOUT_SECS,
+                "local",
+                false,
+                Some(&server), // cluster URL for kubeconfig
+            )?;
+            written_path = res.kubeconfig_path;
+            context::save_context_type(context, "rancher")?;
+        }
+        Some(LoginType::Ocp) => {
             eprintln!(
                 "Session expired for '{}'. Re-login (username and password).",
                 context
@@ -1974,9 +2040,8 @@ pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -
                 .without_confirmation()
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
-            let lt = login_type.unwrap();
-            login(
-                lt,
+            let res = login(
+                LoginType::Ocp,
                 &server,
                 None,
                 Some(&username),
@@ -1996,15 +2061,17 @@ pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -
                 SESSION_CHECK_TIMEOUT_SECS,
                 "local",
                 false,
+                None,
             )?;
-            context::save_context_type(context, login_type_to_str(lt))?;
+            written_path = res.kubeconfig_path;
+            context::save_context_type(context, "ocp")?;
         }
         Some(LoginType::Gke) => {
             eprintln!(
                 "Session expired for '{}'. Re-authenticating with GKE...",
                 context
             );
-            login(
+            let res = login(
                 LoginType::Gke,
                 &server,
                 None,
@@ -2025,7 +2092,9 @@ pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -
                 SESSION_CHECK_TIMEOUT_SECS,
                 "local",
                 false,
+                None,
             )?;
+            written_path = res.kubeconfig_path;
             context::save_context_type(context, "gke")?;
         }
         Some(LoginType::K8s) | None => {
@@ -2036,7 +2105,7 @@ pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -
             let auth_choice = Select::new("Auth:", vec!["token", "userpass"])
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
-            if auth_choice == "token" {
+            let res = if auth_choice == "token" {
                 let token = Password::new("Token:")
                     .without_confirmation()
                     .prompt()
@@ -2062,7 +2131,8 @@ pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -
                     SESSION_CHECK_TIMEOUT_SECS,
                     "local",
                     false,
-                )?;
+                    None,
+                )?
             } else {
                 let username = Text::new("Username:")
                     .prompt()
@@ -2092,19 +2162,22 @@ pub fn try_relogin(context: &str, _namespace: Option<&str>, paths: &[PathBuf]) -
                     SESSION_CHECK_TIMEOUT_SECS,
                     "local",
                     false,
-                )?;
-            }
+                    None,
+                )?
+            };
+            written_path = res.kubeconfig_path;
             context::save_context_type(context, "k8s")?;
         }
     }
 
-    Ok(())
+    Ok(written_path)
 }
 
 fn test_k8s_auth(kubeconfig_path: &Path, context_name: &str, timeout_secs: u64) -> Result<()> {
     let cli = crate::kubeconfig::find_k8s_cli()?;
     let timeout_arg = format!("--request-timeout={}s", timeout_secs);
-    let status = Command::new(cli)
+    // Suppress stderr to avoid noisy error output during session check
+    let output = Command::new(cli)
         .args([
             "--kubeconfig",
             &kubeconfig_path.to_string_lossy(),
@@ -2117,9 +2190,11 @@ fn test_k8s_auth(kubeconfig_path: &Path, context_name: &str, timeout_secs: u64) 
             "pods",
             "--all-namespaces",
         ])
-        .status()?;
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .output()?;
 
-    if !status.success() {
+    if !output.status.success() {
         return Err(K8pkError::CommandFailed("credential test failed".into()));
     }
 

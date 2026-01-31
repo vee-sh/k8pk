@@ -178,12 +178,18 @@ fn main() -> anyhow::Result<()> {
 
             if commands::check_session_alive(&kubeconfig, &context, 8).is_err() {
                 if io::stdin().is_terminal() {
-                    commands::try_relogin(&context, namespace.as_deref(), &paths)?;
-                    kubeconfig = commands::ensure_isolated_kubeconfig(
-                        &context,
-                        namespace.as_deref(),
-                        &paths,
-                    )?;
+                    let written = commands::try_relogin(&context, namespace.as_deref(), &paths)?;
+                    // Use the written kubeconfig directly (OCP/Rancher write ready-to-use files)
+                    // Only rebuild if no file was written (shouldn't happen for OCP/Rancher)
+                    kubeconfig = if let Some(ref p) = written {
+                        p.clone()
+                    } else {
+                        commands::ensure_isolated_kubeconfig(
+                            &context,
+                            namespace.as_deref(),
+                            &paths,
+                        )?
+                    };
                 } else {
                     return Err(K8pkError::Other(
                         "Session expired and not interactive; run 'k8pk login' to refresh".into(),
@@ -531,12 +537,17 @@ fn main() -> anyhow::Result<()> {
 
             if commands::check_session_alive(&kubeconfig, &context, 8).is_err() {
                 if io::stdin().is_terminal() {
-                    commands::try_relogin(&context, namespace.as_deref(), &paths)?;
-                    kubeconfig = commands::ensure_isolated_kubeconfig(
-                        &context,
-                        namespace.as_deref(),
-                        &paths,
-                    )?;
+                    let written = commands::try_relogin(&context, namespace.as_deref(), &paths)?;
+                    // Use the written kubeconfig directly (OCP/Rancher write ready-to-use files)
+                    kubeconfig = if let Some(ref p) = written {
+                        p.clone()
+                    } else {
+                        commands::ensure_isolated_kubeconfig(
+                            &context,
+                            namespace.as_deref(),
+                            &paths,
+                        )?
+                    };
                 } else {
                     return Err(K8pkError::Other(
                         "Session expired and not interactive; run 'k8pk login' to refresh".into(),
@@ -900,6 +911,7 @@ fn main() -> anyhow::Result<()> {
                 test_timeout,
                 rancher_auth_provider.as_str(),
                 effective_quiet,
+                None, // rancher_cluster_server (CLI: single server)
             )?;
 
             if dry_run {
