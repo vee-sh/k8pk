@@ -741,7 +741,7 @@ dependencies = [
 
 [[package]]
 name = "k8pk"
-version = "0.11.8"
+version = "0.11.9"
 dependencies = [
  "anyhow",
  "clap",
