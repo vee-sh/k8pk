@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.12.1] - 2026-02-01
+
+### Fixed
+- Session check now shows spinner and has hard timeout (no more hanging on unreachable clusters)
+- Skip namespace listing in `clusters_only` mode (prevents hanging when fetching namespaces from unreachable clusters)
+- Use process spawn with timeout instead of blocking `.output()` call
+
 ## [0.12.0] - 2026-02-01
 
 ### Added
