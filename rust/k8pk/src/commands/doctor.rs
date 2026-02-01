@@ -61,6 +61,8 @@ pub fn run(fix: bool, json: bool) -> Result<()> {
         check_oc(),
         // Check gcloud (optional)
         check_gcloud(),
+        // Check GKE auth plugin (needed for GKE clusters)
+        check_gke_auth_plugin(),
         // Check k8pk config
         check_k8pk_config(),
     ];
@@ -147,6 +149,26 @@ fn check_gcloud() -> DiagnosticResult {
             "gcloud",
             "Not installed (optional, needed for GKE login)",
             Some("Install gcloud: https://cloud.google.com/sdk/docs/install"),
+        ),
+    }
+}
+
+fn check_gke_auth_plugin() -> DiagnosticResult {
+    match Command::new("gke-gcloud-auth-plugin")
+        .arg("--version")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout);
+            DiagnosticResult::ok(
+                "gke-gcloud-auth-plugin",
+                &format!("Found: {}", version.trim()),
+            )
+        }
+        _ => DiagnosticResult::warning(
+            "gke-gcloud-auth-plugin",
+            "Not installed (required for GKE clusters)",
+            Some("Install: gcloud components install gke-gcloud-auth-plugin"),
         ),
     }
 }

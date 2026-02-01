@@ -1077,6 +1077,19 @@ fn gke_login(
         ));
     }
 
+    // Verify gke-gcloud-auth-plugin is available
+    if which::which("gke-gcloud-auth-plugin").is_err() {
+        return Err(K8pkError::Other(
+            "gke-gcloud-auth-plugin not found.\n\n\
+             Install it with:\n  \
+             gcloud components install gke-gcloud-auth-plugin\n\n\
+             Or via Homebrew:\n  \
+             brew install google-cloud-sdk\n  \
+             gcloud components install gke-gcloud-auth-plugin"
+                .into(),
+        ));
+    }
+
     let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
     let out_dir = output_dir
         .map(PathBuf::from)

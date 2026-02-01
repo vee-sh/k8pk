@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.12.2] - 2026-02-01
+
+### Fixed
+- GKE login now checks for `gke-gcloud-auth-plugin` before attempting login with helpful install instructions
+- `k8pk doctor` now checks for `gke-gcloud-auth-plugin` installation
+
 ## [0.12.1] - 2026-02-01
 
 ### Fixed
