@@ -998,6 +998,18 @@ fn main() -> anyhow::Result<()> {
         Command::Which { context, json } => {
             commands::display_context_info(context.as_deref(), &paths, json)?;
         }
+
+        Command::Alias {
+            install,
+            uninstall,
+            shell,
+        } => {
+            commands::alias(install, uninstall, shell.as_deref())?;
+        }
+
+        Command::Doctor { fix, json } => {
+            commands::doctor(fix, json)?;
+        }
     }
 
     Ok(())

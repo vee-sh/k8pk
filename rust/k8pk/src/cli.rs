@@ -622,6 +622,36 @@ pub enum Command {
         #[arg(long, help = "Output as JSON")]
         json: bool,
     },
+
+    /// Set up shell aliases for k8pk (kk, kctx, kns)
+    #[command(after_help = "Examples:\n  \
+        k8pk alias                # Show alias setup instructions\n  \
+        k8pk alias --install      # Add aliases to your shell config\n  \
+        k8pk alias --uninstall    # Remove aliases from shell config")]
+    Alias {
+        /// Add aliases to shell config file
+        #[arg(long, help = "Add aliases to shell config")]
+        install: bool,
+        /// Remove aliases from shell config file
+        #[arg(long, help = "Remove aliases from shell config")]
+        uninstall: bool,
+        /// Shell type: bash, zsh, fish (auto-detect if not specified)
+        #[arg(long, value_name = "SHELL")]
+        shell: Option<String>,
+    },
+
+    /// Diagnose common k8pk and kubectl issues
+    #[command(after_help = "Examples:\n  \
+        k8pk doctor               # Run all checks\n  \
+        k8pk doctor --fix         # Attempt to fix issues")]
+    Doctor {
+        /// Attempt to fix detected issues
+        #[arg(long, help = "Attempt to fix detected issues")]
+        fix: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
