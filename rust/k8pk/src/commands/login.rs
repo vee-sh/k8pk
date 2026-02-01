@@ -2239,10 +2239,30 @@ pub fn try_relogin(
 }
 
 fn test_k8s_auth(kubeconfig_path: &Path, context_name: &str, timeout_secs: u64) -> Result<()> {
+    use indicatif::{ProgressBar, ProgressStyle};
+    use std::io::IsTerminal;
+    use std::time::{Duration, Instant};
+
     let cli = crate::kubeconfig::find_k8s_cli()?;
     let timeout_arg = format!("--request-timeout={}s", timeout_secs);
-    // Suppress stderr to avoid noisy error output during session check
-    let output = Command::new(cli)
+
+    // Show spinner if interactive
+    let spinner = if std::io::stderr().is_terminal() {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap(),
+        );
+        pb.set_message("Checking session...");
+        pb.enable_steady_tick(Duration::from_millis(100));
+        Some(pb)
+    } else {
+        None
+    };
+
+    // Spawn the process so we can enforce a hard timeout
+    let mut child = Command::new(cli)
         .args([
             "--kubeconfig",
             &kubeconfig_path.to_string_lossy(),
@@ -2257,13 +2277,39 @@ fn test_k8s_auth(kubeconfig_path: &Path, context_name: &str, timeout_secs: u64) 
         ])
         .stderr(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .output()?;
+        .spawn()?;
 
-    if !output.status.success() {
-        return Err(K8pkError::CommandFailed("credential test failed".into()));
+    // Wait with timeout - check every 100ms
+    let start = Instant::now();
+    let timeout = Duration::from_secs(timeout_secs + 2); // Buffer for kubectl's timeout
+
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                if let Some(pb) = spinner {
+                    pb.finish_and_clear();
+                }
+                if !status.success() {
+                    return Err(K8pkError::CommandFailed("credential test failed".into()));
+                }
+                return Ok(());
+            }
+            None => {
+                if start.elapsed() > timeout {
+                    // Kill the process
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    if let Some(pb) = spinner {
+                        pb.finish_and_clear();
+                    }
+                    return Err(K8pkError::CommandFailed(
+                        "session check timed out (cluster unreachable?)".into(),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
     }
-
-    Ok(())
 }
 
 fn test_ocp_auth(kubeconfig_path: &Path, _timeout_secs: u64) -> Result<()> {

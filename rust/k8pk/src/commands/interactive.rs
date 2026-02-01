@@ -31,7 +31,7 @@ pub fn pick_context_namespace(
 /// Pick a cluster (grouped contexts) and optionally a namespace
 fn pick_cluster_with_namespace(
     cfg: &KubeConfig,
-    kubeconfig_env: Option<&str>,
+    _kubeconfig_env: Option<&str>,
 ) -> Result<(String, Option<String>)> {
     if !io::stdin().is_terminal() {
         return Err(K8pkError::NoTty);
@@ -140,26 +140,12 @@ fn pick_cluster_with_namespace(
     // Get contexts for this cluster
     let cluster_contexts = &cluster_groups[&selected_key];
 
-    // Find default namespace (context with namespace set, or first context)
+    // Find default namespace (context with namespace set, or use "default")
+    // Note: We no longer call list_namespaces here as it can hang for unreachable clusters
     let default_ns = cluster_contexts
         .iter()
         .find_map(|(_, ns)| ns.clone())
-        .or_else(|| {
-            // Try to get default namespace from first context
-            cluster_contexts.first().and_then(|(ctx_name, _)| {
-                // Try to list namespaces and get default
-                kubeconfig::list_namespaces(ctx_name, kubeconfig_env)
-                    .ok()
-                    .and_then(|ns_list| {
-                        // Prefer "default" namespace if available
-                        if ns_list.contains(&"default".to_string()) {
-                            Some("default".to_string())
-                        } else {
-                            ns_list.first().cloned()
-                        }
-                    })
-            })
-        });
+        .or(Some("default".to_string()));
 
     // Use first context from the cluster group
     let selected_context = cluster_contexts
