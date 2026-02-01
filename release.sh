@@ -74,9 +74,8 @@ echo -e "${GREEN}✓ All checks passed${NC}"
 
 # Step 4: Commit changes
 echo -e "${YELLOW}Step 4: Committing changes...${NC}"
-git add rust/k8pk/Cargo.toml rust/k8pk/Cargo.lock
-# Include CHANGELOG if updated for this release
-git add CHANGELOG.md 2>/dev/null || true
+# Add ALL changes including source files (the old approach missed source files!)
+git add -A
 git status --short
 git commit -m "chore: bump version to ${NEW_VERSION}" || {
     echo -e "${YELLOW}No changes to commit (version may already be set)${NC}"
