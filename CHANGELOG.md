@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [0.11.12] - 2026-01-31
+
+### Fixed
+- Deduplicate contexts/clusters/users during kubeconfig merge (first occurrence wins, matches kubectl behavior)
+- Use `SESSION_CHECK_TIMEOUT_SECS` constant instead of hardcoded values
+- Add specific error types for authentication failures (AuthenticationFailed, SessionExpired, RancherAuthError, ServerUrlNotFound, UnsupportedLoginType)
+
 ## [0.11.11] - 2026-01-31
 
 ### Fixed
