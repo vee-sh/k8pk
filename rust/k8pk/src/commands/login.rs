@@ -1910,7 +1910,7 @@ fn build_exec_auth(exec: &ExecAuthConfig) -> Result<serde_yaml_ng::Value> {
 }
 
 /// Default timeout (seconds) for session liveness check when picking a context
-const SESSION_CHECK_TIMEOUT_SECS: u64 = 8;
+pub const SESSION_CHECK_TIMEOUT_SECS: u64 = 8;
 
 /// Check if the session (credentials) for the given context is still alive.
 /// Runs a quick auth can-i; returns Ok(()) if alive, Err if expired/unreachable.

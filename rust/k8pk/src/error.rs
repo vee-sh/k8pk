@@ -55,6 +55,36 @@ pub enum K8pkError {
     #[error("command failed: {0}")]
     CommandFailed(String),
 
+    // Future-use error variants for improved error handling
+    #[allow(dead_code)]
+    #[error("authentication failed for '{context}': {message}\n\n  Try re-authenticating:\n    k8pk login --type {cluster_type} --server {server}")]
+    AuthenticationFailed {
+        context: String,
+        message: String,
+        cluster_type: String,
+        server: String,
+    },
+
+    #[allow(dead_code)]
+    #[error("session expired for '{0}'\n\n  Re-authenticate interactively:\n    k8pk ctx {0}\n\n  Or login directly:\n    k8pk login")]
+    SessionExpired(String),
+
+    #[allow(dead_code)]
+    #[error("Rancher API error ({status}): {message}\n\n  Check:\n    - Credentials are correct\n    - For AD: try DOMAIN\\\\username or username@domain.com\n    - Server URL is correct: {server}")]
+    RancherAuthError {
+        status: u16,
+        message: String,
+        server: String,
+    },
+
+    #[allow(dead_code)]
+    #[error("cannot determine server URL for context '{0}'\n\n  The context may be missing cluster reference.\n  Run 'k8pk lint' to check kubeconfig integrity")]
+    ServerUrlNotFound(String),
+
+    #[allow(dead_code)]
+    #[error("unsupported login type for context '{context}': {message}\n\n  Supported types: ocp, rancher, gke, k8s")]
+    UnsupportedLoginType { context: String, message: String },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

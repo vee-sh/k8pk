@@ -169,8 +169,12 @@ pub fn prune_to_context(cfg: &KubeConfig, name: &str) -> Result<KubeConfig> {
 }
 
 /// Load and merge multiple kubeconfig files
+/// Deduplicates by name (first occurrence wins, matching kubectl behavior)
 pub fn load_merged(paths: &[PathBuf]) -> Result<KubeConfig> {
     let mut merged = KubeConfig::default();
+    let mut seen_clusters = std::collections::HashSet::new();
+    let mut seen_contexts = std::collections::HashSet::new();
+    let mut seen_users = std::collections::HashSet::new();
 
     for p in paths {
         if !p.exists() {
@@ -184,10 +188,22 @@ pub fn load_merged(paths: &[PathBuf]) -> Result<KubeConfig> {
             merged.current_context = cfg.current_context.clone();
         }
 
-        // concatenate arrays
-        merged.clusters.extend(cfg.clusters);
-        merged.contexts.extend(cfg.contexts);
-        merged.users.extend(cfg.users);
+        // Deduplicate by name (first occurrence wins)
+        for cluster in cfg.clusters {
+            if seen_clusters.insert(cluster.name.clone()) {
+                merged.clusters.push(cluster);
+            }
+        }
+        for context in cfg.contexts {
+            if seen_contexts.insert(context.name.clone()) {
+                merged.contexts.push(context);
+            }
+        }
+        for user in cfg.users {
+            if seen_users.insert(user.name.clone()) {
+                merged.users.push(user);
+            }
+        }
 
         // carry over top-level defaults only once
         if merged.api_version.is_none() {

@@ -176,7 +176,13 @@ fn main() -> anyhow::Result<()> {
             let mut kubeconfig =
                 commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
 
-            if commands::check_session_alive(&kubeconfig, &context, 8).is_err() {
+            if commands::check_session_alive(
+                &kubeconfig,
+                &context,
+                commands::SESSION_CHECK_TIMEOUT_SECS,
+            )
+            .is_err()
+            {
                 if io::stdin().is_terminal() {
                     let written = commands::try_relogin(&context, namespace.as_deref(), &paths)?;
                     // Use the written kubeconfig directly (OCP/Rancher write ready-to-use files)
@@ -535,7 +541,13 @@ fn main() -> anyhow::Result<()> {
             let mut kubeconfig =
                 commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
 
-            if commands::check_session_alive(&kubeconfig, &context, 8).is_err() {
+            if commands::check_session_alive(
+                &kubeconfig,
+                &context,
+                commands::SESSION_CHECK_TIMEOUT_SECS,
+            )
+            .is_err()
+            {
                 if io::stdin().is_terminal() {
                     let written = commands::try_relogin(&context, namespace.as_deref(), &paths)?;
                     // Use the written kubeconfig directly (OCP/Rancher write ready-to-use files)
