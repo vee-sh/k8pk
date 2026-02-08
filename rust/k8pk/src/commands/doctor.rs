@@ -82,6 +82,21 @@ pub fn run(fix: bool, json: bool) -> Result<()> {
     // Check KUBECONFIG environment
     results.push(check_kubeconfig_env());
 
+    // Check shell integration
+    results.push(check_shell_integration());
+
+    // Check kubeconfig file permissions (Unix only)
+    #[cfg(unix)]
+    results.extend(check_kubeconfig_permissions());
+
+    if fix {
+        let fixed = apply_fixes(&mut results);
+        if !json && fixed > 0 {
+            println!("{}", format!("Applied {} fix(es)", fixed).bright_green());
+            println!();
+        }
+    }
+
     if json {
         print_json(&results);
     } else {
@@ -385,6 +400,54 @@ fn check_kubeconfig_env() -> DiagnosticResult {
     }
 }
 
+fn check_shell_integration() -> DiagnosticResult {
+    // Check if the shell integration appears to be sourced by looking for
+    // common indicators: the kctx/kns functions or the k8pk.sh source line.
+    // We check the shell config files for the presence of k8pk integration.
+    let home = match dirs_next::home_dir() {
+        Some(h) => h,
+        None => {
+            return DiagnosticResult::warning(
+                "shell integration",
+                "Cannot determine home directory",
+                Some("Ensure HOME is set"),
+            )
+        }
+    };
+
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let config_files: Vec<PathBuf> = if shell.ends_with("fish") {
+        vec![home.join(".config/fish/config.fish")]
+    } else if shell.ends_with("zsh") {
+        vec![home.join(".zshrc")]
+    } else {
+        vec![home.join(".bashrc"), home.join(".bash_profile")]
+    };
+
+    for config_file in &config_files {
+        if let Ok(content) = fs::read_to_string(config_file) {
+            if content.contains("k8pk") {
+                return DiagnosticResult::ok(
+                    "shell integration",
+                    &format!(
+                        "Found k8pk reference in {}",
+                        config_file
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    ),
+                );
+            }
+        }
+    }
+
+    DiagnosticResult::warning(
+        "shell integration",
+        "k8pk shell integration not detected",
+        Some("Run 'k8pk alias --install' to set up shell aliases and eval integration"),
+    )
+}
+
 fn print_results(results: &[DiagnosticResult], _fix: bool) {
     println!("{}", "k8pk Doctor".bright_cyan().bold());
     println!("{}", "===========".bright_cyan());
@@ -476,4 +539,71 @@ fn print_json(results: &[DiagnosticResult]) {
         "{}",
         serde_json::to_string_pretty(&json_results).unwrap_or_default()
     );
+}
+
+/// Check kubeconfig file permissions (Unix only).
+#[cfg(unix)]
+fn check_kubeconfig_permissions() -> Vec<DiagnosticResult> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let cfg = config::K8pkConfig::default();
+    let paths = kubeconfig::resolve_paths(None, &[], &cfg).unwrap_or_default();
+    let mut results = Vec::new();
+
+    for path in &paths {
+        if !path.exists() {
+            continue;
+        }
+        if let Ok(meta) = fs::metadata(path) {
+            let mode = meta.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                results.push(DiagnosticResult::warning(
+                    &format!("file permissions: {}", path.display()),
+                    &format!("kubeconfig is accessible by others (mode {:04o})", mode),
+                    Some(&format!(
+                        "Run: chmod 600 {} (or use k8pk doctor --fix)",
+                        path.display()
+                    )),
+                ));
+            } else {
+                results.push(DiagnosticResult::ok(
+                    &format!("file permissions: {}", path.display()),
+                    &format!("restricted (mode {:04o})", mode),
+                ));
+            }
+        }
+    }
+    results
+}
+
+/// Apply automatic fixes for issues that can be safely corrected.
+fn apply_fixes(results: &mut [DiagnosticResult]) -> usize {
+    let mut fixed = 0;
+
+    for result in results.iter_mut() {
+        if result.status == DiagStatus::Ok {
+            continue;
+        }
+
+        // Fix kubeconfig permissions
+        #[cfg(unix)]
+        if result.name.starts_with("file permissions:") {
+            use std::os::unix::fs::PermissionsExt;
+            let path_str = result.name.strip_prefix("file permissions: ").unwrap_or("");
+            let path = std::path::Path::new(path_str);
+            if path.exists() {
+                if let Ok(meta) = fs::metadata(path) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o600);
+                    if fs::set_permissions(path, perms).is_ok() {
+                        result.status = DiagStatus::Ok;
+                        result.message = "fixed: permissions set to 0600".to_string();
+                        result.fix_hint = None;
+                        fixed += 1;
+                    }
+                }
+            }
+        }
+    }
+    fixed
 }

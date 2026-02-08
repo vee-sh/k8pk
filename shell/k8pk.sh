@@ -72,11 +72,12 @@ kctx() {
   if [ -z "$ctx" ]; then
     # Interactive selection
     local tmpfile=$(mktemp)
-    if k8pk $args ctx > "$tmpfile" 2>/dev/null; then
+    if k8pk $args ctx > "$tmpfile"; then
       eval "$(cat "$tmpfile")"
       rm -f "$tmpfile"
     else
       local exit_code=$?
+      cat "$tmpfile" >&2
       rm -f "$tmpfile"
       return $exit_code
     fi
@@ -84,20 +85,22 @@ kctx() {
     # Explicit context (with optional namespace)
     local tmpfile=$(mktemp)
     if [ -n "$ns" ]; then
-      if k8pk $args ctx "$ctx" --namespace "$ns" > "$tmpfile" 2>/dev/null; then
+      if k8pk $args ctx "$ctx" --namespace "$ns" > "$tmpfile"; then
         eval "$(cat "$tmpfile")"
         rm -f "$tmpfile"
       else
         local exit_code=$?
+        cat "$tmpfile" >&2
         rm -f "$tmpfile"
         return $exit_code
       fi
     else
-      if k8pk $args ctx "$ctx" > "$tmpfile" 2>/dev/null; then
+      if k8pk $args ctx "$ctx" > "$tmpfile"; then
         eval "$(cat "$tmpfile")"
         rm -f "$tmpfile"
       else
         local exit_code=$?
+        cat "$tmpfile" >&2
         rm -f "$tmpfile"
         return $exit_code
       fi
@@ -118,22 +121,24 @@ kns() {
   if [ -z "$ns" ]; then
     # Interactive selection
     local tmpfile=$(mktemp)
-    if k8pk $args ns > "$tmpfile" 2>/dev/null; then
+    if k8pk $args ns > "$tmpfile"; then
       eval "$(cat "$tmpfile")"
       rm -f "$tmpfile"
     else
       local exit_code=$?
+      cat "$tmpfile" >&2
       rm -f "$tmpfile"
       return $exit_code
     fi
   else
     # Explicit namespace
     local tmpfile=$(mktemp)
-    if k8pk $args ns "$ns" > "$tmpfile" 2>/dev/null; then
+    if k8pk $args ns "$ns" > "$tmpfile"; then
       eval "$(cat "$tmpfile")"
       rm -f "$tmpfile"
     else
       local exit_code=$?
+      cat "$tmpfile" >&2
       rm -f "$tmpfile"
       return $exit_code
     fi
@@ -165,11 +170,11 @@ kswitch() {
   local ctx="$1"
   local ns="${2:-}"
   local args=$(_k8pk_args)
-  # Exports go to stdout (for eval), no verbose output by default
+  # Exports go to stdout (for eval)
   if [ -n "$ns" ]; then
-    eval "$(k8pk $args env --context "$ctx" --namespace "$ns" 2>/dev/null)"
+    eval "$(k8pk $args env --context "$ctx" --namespace "$ns")"
   else
-    eval "$(k8pk $args env --context "$ctx" 2>/dev/null)"
+    eval "$(k8pk $args env --context "$ctx")"
   fi
   # Only print confirmation if K8PK_VERBOSE is set
   if [ -n "$K8PK_VERBOSE" ]; then
@@ -187,6 +192,6 @@ kclean() {
   fi
   
   local args=$(_k8pk_args)
-  # Execute the cleanup commands automatically (silent - no output)
-  eval "$(k8pk $args clean 2>/dev/null)" 2>/dev/null
+  # Execute the cleanup commands automatically
+  eval "$(k8pk $args clean)"
 }

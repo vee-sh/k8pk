@@ -2,7 +2,6 @@
 
 use crate::error::{K8pkError, Result};
 use crate::kubeconfig::{self, KubeConfig, NamedItem};
-use serde_yaml_ng::Value as Yaml;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -64,7 +63,7 @@ pub fn organize_by_cluster_type(
             cfg.clusters
                 .iter()
                 .find(|c| c.name == cluster_name)
-                .and_then(|c| extract_server_url(&c.rest))
+                .and_then(|c| kubeconfig::extract_server_url_from_cluster(&c.rest))
         } else {
             None
         };
@@ -116,7 +115,7 @@ pub fn organize_by_cluster_type(
 
         // Write file
         let yaml = serde_yaml_ng::to_string(&type_cfg)?;
-        fs::write(&dest_path, yaml)?;
+        kubeconfig::write_restricted(&dest_path, &yaml)?;
         groups.push(OrganizeGroup {
             cluster_type: cluster_type.to_string(),
             contexts: context_names,
@@ -124,45 +123,24 @@ pub fn organize_by_cluster_type(
         });
     }
 
+    // Release borrow on cfg before mutating
     drop(by_type);
 
-    // Optionally remove from source
+    // Optionally remove organized contexts from the source file (with backup).
+    // Since every context is assigned a cluster type, all of them get organized
+    // out, leaving the source empty.
     if remove_from_source && !dry_run {
-        let moved: std::collections::HashSet<String> =
-            cfg.contexts.iter().map(|c| c.name.clone()).collect();
-
-        cfg.contexts.retain(|c| !moved.contains(&c.name));
+        if let Some(bak) = super::backup_kubeconfig(&source_path)? {
+            eprintln!("Backup saved to {}", bak.display());
+        }
+        cfg.contexts.clear();
+        cfg.clusters.clear();
+        cfg.users.clear();
         cfg.current_context = None;
-
-        let referenced_clusters: std::collections::HashSet<String> = cfg
-            .contexts
-            .iter()
-            .filter_map(|c| {
-                kubeconfig::extract_context_refs(&c.rest)
-                    .ok()
-                    .map(|(cl, _)| cl)
-            })
-            .collect();
-
-        let referenced_users: std::collections::HashSet<String> = cfg
-            .contexts
-            .iter()
-            .filter_map(|c| {
-                kubeconfig::extract_context_refs(&c.rest)
-                    .ok()
-                    .map(|(_, u)| u)
-            })
-            .collect();
-
-        cfg.clusters
-            .retain(|c| referenced_clusters.contains(&c.name));
-        cfg.users.retain(|u| referenced_users.contains(&u.name));
-
         cfg.ensure_defaults(None);
 
         let yaml = serde_yaml_ng::to_string(&cfg)?;
-        fs::write(&source_path, yaml)?;
-        // caller handles summary output
+        kubeconfig::write_restricted(&source_path, &yaml)?;
     }
 
     Ok(OrganizeResult {
@@ -244,7 +222,7 @@ pub fn display_context_info(
                     .clusters
                     .iter()
                     .find(|c| c.name == cluster_name)
-                    .and_then(|c| extract_server_url(&c.rest))
+                    .and_then(|c| kubeconfig::extract_server_url_from_cluster(&c.rest))
             });
 
         let cluster_type = kubeconfig::detect_cluster_type(ctx_name, server_url.as_deref());
@@ -279,132 +257,115 @@ pub fn display_context_info(
     Ok(())
 }
 
-/// Login to OpenShift and save to separate file
-/// Returns the context name, namespace (if any), and kubeconfig path that was created
-#[allow(dead_code)]
-pub fn openshift_login(
-    server: &str,
-    token: Option<&str>,
-    username: Option<&str>,
-    password: Option<&str>,
-    name: Option<&str>,
-    output_dir: Option<&Path>,
-    insecure: bool,
-) -> Result<(String, Option<String>, PathBuf)> {
-    // Verify oc is available
-    if which::which("oc").is_err() {
-        return Err(K8pkError::Other(
-            "oc command not found. Please install OpenShift CLI.".into(),
-        ));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIXED_KUBECONFIG: &str = r#"
+apiVersion: v1
+kind: Config
+clusters:
+  - name: eks-cluster
+    cluster:
+      server: https://abc.eks.amazonaws.com
+  - name: ocp-cluster
+    cluster:
+      server: https://api.ocp.example.com:6443
+contexts:
+  - name: arn:aws:eks:us-east-1:123:cluster/prod
+    context:
+      cluster: eks-cluster
+      user: eks-user
+  - name: admin/api-ocp-example-com:6443/admin
+    context:
+      cluster: ocp-cluster
+      user: ocp-user
+users:
+  - name: eks-user
+    user:
+      token: eks-token
+  - name: ocp-user
+    user:
+      token: ocp-token
+"#;
+
+    #[test]
+    fn test_organize_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("config");
+        fs::write(&source, MIXED_KUBECONFIG).unwrap();
+
+        let out_dir = dir.path().join("organized");
+        let result =
+            organize_by_cluster_type(Some(source.as_path()), Some(out_dir.as_path()), true, false)
+                .unwrap();
+
+        assert!(result.dry_run);
+        assert!(
+            result.groups.len() >= 2,
+            "should group into at least 2 types"
+        );
+        // Output directory should NOT be created in dry run
+        assert!(!out_dir.exists());
     }
 
-    let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
-    let out_dir = output_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".kube/ocp"));
+    #[test]
+    fn test_organize_creates_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("config");
+        fs::write(&source, MIXED_KUBECONFIG).unwrap();
 
-    fs::create_dir_all(&out_dir)?;
+        let out_dir = dir.path().join("organized");
+        let result = organize_by_cluster_type(
+            Some(source.as_path()),
+            Some(out_dir.as_path()),
+            false,
+            false,
+        )
+        .unwrap();
 
-    // Generate context name from server URL
-    let context_name = name.map(String::from).unwrap_or_else(|| {
-        let sanitized = server
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .replace(['/', ':'], "-");
-        format!("ocp-{}", sanitized)
-    });
+        assert!(!result.dry_run);
+        assert!(!result.groups.is_empty());
 
-    let kubeconfig_path = out_dir.join(format!(
-        "{}.yaml",
-        kubeconfig::sanitize_filename(&context_name)
-    ));
-
-    println!("Logging in to {}...", server);
-
-    // Build oc login command
-    // If token is provided and insecure is not explicitly set, try insecure first
-    // (common for self-signed certs with token auth to avoid prompts)
-    let mut use_insecure = insecure;
-    if token.is_some() && !insecure {
-        use_insecure = true; // Auto-use insecure for token-based auth to avoid prompts
-    }
-
-    let mut cmd = std::process::Command::new("oc");
-    cmd.arg("login");
-    cmd.arg(server);
-    cmd.env("KUBECONFIG", &kubeconfig_path);
-
-    if let Some(t) = token {
-        cmd.arg("--token").arg(t);
-    }
-    if let Some(u) = username {
-        cmd.arg("--username").arg(u);
-    }
-    if let Some(p) = password {
-        cmd.arg("--password").arg(p);
-    }
-    if use_insecure {
-        cmd.arg("--insecure-skip-tls-verify");
-    }
-
-    let status = cmd.status()?;
-
-    if !status.success() {
-        return Err(K8pkError::CommandFailed("oc login failed".into()));
-    }
-
-    // Rename context in the generated file and extract namespace
-    let mut namespace = None;
-    if kubeconfig_path.exists() {
-        let content = fs::read_to_string(&kubeconfig_path)?;
-        let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
-
-        // Remove duplicate contexts (keep only the first occurrence of each name)
-        let mut seen = std::collections::HashSet::new();
-        cfg.contexts.retain(|c| seen.insert(c.name.clone()));
-
-        // Remove any existing contexts with the target name
-        cfg.contexts.retain(|c| c.name != context_name);
-
-        // Take the first context and rename it to our target name
-        if let Some(mut ctx) = cfg.contexts.pop() {
-            // Extract namespace from context if set (before renaming)
-            if let serde_yaml_ng::Value::Mapping(map) = &ctx.rest {
-                if let Some(serde_yaml_ng::Value::Mapping(ctx_map)) =
-                    map.get(serde_yaml_ng::Value::String("context".to_string()))
-                {
-                    if let Some(serde_yaml_ng::Value::String(ns)) =
-                        ctx_map.get(serde_yaml_ng::Value::String("namespace".to_string()))
-                    {
-                        namespace = Some(ns.clone());
-                    }
-                }
-            }
-
-            // Rename to our target name
-            ctx.name = context_name.clone();
-            cfg.contexts.push(ctx);
+        // Each group should have a file
+        for group in &result.groups {
+            assert!(
+                group.output_path.exists(),
+                "missing file for {}",
+                group.cluster_type
+            );
+            let content = fs::read_to_string(&group.output_path).unwrap();
+            let cfg: KubeConfig = serde_yaml_ng::from_str(&content).unwrap();
+            assert!(!cfg.contexts.is_empty());
         }
-
-        cfg.current_context = Some(context_name.clone());
-
-        let yaml = serde_yaml_ng::to_string(&cfg)?;
-        fs::write(&kubeconfig_path, yaml)?;
     }
 
-    Ok((context_name, namespace, kubeconfig_path))
-}
+    #[test]
+    fn test_organize_remove_from_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("config");
+        fs::write(&source, MIXED_KUBECONFIG).unwrap();
 
-fn extract_server_url(cluster_rest: &Yaml) -> Option<String> {
-    let Yaml::Mapping(map) = cluster_rest else {
-        return None;
-    };
-    let inner = map.get(Yaml::from("cluster"))?;
-    let Yaml::Mapping(inner_map) = inner else {
-        return None;
-    };
-    match inner_map.get(Yaml::from("server")) {
-        Some(Yaml::String(s)) => Some(s.clone()),
-        _ => None,
+        let out_dir = dir.path().join("organized");
+        let result =
+            organize_by_cluster_type(Some(source.as_path()), Some(out_dir.as_path()), false, true)
+                .unwrap();
+
+        assert!(!result.groups.is_empty());
+
+        // Source should be emptied
+        let content = fs::read_to_string(&source).unwrap();
+        let cfg: KubeConfig = serde_yaml_ng::from_str(&content).unwrap();
+        assert!(cfg.contexts.is_empty(), "source contexts should be cleared");
+        assert!(cfg.clusters.is_empty(), "source clusters should be cleared");
+        assert!(cfg.users.is_empty(), "source users should be cleared");
+
+        // Backup should exist
+        let backups: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".bak."))
+            .collect();
+        assert!(!backups.is_empty(), "backup file should exist");
     }
 }

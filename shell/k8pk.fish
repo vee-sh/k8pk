@@ -26,9 +26,13 @@ function kpick
     echo "k8pk not found. Install it first." >&2
     return 1
   end
+  if not isatty stdin; or not isatty stderr
+    echo "Error: kpick requires an interactive terminal" >&2
+    return 1
+  end
   set -l args (_k8pk_args)
-  # Exports go to stdout (for source), no verbose output by default
-  k8pk $args pick --output env 2>/dev/null | source
+  # Exports go to stdout (for source)
+  k8pk $args pick --output env | source
   # Only print confirmation if K8PK_VERBOSE is set
   if test -n "$K8PK_VERBOSE"
     set -l display_ctx (test -n "$K8PK_CONTEXT_DISPLAY"; and echo "$K8PK_CONTEXT_DISPLAY"; or echo "$K8PK_CONTEXT")
@@ -47,11 +51,11 @@ function kswitch
   if test (count $argv) -ge 2
     set ns $argv[2]
   end
-  # Exports go to stdout (for source), no verbose output by default
+  # Exports go to stdout (for source)
   if test -n "$ns"
-    k8pk $args env --context "$ctx" --namespace "$ns" --shell fish 2>/dev/null | source
+    k8pk $args env --context "$ctx" --namespace "$ns" --shell fish | source
   else
-    k8pk $args env --context "$ctx" --shell fish 2>/dev/null | source
+    k8pk $args env --context "$ctx" --shell fish | source
   end
   # Only print confirmation if K8PK_VERBOSE is set
   if test -n "$K8PK_VERBOSE"
@@ -61,22 +65,30 @@ function kswitch
 end
 
 function kctx
+  if not command -v k8pk >/dev/null 2>&1
+    echo "k8pk not found. Install it first." >&2
+    return 1
+  end
   set -l args (_k8pk_args)
   if test (count $argv) -eq 0
-    k8pk $args ctx 2>/dev/null | source
+    k8pk $args ctx | source
   else if test (count $argv) -eq 1
-    k8pk $args ctx $argv[1] 2>/dev/null | source
+    k8pk $args ctx $argv[1] | source
   else
-    k8pk $args ctx $argv[1] --namespace $argv[2] 2>/dev/null | source
+    k8pk $args ctx $argv[1] --namespace $argv[2] | source
   end
 end
 
 function kns
+  if not command -v k8pk >/dev/null 2>&1
+    echo "k8pk not found. Install it first." >&2
+    return 1
+  end
   set -l args (_k8pk_args)
   if test (count $argv) -eq 0
-    k8pk $args ns 2>/dev/null | source
+    k8pk $args ns | source
   else
-    k8pk $args ns $argv[1] 2>/dev/null | source
+    k8pk $args ns $argv[1] | source
   end
 end
 
@@ -86,8 +98,8 @@ function kclean
     return 1
   end
   set -l args (_k8pk_args)
-  # Execute the cleanup commands automatically (silent - no output)
-  k8pk $args clean 2>/dev/null | source 2>/dev/null
+  # Execute the cleanup commands automatically
+  k8pk $args clean | source
 end
 
 function _k8pk_prompt

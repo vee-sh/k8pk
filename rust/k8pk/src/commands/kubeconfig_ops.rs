@@ -58,7 +58,7 @@ pub fn merge_files(
     overwrite: bool,
 ) -> Result<MergeResult> {
     if files.is_empty() {
-        return Err(K8pkError::Other("no files specified".into()));
+        return Err(K8pkError::InvalidArgument("no files specified".into()));
     }
 
     // Track seen names to handle conflicts
@@ -115,7 +115,7 @@ pub fn merge_files(
     let yaml = serde_yaml_ng::to_string(&result)?;
 
     if let Some(out) = output {
-        fs::write(out, &yaml)?;
+        kubeconfig::write_restricted(out, &yaml)?;
         Ok(MergeResult {
             files: files.to_vec(),
             output: Some(out.to_path_buf()),
@@ -464,5 +464,585 @@ pub fn print_diff_summary(result: &DiffResult, diff_only: bool) {
         for name in &result.in_both {
             println!("  = {}", name);
         }
+    }
+}
+
+// --- Context manipulation operations (moved from main.rs) ---
+
+use inquire::{MultiSelect, Select};
+use std::env;
+
+/// Create a timestamped backup of a kubeconfig file before destructive operations.
+/// Returns the backup path, or None if the source file doesn't exist.
+pub fn backup_kubeconfig(file_path: &Path) -> Result<Option<PathBuf>> {
+    if !file_path.exists() {
+        return Ok(None);
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let file_name = file_path.file_name().unwrap_or_default().to_string_lossy();
+    let backup_name = format!("{}.bak.{}", file_name, timestamp);
+    let backup_path = file_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(backup_name);
+    fs::copy(file_path, &backup_path)?;
+    Ok(Some(backup_path))
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RemoveContextResult {
+    pub file: PathBuf,
+    pub removed_contexts: Vec<String>,
+    pub removed_clusters: Vec<String>,
+    pub removed_users: Vec<String>,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RenameContextResult {
+    pub file: PathBuf,
+    pub old_name: String,
+    pub new_name: String,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CopyContextResult {
+    pub from_file: PathBuf,
+    pub to_file: PathBuf,
+    pub context: String,
+    pub new_name: String,
+    pub dry_run: bool,
+}
+
+/// Remove contexts from a kubeconfig file
+pub fn remove_contexts_from_file(
+    file_path: &Path,
+    context: Option<&str>,
+    interactive: bool,
+    remove_orphaned: bool,
+    dry_run: bool,
+) -> Result<RemoveContextResult> {
+    if !file_path.exists() {
+        return Err(K8pkError::KubeconfigNotFound(file_path.to_path_buf()));
+    }
+
+    // Backup before destructive operation
+    if !dry_run {
+        if let Some(bak) = backup_kubeconfig(file_path)? {
+            eprintln!("Backup saved to {}", bak.display());
+        }
+    }
+
+    let content = fs::read_to_string(file_path)?;
+    let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
+
+    let contexts_to_remove: Vec<String> = if interactive {
+        let names: Vec<String> = cfg.contexts.iter().map(|c| c.name.clone()).collect();
+        if names.is_empty() {
+            println!("No contexts in file");
+            return Ok(RemoveContextResult {
+                file: file_path.to_path_buf(),
+                removed_contexts: Vec::new(),
+                removed_clusters: Vec::new(),
+                removed_users: Vec::new(),
+                dry_run,
+            });
+        }
+        MultiSelect::new("Select contexts to remove:", names)
+            .prompt()
+            .map_err(|_| K8pkError::Cancelled)?
+    } else if let Some(ctx) = context {
+        vec![ctx.to_string()]
+    } else {
+        return Err(K8pkError::InvalidArgument(
+            "specify --context or --interactive".into(),
+        ));
+    };
+
+    let mut removed_contexts = Vec::new();
+    let mut removed_clusters = Vec::new();
+    let mut removed_users = Vec::new();
+
+    for ctx_name in &contexts_to_remove {
+        if !dry_run {
+            cfg.contexts.retain(|c| c.name != *ctx_name);
+            removed_contexts.push(ctx_name.clone());
+        }
+    }
+
+    if remove_orphaned {
+        let referenced_clusters: HashSet<String> = cfg
+            .contexts
+            .iter()
+            .filter_map(|c| {
+                kubeconfig::extract_context_refs(&c.rest)
+                    .ok()
+                    .map(|(cl, _)| cl)
+            })
+            .collect();
+
+        let referenced_users: HashSet<String> = cfg
+            .contexts
+            .iter()
+            .filter_map(|c| {
+                kubeconfig::extract_context_refs(&c.rest)
+                    .ok()
+                    .map(|(_, u)| u)
+            })
+            .collect();
+
+        let orphaned_clusters: Vec<String> = cfg
+            .clusters
+            .iter()
+            .filter(|c| !referenced_clusters.contains(&c.name))
+            .map(|c| c.name.clone())
+            .collect();
+
+        let orphaned_users: Vec<String> = cfg
+            .users
+            .iter()
+            .filter(|u| !referenced_users.contains(&u.name))
+            .map(|u| u.name.clone())
+            .collect();
+
+        for name in &orphaned_clusters {
+            if !dry_run {
+                cfg.clusters.retain(|c| c.name != *name);
+                removed_clusters.push(name.clone());
+            }
+        }
+
+        for name in &orphaned_users {
+            if !dry_run {
+                cfg.users.retain(|u| u.name != *name);
+                removed_users.push(name.clone());
+            }
+        }
+    }
+
+    if !dry_run {
+        let yaml = serde_yaml_ng::to_string(&cfg)?;
+        kubeconfig::write_restricted(file_path, &yaml)?;
+    }
+
+    Ok(RemoveContextResult {
+        file: file_path.to_path_buf(),
+        removed_contexts: if dry_run {
+            contexts_to_remove
+        } else {
+            removed_contexts
+        },
+        removed_clusters,
+        removed_users,
+        dry_run,
+    })
+}
+
+/// Rename a context in a kubeconfig file
+pub fn rename_context_in_file(
+    file_path: &Path,
+    old_name: &str,
+    new_name: &str,
+    dry_run: bool,
+) -> Result<RenameContextResult> {
+    if !file_path.exists() {
+        return Err(K8pkError::KubeconfigNotFound(file_path.to_path_buf()));
+    }
+
+    // Backup before destructive operation
+    if !dry_run {
+        if let Some(bak) = backup_kubeconfig(file_path)? {
+            eprintln!("Backup saved to {}", bak.display());
+        }
+    }
+
+    let content = fs::read_to_string(file_path)?;
+    let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
+
+    let ctx = cfg
+        .contexts
+        .iter_mut()
+        .find(|c| c.name == old_name)
+        .ok_or_else(|| K8pkError::ContextNotFound(old_name.to_string()))?;
+
+    if dry_run {
+        Ok(RenameContextResult {
+            file: file_path.to_path_buf(),
+            old_name: old_name.to_string(),
+            new_name: new_name.to_string(),
+            dry_run,
+        })
+    } else {
+        ctx.name = new_name.to_string();
+
+        if cfg.current_context.as_deref() == Some(old_name) {
+            cfg.current_context = Some(new_name.to_string());
+        }
+
+        let yaml = serde_yaml_ng::to_string(&cfg)?;
+        kubeconfig::write_restricted(file_path, &yaml)?;
+        Ok(RenameContextResult {
+            file: file_path.to_path_buf(),
+            old_name: old_name.to_string(),
+            new_name: new_name.to_string(),
+            dry_run,
+        })
+    }
+}
+
+/// Copy a context between kubeconfig files
+pub fn copy_context_between_files(
+    from_file: &Path,
+    to_file: &Path,
+    context: &str,
+    new_name: Option<&str>,
+    dry_run: bool,
+) -> Result<CopyContextResult> {
+    if !from_file.exists() {
+        return Err(K8pkError::KubeconfigNotFound(from_file.to_path_buf()));
+    }
+
+    let source_content = fs::read_to_string(from_file)?;
+    let source_cfg: KubeConfig = serde_yaml_ng::from_str(&source_content)?;
+
+    let ctx = source_cfg
+        .find_context(context)
+        .ok_or_else(|| K8pkError::ContextNotFound(context.to_string()))?;
+
+    let (cluster_name, user_name) = kubeconfig::extract_context_refs(&ctx.rest)?;
+
+    let cluster = source_cfg
+        .find_cluster(&cluster_name)
+        .ok_or_else(|| K8pkError::ClusterNotFound(cluster_name.clone()))?;
+
+    let user = source_cfg
+        .find_user(&user_name)
+        .ok_or_else(|| K8pkError::UserNotFound(user_name.clone()))?;
+
+    let target_name = new_name.unwrap_or(context);
+
+    if dry_run {
+        return Ok(CopyContextResult {
+            from_file: from_file.to_path_buf(),
+            to_file: to_file.to_path_buf(),
+            context: context.to_string(),
+            new_name: target_name.to_string(),
+            dry_run,
+        });
+    }
+
+    let mut dest_cfg: KubeConfig = if to_file.exists() {
+        let content = fs::read_to_string(to_file)?;
+        serde_yaml_ng::from_str(&content)?
+    } else {
+        KubeConfig::default()
+    };
+
+    dest_cfg.clusters.retain(|c| c.name != cluster_name);
+    dest_cfg.clusters.push(cluster.clone());
+
+    dest_cfg.users.retain(|u| u.name != user_name);
+    dest_cfg.users.push(user.clone());
+
+    let mut new_ctx = ctx.clone();
+    new_ctx.name = target_name.to_string();
+    dest_cfg.contexts.retain(|c| c.name != target_name);
+    dest_cfg.contexts.push(new_ctx);
+
+    dest_cfg.ensure_defaults(None);
+
+    let yaml = serde_yaml_ng::to_string(&dest_cfg)?;
+    kubeconfig::write_restricted(to_file, &yaml)?;
+    Ok(CopyContextResult {
+        from_file: from_file.to_path_buf(),
+        to_file: to_file.to_path_buf(),
+        context: context.to_string(),
+        new_name: target_name.to_string(),
+        dry_run,
+    })
+}
+
+/// Edit a kubeconfig file
+pub fn edit_kubeconfig(
+    context: Option<&str>,
+    editor: Option<&str>,
+    _merged: &KubeConfig,
+    paths: &[PathBuf],
+) -> Result<()> {
+    let ctx_paths = kubeconfig::list_contexts_with_paths(paths)?;
+
+    let file_to_edit = if let Some(ctx) = context {
+        ctx_paths
+            .get(ctx)
+            .cloned()
+            .ok_or_else(|| K8pkError::ContextNotFound(ctx.to_string()))?
+    } else {
+        let files: Vec<PathBuf> = paths.iter().filter(|p| p.exists()).cloned().collect();
+        if files.is_empty() {
+            return Err(K8pkError::InvalidArgument(
+                "no kubeconfig files found".into(),
+            ));
+        }
+
+        let display: Vec<String> = files.iter().map(|p| p.display().to_string()).collect();
+        let selected = Select::new("Select file to edit:", display)
+            .prompt()
+            .map_err(|_| K8pkError::Cancelled)?;
+
+        PathBuf::from(selected)
+    };
+
+    let editor_cmd = editor
+        .map(String::from)
+        .or_else(|| env::var("EDITOR").ok())
+        .unwrap_or_else(|| "vim".to_string());
+
+    let mut parts = shell_words::split(&editor_cmd).map_err(|e| {
+        K8pkError::InvalidArgument(format!("invalid editor command '{}': {}", editor_cmd, e))
+    })?;
+    if parts.is_empty() {
+        return Err(K8pkError::InvalidArgument("editor command is empty".into()));
+    }
+    let cmd = parts.remove(0);
+
+    let status = std::process::Command::new(&cmd)
+        .args(parts)
+        .arg(&file_to_edit)
+        .status()?;
+
+    if !status.success() {
+        return Err(K8pkError::CommandFailed(format!(
+            "{} exited with error",
+            editor_cmd
+        )));
+    }
+
+    Ok(())
+}
+
+pub fn print_remove_context_summary(result: &RemoveContextResult) {
+    if result.dry_run {
+        for name in &result.removed_contexts {
+            println!("Would remove context: {}", name);
+        }
+    } else {
+        for name in &result.removed_contexts {
+            println!("Removed context: {}", name);
+        }
+        for name in &result.removed_clusters {
+            println!("Removed orphaned cluster: {}", name);
+        }
+        for name in &result.removed_users {
+            println!("Removed orphaned user: {}", name);
+        }
+    }
+}
+
+pub fn print_rename_context_summary(result: &RenameContextResult) {
+    if result.dry_run {
+        println!(
+            "Would rename context: {} -> {}",
+            result.old_name, result.new_name
+        );
+    } else {
+        println!(
+            "Renamed context: {} -> {}",
+            result.old_name, result.new_name
+        );
+    }
+}
+
+pub fn print_copy_context_summary(result: &CopyContextResult) {
+    if result.dry_run {
+        println!(
+            "Would copy context: {} -> {} ({})",
+            result.context,
+            result.new_name,
+            result.to_file.display()
+        );
+    } else {
+        println!(
+            "Copied context: {} -> {} ({})",
+            result.context,
+            result.new_name,
+            result.to_file.display()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_kubeconfig(dir: &Path, name: &str, yaml: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, yaml).unwrap();
+        path
+    }
+
+    const KUBECONFIG_A: &str = r#"
+apiVersion: v1
+kind: Config
+clusters:
+  - name: cluster-a
+    cluster:
+      server: https://a.example.com
+contexts:
+  - name: ctx-a
+    context:
+      cluster: cluster-a
+      user: user-a
+users:
+  - name: user-a
+    user:
+      token: token-a
+current-context: ctx-a
+"#;
+
+    const KUBECONFIG_B: &str = r#"
+apiVersion: v1
+kind: Config
+clusters:
+  - name: cluster-b
+    cluster:
+      server: https://b.example.com
+contexts:
+  - name: ctx-b
+    context:
+      cluster: cluster-b
+      user: user-b
+users:
+  - name: user-b
+    user:
+      token: token-b
+current-context: ctx-b
+"#;
+
+    #[test]
+    fn test_merge_files_no_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = write_kubeconfig(dir.path(), "a.yaml", KUBECONFIG_A);
+        let file_b = write_kubeconfig(dir.path(), "b.yaml", KUBECONFIG_B);
+
+        let result = merge_files(&[file_a, file_b], None, false).unwrap();
+        assert!(result.yaml.is_some());
+        assert!(result.output.is_none());
+
+        // Parse the merged yaml
+        let merged: kubeconfig::KubeConfig =
+            serde_yaml_ng::from_str(result.yaml.as_ref().unwrap()).unwrap();
+        assert_eq!(merged.contexts.len(), 2);
+        assert_eq!(merged.clusters.len(), 2);
+        assert_eq!(merged.users.len(), 2);
+        // First-wins for current-context
+        assert_eq!(merged.current_context, Some("ctx-a".to_string()));
+    }
+
+    #[test]
+    fn test_merge_files_to_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = write_kubeconfig(dir.path(), "a.yaml", KUBECONFIG_A);
+        let file_b = write_kubeconfig(dir.path(), "b.yaml", KUBECONFIG_B);
+        let out = dir.path().join("merged.yaml");
+
+        let result = merge_files(&[file_a, file_b], Some(&out), false).unwrap();
+        assert!(result.output.is_some());
+        assert!(out.exists());
+
+        let content = fs::read_to_string(&out).unwrap();
+        let merged: kubeconfig::KubeConfig = serde_yaml_ng::from_str(&content).unwrap();
+        assert_eq!(merged.contexts.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_empty_list() {
+        let result = merge_files(&[], None, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_backup_kubeconfig() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_kubeconfig(dir.path(), "test.yaml", KUBECONFIG_A);
+
+        let backup = backup_kubeconfig(&path).unwrap();
+        assert!(backup.is_some());
+        let bak_path = backup.unwrap();
+        assert!(bak_path.exists());
+        assert!(bak_path.to_string_lossy().contains(".bak."));
+
+        // Content should match
+        let original = fs::read_to_string(&path).unwrap();
+        let backed_up = fs::read_to_string(&bak_path).unwrap();
+        assert_eq!(original, backed_up);
+    }
+
+    #[test]
+    fn test_backup_nonexistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.yaml");
+        let backup = backup_kubeconfig(&path).unwrap();
+        assert!(backup.is_none());
+    }
+
+    #[test]
+    fn test_diff_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = write_kubeconfig(dir.path(), "a.yaml", KUBECONFIG_A);
+        let file_b = write_kubeconfig(dir.path(), "b.yaml", KUBECONFIG_B);
+
+        let result = diff_files(&file_a, &file_b, false).unwrap();
+        // Each file has unique contexts
+        assert!(result.only_in_1.contains(&"ctx-a".to_string()));
+        assert!(result.only_in_2.contains(&"ctx-b".to_string()));
+    }
+
+    #[test]
+    fn test_remove_contexts_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_kubeconfig(dir.path(), "test.yaml", KUBECONFIG_A);
+
+        let result = remove_contexts_from_file(
+            &path,
+            Some("ctx-a"),
+            false, // interactive
+            false, // remove_orphans
+            true,  // dry_run
+        )
+        .unwrap();
+
+        assert!(result.dry_run);
+        assert!(result.removed_contexts.contains(&"ctx-a".to_string()));
+
+        // File should be unchanged (dry run)
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("ctx-a"));
+    }
+
+    #[test]
+    fn test_remove_contexts_actual() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_kubeconfig(dir.path(), "test.yaml", KUBECONFIG_A);
+
+        let result = remove_contexts_from_file(
+            &path,
+            Some("ctx-a"),
+            false, // interactive
+            true,  // remove_orphans
+            false, // dry_run
+        )
+        .unwrap();
+
+        assert!(!result.dry_run);
+        assert!(result.removed_contexts.contains(&"ctx-a".to_string()));
+
+        // Verify the context is gone from the file
+        let content = fs::read_to_string(&path).unwrap();
+        let cfg: kubeconfig::KubeConfig = serde_yaml_ng::from_str(&content).unwrap();
+        assert!(cfg.find_context("ctx-a").is_none());
     }
 }

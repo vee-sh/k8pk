@@ -5,7 +5,6 @@ use crate::error::{K8pkError, Result};
 use crate::kubeconfig;
 use colored::*;
 use inquire::{validator::Validation, Confirm, MultiSelect, Select, Text};
-use std::fs;
 use std::io::{self, IsTerminal};
 
 /// Track changes made to config
@@ -524,11 +523,9 @@ fn edit_hooks(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<()
             "═══════════════════════════════════════\n".bright_cyan()
         );
 
-        if config.hooks.is_none() {
-            config.hooks = Some(config::HooksSection::default());
-        }
-
-        let hooks = config.hooks.as_mut().unwrap();
+        let hooks = config
+            .hooks
+            .get_or_insert_with(config::HooksSection::default);
 
         let start_ctx = hooks.start_ctx.as_deref().unwrap_or("");
         let new_start = Text::new("Start context hook command:")
@@ -614,7 +611,8 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
             "═══════════════════════════════════════\n".bright_cyan()
         );
 
-        let choices = if config.aliases.is_some() && !config.aliases.as_ref().unwrap().is_empty() {
+        let has_aliases = config.aliases.as_ref().is_some_and(|a| !a.is_empty());
+        let choices = if has_aliases {
             vec![
                 "View aliases",
                 "Add alias",
@@ -794,8 +792,7 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                 }
                 config
                     .aliases
-                    .as_mut()
-                    .unwrap()
+                    .get_or_insert_with(std::collections::HashMap::new)
                     .insert(alias.clone(), context.clone());
                 changes.aliases_changed = true;
                 println!();
@@ -820,18 +817,19 @@ fn edit_aliases(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<
                         .map_err(handle_inquire_error)?;
 
                     if !selected.is_empty() {
-                        for alias in &selected {
-                            config.aliases.as_mut().unwrap().remove(alias);
+                        if let Some(ref mut aliases) = config.aliases {
+                            for alias in &selected {
+                                aliases.remove(alias);
+                            }
+                            if aliases.is_empty() {
+                                config.aliases = None;
+                            }
                         }
                         changes.aliases_changed = true;
                         println!(
                             "{}",
                             format!("{} alias(es) removed.", selected.len()).bright_green()
                         );
-
-                        if config.aliases.as_ref().unwrap().is_empty() {
-                            config.aliases = None;
-                        }
                     }
                 }
             }
@@ -892,6 +890,6 @@ fn reset_to_defaults(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Re
 
 fn save_config(path: &std::path::Path, config: &K8pkConfig) -> Result<bool> {
     let yaml = serde_yaml_ng::to_string(config)?;
-    fs::write(path, yaml)?;
+    kubeconfig::write_restricted(path, &yaml)?;
     Ok(true)
 }

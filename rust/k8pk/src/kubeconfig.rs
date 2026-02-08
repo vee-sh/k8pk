@@ -8,6 +8,40 @@ use serde_yaml_ng::Value as Yaml;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
+
+/// Cached merge result: (file-path, mtime) fingerprint + parsed config
+static MERGE_CACHE: Mutex<Option<MergeCache>> = Mutex::new(None);
+
+struct MergeCache {
+    fingerprint: Vec<(PathBuf, SystemTime)>,
+    config: KubeConfig,
+}
+
+/// Build a fingerprint of (path, mtime) for cache invalidation.
+fn file_fingerprint(paths: &[PathBuf]) -> Option<Vec<(PathBuf, SystemTime)>> {
+    let mut fp = Vec::with_capacity(paths.len());
+    for p in paths {
+        let mtime = fs::metadata(p).ok()?.modified().ok()?;
+        fp.push((p.clone(), mtime));
+    }
+    Some(fp)
+}
+
+/// Write file content with 0o600 permissions (owner read/write only).
+/// Use this for any file that may contain credentials (kubeconfigs, vault, etc.).
+pub fn write_restricted(path: &Path, content: &str) -> Result<()> {
+    fs::write(path, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
 use std::process::Command as ProcCommand;
 
 /// Kubeconfig file structure
@@ -168,9 +202,39 @@ pub fn prune_to_context(cfg: &KubeConfig, name: &str) -> Result<KubeConfig> {
     })
 }
 
-/// Load and merge multiple kubeconfig files
-/// Deduplicates by name (first occurrence wins, matching kubectl behavior)
+/// Load and merge multiple kubeconfig files.
+/// Deduplicates by name (first occurrence wins, matching kubectl behavior).
+/// Results are cached by file path + mtime; subsequent calls with unchanged
+/// files return the cached config without re-parsing.
 pub fn load_merged(paths: &[PathBuf]) -> Result<KubeConfig> {
+    // Fast path: check mtime-based cache
+    if let Some(fp) = file_fingerprint(paths) {
+        if let Ok(guard) = MERGE_CACHE.lock() {
+            if let Some(ref cached) = *guard {
+                if cached.fingerprint == fp {
+                    return Ok(cached.config.clone());
+                }
+            }
+        }
+    }
+
+    let config = load_merged_uncached(paths)?;
+
+    // Store in cache
+    if let Some(fp) = file_fingerprint(paths) {
+        if let Ok(mut guard) = MERGE_CACHE.lock() {
+            *guard = Some(MergeCache {
+                fingerprint: fp,
+                config: config.clone(),
+            });
+        }
+    }
+
+    Ok(config)
+}
+
+/// Uncached implementation of load_merged.
+fn load_merged_uncached(paths: &[PathBuf]) -> Result<KubeConfig> {
     let mut merged = KubeConfig::default();
     let mut seen_clusters = std::collections::HashSet::new();
     let mut seen_contexts = std::collections::HashSet::new();
@@ -965,5 +1029,158 @@ users:
         assert!(cfg.find_context("nonexistent").is_none());
         assert!(cfg.find_cluster("dev-cluster").is_some());
         assert!(cfg.find_user("dev-user").is_some());
+    }
+
+    fn sample_kubeconfig() -> KubeConfig {
+        serde_yaml_ng::from_str(
+            r#"
+apiVersion: v1
+kind: Config
+clusters:
+  - name: dev-cluster
+    cluster:
+      server: https://dev.example.com:6443
+  - name: prod-cluster
+    cluster:
+      server: https://prod.example.com:6443
+  - name: orphan-cluster
+    cluster:
+      server: https://orphan.example.com
+contexts:
+  - name: dev
+    context:
+      cluster: dev-cluster
+      user: dev-user
+  - name: prod
+    context:
+      cluster: prod-cluster
+      user: prod-user
+users:
+  - name: dev-user
+    user:
+      token: dev-token
+  - name: prod-user
+    user:
+      token: prod-token
+  - name: orphan-user
+    user:
+      token: orphan-token
+current-context: dev
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_write_restricted_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.yaml");
+        write_restricted(&path, "hello").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_write_restricted_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.yaml");
+        write_restricted(&path, "secret").unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "file should be owner read/write only");
+    }
+
+    #[test]
+    fn test_prune_to_context() {
+        let cfg = sample_kubeconfig();
+        let pruned = prune_to_context(&cfg, "dev").unwrap();
+        assert_eq!(pruned.contexts.len(), 1);
+        assert_eq!(pruned.contexts[0].name, "dev");
+        assert_eq!(pruned.clusters.len(), 1);
+        assert_eq!(pruned.clusters[0].name, "dev-cluster");
+        assert_eq!(pruned.users.len(), 1);
+        assert_eq!(pruned.users[0].name, "dev-user");
+        assert_eq!(pruned.current_context, Some("dev".to_string()));
+    }
+
+    #[test]
+    fn test_prune_to_context_not_found() {
+        let cfg = sample_kubeconfig();
+        let result = prune_to_context(&cfg, "nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_context_refs() {
+        let cfg = sample_kubeconfig();
+        let ctx = cfg.find_context("dev").unwrap();
+        let (cluster, user) = extract_context_refs(&ctx.rest).unwrap();
+        assert_eq!(cluster, "dev-cluster");
+        assert_eq!(user, "dev-user");
+    }
+
+    #[test]
+    fn test_extract_server_url_from_cluster() {
+        let cfg = sample_kubeconfig();
+        let cluster = cfg.find_cluster("dev-cluster").unwrap();
+        let url = extract_server_url_from_cluster(&cluster.rest);
+        assert_eq!(url, Some("https://dev.example.com:6443".to_string()));
+    }
+
+    #[test]
+    fn test_get_server_for_context() {
+        let cfg = sample_kubeconfig();
+        let url = get_server_for_context(&cfg, "prod");
+        assert_eq!(url, Some("https://prod.example.com:6443".to_string()));
+        assert!(get_server_for_context(&cfg, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_set_context_namespace() {
+        let mut cfg = sample_kubeconfig();
+        set_context_namespace(&mut cfg, "dev", "kube-system").unwrap();
+
+        // Verify the namespace was set
+        let ctx = cfg.find_context("dev").unwrap();
+        let (_, _) = extract_context_refs(&ctx.rest).unwrap();
+        // Read the namespace from the YAML
+        if let Yaml::Mapping(ref map) = ctx.rest {
+            if let Some(Yaml::Mapping(inner)) = map.get(Yaml::from("context")) {
+                assert_eq!(
+                    inner.get(Yaml::from("namespace")),
+                    Some(&Yaml::from("kube-system"))
+                );
+            } else {
+                panic!("missing context field");
+            }
+        } else {
+            panic!("invalid rest format");
+        }
+    }
+
+    #[test]
+    fn test_set_context_namespace_not_found() {
+        let mut cfg = sample_kubeconfig();
+        let result = set_context_namespace(&mut cfg, "nonexistent", "default");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_kubeconfig_ensure_defaults() {
+        let mut cfg = KubeConfig::default();
+        cfg.ensure_defaults(None);
+        assert_eq!(cfg.api_version, Some("v1".to_string()));
+        assert_eq!(cfg.kind, Some("Config".to_string()));
+    }
+
+    #[test]
+    fn test_kubeconfig_roundtrip() {
+        let cfg = sample_kubeconfig();
+        let yaml = serde_yaml_ng::to_string(&cfg).unwrap();
+        let parsed: KubeConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(parsed.context_names(), cfg.context_names());
+        assert_eq!(parsed.current_context, cfg.current_context);
+        assert_eq!(parsed.clusters.len(), cfg.clusters.len());
+        assert_eq!(parsed.users.len(), cfg.users.len());
     }
 }

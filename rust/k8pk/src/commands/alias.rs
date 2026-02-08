@@ -122,8 +122,8 @@ pub fn run(install: bool, uninstall: bool, shell_override: Option<&str>) -> Resu
     }
 
     let config_path = get_shell_config_path(&shell).ok_or_else(|| {
-        K8pkError::Other(format!(
-            "Unsupported shell: {}. Use bash, zsh, or fish.",
+        K8pkError::UnsupportedShell(format!(
+            "{}. Alias installation supports: bash, zsh, fish",
             shell
         ))
     })?;
@@ -175,12 +175,76 @@ fn install_aliases(config_path: &PathBuf, shell: &str) -> Result<()> {
         "Success!".bright_green(),
         config_path.display().to_string().bright_white()
     );
+
+    // Also install shell completions
+    install_completions(shell)?;
+
     println!();
     println!("Reload your shell or run:");
     println!(
         "  {}",
         format!("source {}", config_path.display()).bright_white()
     );
+
+    Ok(())
+}
+
+/// Install shell completion scripts alongside aliases
+fn install_completions(shell: &str) -> Result<()> {
+    let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
+
+    let (comp_path, comp_shell) = match shell {
+        "bash" => {
+            let dir = home.join(".local/share/bash-completion/completions");
+            fs::create_dir_all(&dir)?;
+            (dir.join("k8pk"), "bash")
+        }
+        "zsh" => {
+            let dir = home.join(".zfunc");
+            fs::create_dir_all(&dir)?;
+            (dir.join("_k8pk"), "zsh")
+        }
+        "fish" => {
+            let dir = home.join(".config/fish/completions");
+            fs::create_dir_all(&dir)?;
+            (dir.join("k8pk.fish"), "fish")
+        }
+        _ => return Ok(()),
+    };
+
+    // Generate completions by running k8pk completions <shell>
+    let output = std::process::Command::new("k8pk")
+        .args(["completions", comp_shell])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            fs::write(&comp_path, out.stdout)?;
+            println!(
+                "{} Completions installed to {}",
+                "Success!".bright_green(),
+                comp_path.display().to_string().bright_white()
+            );
+            if shell == "zsh" {
+                println!(
+                    "{}",
+                    "  Note: ensure ~/.zfunc is in your fpath (add: fpath=(~/.zfunc $fpath))"
+                        .bright_yellow()
+                );
+            }
+        }
+        _ => {
+            eprintln!(
+                "{} Could not generate completions (k8pk binary not found in PATH)",
+                "Warning:".bright_yellow()
+            );
+            eprintln!(
+                "  Run manually: k8pk completions {} > {}",
+                comp_shell,
+                comp_path.display()
+            );
+        }
+    }
 
     Ok(())
 }

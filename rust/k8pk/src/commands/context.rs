@@ -4,11 +4,56 @@ use crate::error::{K8pkError, Result};
 use crate::kubeconfig;
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-/// Save context/namespace to history (atomic write to prevent corruption)
+/// Check session liveness and re-login if expired.
+/// Returns the (possibly refreshed) kubeconfig path.
+/// This consolidates the duplicated check+relogin pattern from Pick and Ctx handlers.
+pub fn ensure_session_alive(
+    kubeconfig: &std::path::Path,
+    context: &str,
+    namespace: Option<&str>,
+    paths: &[PathBuf],
+) -> Result<PathBuf> {
+    use crate::commands::login;
+
+    if login::check_session_alive(kubeconfig, context, login::SESSION_CHECK_TIMEOUT_SECS).is_ok() {
+        return Ok(kubeconfig.to_path_buf());
+    }
+
+    // Session expired -- try to re-login if interactive
+    if std::io::stdin().is_terminal() {
+        let written = login::try_relogin(context, namespace, paths)?;
+        if let Some(ref p) = written {
+            Ok(p.clone())
+        } else {
+            ensure_isolated_kubeconfig(context, namespace, paths)
+        }
+    } else {
+        Err(K8pkError::SessionExpired(context.to_string()))
+    }
+}
+
+/// Get the context and namespace switch history
+pub fn get_history() -> Result<(Vec<String>, Vec<String>)> {
+    let history = load_history()?;
+    Ok((history.context_history, history.namespace_history))
+}
+
+/// Clear all history
+pub fn clear_history() -> Result<()> {
+    let _lock = acquire_history_lock()?;
+    let path = history_file_path()?;
+    if path.exists() {
+        fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+/// Save context/namespace to history (atomic write with file lock to prevent races)
 pub fn save_to_history(context: &str, namespace: Option<&str>) -> Result<()> {
+    let _lock = acquire_history_lock()?;
     let history_path = history_file_path()?;
     let mut history = load_history()?;
 
@@ -56,6 +101,7 @@ pub fn get_context_type(context: &str) -> Result<Option<String>> {
 
 /// Save cluster type for a context so re-login uses the correct flow next time.
 pub fn save_context_type(context: &str, type_str: &str) -> Result<()> {
+    let _lock = acquire_history_lock()?;
     let history_path = history_file_path()?;
     let mut history = load_history()?;
     history
@@ -70,50 +116,74 @@ pub fn save_context_type(context: &str, type_str: &str) -> Result<()> {
     Ok(())
 }
 
-/// Match contexts by pattern (supports wildcards)
+/// Match contexts by pattern with layered fallback:
+///
+/// 1. Exact match
+/// 2. Glob match (if pattern contains *, ?, [)
+/// 3. Substring match (case-insensitive)
+///
+/// This allows `k8pk ctx dev` to match `gke_myproject_us-east1_dev-cluster`.
 pub fn match_pattern(pattern: &str, contexts: &[String]) -> Vec<String> {
-    if !pattern.contains('*') {
-        // Exact match
-        if contexts.contains(&pattern.to_string()) {
-            return vec![pattern.to_string()];
+    let is_glob = pattern.contains('*') || pattern.contains('?') || pattern.contains('[');
+
+    // 1. Exact match (always tried first)
+    if !is_glob && contexts.contains(&pattern.to_string()) {
+        return vec![pattern.to_string()];
+    }
+
+    // 2. Glob match (only if pattern has glob metacharacters)
+    if is_glob {
+        let glob = match globset::Glob::new(pattern) {
+            Ok(g) => g.compile_matcher(),
+            Err(_) => return vec![],
+        };
+        let matches: Vec<String> = contexts
+            .iter()
+            .filter(|ctx| glob.is_match(ctx.as_str()))
+            .cloned()
+            .collect();
+        if !matches.is_empty() {
+            return matches;
         }
         return vec![];
     }
 
-    // Wildcard match
-    let pattern_parts: Vec<&str> = pattern.split('*').collect();
-    contexts
+    // 3. Substring match (case-insensitive) -- only for non-glob patterns
+    let lower_pattern = pattern.to_lowercase();
+    let matches: Vec<String> = contexts
         .iter()
-        .filter(|ctx| {
-            if pattern_parts.len() == 1 {
-                ctx.starts_with(pattern_parts[0])
-            } else if pattern_parts.len() == 2 {
-                ctx.starts_with(pattern_parts[0]) && ctx.ends_with(pattern_parts[1])
-            } else {
-                let mut pos = 0;
-                for part in &pattern_parts {
-                    if let Some(idx) = ctx[pos..].find(part) {
-                        pos += idx + part.len();
-                    } else {
-                        return false;
-                    }
-                }
-                true
-            }
-        })
+        .filter(|ctx| ctx.to_lowercase().contains(&lower_pattern))
         .cloned()
-        .collect()
+        .collect();
+
+    matches
 }
 
-/// Ensure isolated kubeconfig exists for a context
+/// Ensure isolated kubeconfig exists for a context.
+/// If `preloaded` is Some, uses it instead of re-loading from disk.
 pub fn ensure_isolated_kubeconfig(
     context: &str,
     namespace: Option<&str>,
     kubeconfig_paths: &[PathBuf],
 ) -> Result<PathBuf> {
+    let merged = kubeconfig::load_merged(kubeconfig_paths)?;
+    ensure_isolated_kubeconfig_from(&merged, context, namespace)
+}
+
+/// Like ensure_isolated_kubeconfig but accepts an already-loaded KubeConfig,
+/// avoiding redundant disk I/O when the caller already has the merged config.
+pub fn ensure_isolated_kubeconfig_from(
+    merged: &kubeconfig::KubeConfig,
+    context: &str,
+    namespace: Option<&str>,
+) -> Result<PathBuf> {
     let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
     let base = home.join(".local/share/k8pk");
     fs::create_dir_all(&base)?;
+
+    // Opportunistic garbage collection: prune stale kubeconfig files (> 7 days)
+    // Run in background-like fashion: ignore errors, don't block
+    let _ = prune_stale_kubeconfigs(&base, 7);
 
     let ctx_sanitized = kubeconfig::sanitize_filename(context);
     let ns_sanitized = namespace
@@ -127,22 +197,86 @@ pub fn ensure_isolated_kubeconfig(
 
     let out = base.join(&filename);
 
-    // Load merged kubeconfig
-    let merged = kubeconfig::load_merged(kubeconfig_paths)?;
-
     // Prune to just this context
-    let mut pruned = kubeconfig::prune_to_context(&merged, context)?;
+    let mut pruned = kubeconfig::prune_to_context(merged, context)?;
 
     // Set namespace if provided
     if let Some(ns) = namespace {
         kubeconfig::set_context_namespace(&mut pruned, context, ns)?;
     }
 
-    // Write to file
+    // Write to file with restrictive permissions
     let yaml = serde_yaml_ng::to_string(&pruned)?;
-    fs::write(&out, yaml)?;
+    kubeconfig::write_restricted(&out, &yaml)?;
 
     Ok(out)
+}
+
+/// Remove stale isolated kubeconfig files older than `max_age_days`.
+/// Skips non-yaml files, the history file, and lock files.
+/// Best-effort cleanup -- logs warnings on errors instead of failing.
+fn prune_stale_kubeconfigs(dir: &Path, max_age_days: u64) -> Result<()> {
+    let max_age = std::time::Duration::from_secs(max_age_days * 86400);
+    let now = std::time::SystemTime::now();
+
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::debug!(dir = %dir.display(), error = %e, "cannot read dir for pruning");
+            return Ok(());
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // Only prune .yaml files (isolated kubeconfigs)
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if !name.ends_with(".yaml") || name == "history.yaml" {
+            continue;
+        }
+
+        // Check modification time and remove if stale
+        match fs::metadata(&path).and_then(|m| m.modified()) {
+            Ok(modified) => {
+                if let Ok(age) = now.duration_since(modified) {
+                    if age > max_age {
+                        if let Err(e) = fs::remove_file(&path) {
+                            tracing::warn!(
+                                path = %path.display(),
+                                error = %e,
+                                "failed to prune stale kubeconfig"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    path = %path.display(),
+                    error = %e,
+                    "cannot read metadata for pruning"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Detect the current shell type from environment variables.
+/// Returns "fish" for fish shell, "bash" for everything else.
+pub fn detect_shell() -> &'static str {
+    // Fish sets FISH_VERSION; checking it is the most reliable indicator
+    if std::env::var("FISH_VERSION").is_ok() {
+        return "fish";
+    }
+    // Fall back to $SHELL basename
+    if let Ok(shell) = std::env::var("SHELL") {
+        if shell.ends_with("/fish") || shell.ends_with("\\fish") {
+            return "fish";
+        }
+    }
+    "bash"
 }
 
 /// Print environment exports for a context
@@ -230,6 +364,14 @@ pub fn print_env_exports(
     if verbose {
         eprintln!("{}", exports);
     }
+
+    // If stdout is a terminal, the user is probably running this directly
+    // instead of through eval or the shell aliases. Show a hint.
+    if std::io::stdout().is_terminal() {
+        eprintln!("# Hint: wrap in eval to apply, or use the kctx/kns shell aliases:");
+        eprintln!("#   eval \"$(k8pk ctx ...)\"");
+    }
+
     print!("{}", exports);
     Ok(())
 }
@@ -257,9 +399,7 @@ pub fn print_exit_commands(output: Option<&str>) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&j)?);
         }
         _ => {
-            // Detect shell type for proper syntax
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-            let is_fish = shell.contains("fish");
+            let is_fish = detect_shell() == "fish";
 
             // Always just unset variables - never automatically exit
             // User can manually type 'exit' if they're in a recursive shell
@@ -307,6 +447,51 @@ fn history_file_path() -> Result<PathBuf> {
     let base = home.join(".local/share/k8pk");
     fs::create_dir_all(&base)?;
     Ok(base.join("history.yaml"))
+}
+
+fn lock_file_path() -> Result<PathBuf> {
+    let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
+    let base = home.join(".local/share/k8pk");
+    fs::create_dir_all(&base)?;
+    Ok(base.join(".history.lock"))
+}
+
+/// Acquire an advisory file lock for history operations.
+/// Returns the lock file handle (lock is held while handle is alive).
+#[cfg(unix)]
+fn acquire_history_lock() -> Result<fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let lock_path = lock_file_path()?;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&lock_path)?;
+    // Try to acquire exclusive lock with a timeout: non-blocking first, then retry
+    for _ in 0..50 {
+        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if ret == 0 {
+            return Ok(file);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Final blocking attempt
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if ret != 0 {
+        return Err(K8pkError::Other("failed to acquire history lock".into()));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn acquire_history_lock() -> Result<fs::File> {
+    let lock_path = lock_file_path()?;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&lock_path)?;
+    Ok(file) // No locking on non-Unix
 }
 
 fn load_history() -> Result<History> {
@@ -362,5 +547,103 @@ mod tests {
         assert!(history.context_history.is_empty());
         assert!(history.namespace_history.is_empty());
         assert!(history.context_types.is_empty());
+    }
+
+    #[test]
+    fn test_match_pattern_case_insensitive_substring() {
+        let contexts = vec![
+            "production-cluster".to_string(),
+            "staging-cluster".to_string(),
+            "dev".to_string(),
+        ];
+        // Case-insensitive substring fallback
+        let matched = match_pattern("Production", &contexts);
+        assert_eq!(matched, vec!["production-cluster"]);
+    }
+
+    #[test]
+    fn test_match_pattern_no_match() {
+        let contexts = vec!["dev".to_string(), "staging".to_string()];
+        let matched = match_pattern("nonexistent", &contexts);
+        assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn test_detect_shell_default() {
+        // With no FISH_VERSION set, should return "bash"
+        std::env::remove_var("FISH_VERSION");
+        assert_eq!(detect_shell(), "bash");
+    }
+
+    #[test]
+    fn test_history_save_get_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let history_path = dir.path().join("history.yaml");
+
+        // Save some history entries
+        let mut history = History::default();
+        history.context_history.push("ctx-a".to_string());
+        history.context_history.push("ctx-b".to_string());
+        history.namespace_history.push("ns-1".to_string());
+
+        let content = serde_yaml_ng::to_string(&history).unwrap();
+        fs::write(&history_path, content).unwrap();
+
+        // Read it back
+        let loaded: History =
+            serde_yaml_ng::from_str(&fs::read_to_string(&history_path).unwrap()).unwrap();
+        assert_eq!(loaded.context_history.len(), 2);
+        assert_eq!(loaded.context_history[0], "ctx-a");
+        assert_eq!(loaded.namespace_history.len(), 1);
+
+        // Verify clearing
+        let empty = History::default();
+        let content = serde_yaml_ng::to_string(&empty).unwrap();
+        fs::write(&history_path, content).unwrap();
+        let cleared: History =
+            serde_yaml_ng::from_str(&fs::read_to_string(&history_path).unwrap()).unwrap();
+        assert!(cleared.context_history.is_empty());
+    }
+
+    #[test]
+    fn test_history_truncation() {
+        let mut history = History::default();
+        for i in 0..20 {
+            history.context_history.push(format!("ctx-{}", i));
+        }
+        // Truncate to 10 (same as MAX_HISTORY)
+        history.context_history = history
+            .context_history
+            .into_iter()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        assert_eq!(history.context_history.len(), 10);
+        assert_eq!(history.context_history[0], "ctx-10");
+        assert_eq!(history.context_history[9], "ctx-19");
+    }
+
+    #[test]
+    fn test_prune_stale_kubeconfigs() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a "stale" yaml file with old mtime (we can't easily backdate,
+        // but we can test that non-yaml and history.yaml are skipped)
+        fs::write(dir.path().join("test.yaml"), "data").unwrap();
+        fs::write(dir.path().join("history.yaml"), "data").unwrap();
+        fs::write(dir.path().join("test.txt"), "data").unwrap();
+
+        // Prune with 0-day max age (everything is stale)
+        super::prune_stale_kubeconfigs(dir.path(), 0).unwrap();
+
+        // test.yaml should be removed (it's stale with 0 days threshold)
+        assert!(!dir.path().join("test.yaml").exists());
+        // history.yaml should be preserved (skipped)
+        assert!(dir.path().join("history.yaml").exists());
+        // test.txt should be preserved (not .yaml)
+        assert!(dir.path().join("test.txt").exists());
     }
 }

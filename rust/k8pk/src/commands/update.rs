@@ -24,15 +24,15 @@ pub fn check_and_update(check_only: bool, force: bool, quiet: bool) -> Result<Up
         .user_agent("k8pk-updater")
         .timeout(Duration::from_secs(20))
         .build()
-        .map_err(|e| K8pkError::Other(format!("failed to create HTTP client: {}", e)))?;
+        .map_err(|e| K8pkError::HttpError(format!("failed to create HTTP client: {}", e)))?;
 
     let response = client
         .get("https://api.github.com/repos/vee-sh/k8pk/releases/latest")
         .send()
-        .map_err(|e| K8pkError::Other(format!("failed to fetch release info: {}", e)))?;
+        .map_err(|e| K8pkError::HttpError(format!("failed to fetch release info: {}", e)))?;
 
     if !response.status().is_success() {
-        return Err(K8pkError::Other(format!(
+        return Err(K8pkError::HttpError(format!(
             "failed to fetch release info: HTTP {}",
             response.status()
         )));
@@ -40,12 +40,12 @@ pub fn check_and_update(check_only: bool, force: bool, quiet: bool) -> Result<Up
 
     let release: serde_json::Value = response
         .json()
-        .map_err(|e| K8pkError::Other(format!("failed to parse release info: {}", e)))?;
+        .map_err(|e| K8pkError::HttpError(format!("failed to parse release info: {}", e)))?;
 
     let latest_tag = release
         .get("tag_name")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| K8pkError::Other("invalid release info".into()))?;
+        .ok_or_else(|| K8pkError::HttpError("invalid release info: missing tag_name".into()))?;
 
     let latest_version = latest_tag.trim_start_matches('v');
 
@@ -96,7 +96,7 @@ pub fn check_and_update(check_only: bool, force: bool, quiet: bool) -> Result<Up
     let assets = release
         .get("assets")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| K8pkError::Other("no assets in release".into()))?;
+        .ok_or_else(|| K8pkError::HttpError("no assets in release".into()))?;
 
     let pattern = format!("k8pk-{}-{}", os, arch);
     let asset = assets
@@ -108,13 +108,13 @@ pub fn check_and_update(check_only: bool, force: bool, quiet: bool) -> Result<Up
                 .unwrap_or(false)
         })
         .ok_or_else(|| {
-            K8pkError::Other(format!("no binary found for platform: {}-{}", os, arch))
+            K8pkError::HttpError(format!("no binary found for platform: {}-{}", os, arch))
         })?;
 
     let download_url = asset
         .get("browser_download_url")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| K8pkError::Other("invalid asset URL".into()))?;
+        .ok_or_else(|| K8pkError::HttpError("invalid asset URL".into()))?;
 
     let asset_name = asset
         .get("name")
@@ -127,13 +127,12 @@ pub fn check_and_update(check_only: bool, force: bool, quiet: bool) -> Result<Up
     let bytes = client
         .get(download_url)
         .send()
-        .map_err(|e| K8pkError::Other(format!("download failed: {}", e)))?
+        .map_err(|e| K8pkError::HttpError(format!("download failed: {}", e)))?
         .bytes()
-        .map_err(|e| K8pkError::Other(format!("download failed: {}", e)))?;
+        .map_err(|e| K8pkError::HttpError(format!("download failed: {}", e)))?;
 
     // Save to temp and extract
-    let temp_dir = tempfile::tempdir()
-        .map_err(|e| K8pkError::Other(format!("failed to create temp dir: {}", e)))?;
+    let temp_dir = tempfile::tempdir()?;
 
     let archive_path = temp_dir.path().join(asset_name);
     let mut file = fs::File::create(&archive_path)?;
@@ -148,13 +147,15 @@ pub fn check_and_update(check_only: bool, force: bool, quiet: bool) -> Result<Up
         .status()?;
 
     if !status.success() {
-        return Err(K8pkError::Other("failed to extract archive".into()));
+        return Err(K8pkError::CommandFailed("failed to extract archive".into()));
     }
 
     // Find binary and install
     let binary_path = temp_dir.path().join("k8pk");
     if !binary_path.exists() {
-        return Err(K8pkError::Other("binary not found in archive".into()));
+        return Err(K8pkError::CommandFailed(
+            "binary not found in archive".into(),
+        ));
     }
 
     // Try to find current binary location

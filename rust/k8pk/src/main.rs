@@ -11,13 +11,11 @@ mod state;
 
 use crate::cli::{Cli, Command};
 use crate::error::{K8pkError, Result};
-use crate::kubeconfig::KubeConfig;
 use crate::state::CurrentState;
 
 use clap::Parser;
 use clap_complete::{generate, shells};
-use inquire::{MultiSelect, Select};
-use std::collections::HashSet;
+use inquire::MultiSelect;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
@@ -66,7 +64,7 @@ fn main() -> anyhow::Result<()> {
     // Default to interactive picker if no command specified
     let command = cli.command.unwrap_or(Command::Pick {
         output: None,
-        verbose: false,
+        detail: false,
     });
 
     match command {
@@ -108,7 +106,7 @@ fn main() -> anyhow::Result<()> {
                 kubeconfig::set_context_namespace(&mut pruned, &context, ns)?;
             }
             let yaml = serde_yaml_ng::to_string(&pruned)?;
-            fs::write(&out, yaml)?;
+            kubeconfig::write_restricted(&out, &yaml)?;
             if json {
                 let j = serde_json::json!({
                     "context": context,
@@ -154,7 +152,7 @@ fn main() -> anyhow::Result<()> {
             context,
             namespace,
             shell,
-            verbose,
+            detail,
         } => {
             let context = config::resolve_alias(&context);
             let kubeconfig =
@@ -164,54 +162,33 @@ fn main() -> anyhow::Result<()> {
                 namespace.as_deref(),
                 &kubeconfig,
                 &shell,
-                verbose,
+                detail,
             )?;
         }
 
-        Command::Pick { output, verbose } => {
+        Command::Pick { output, detail } => {
             let merged = kubeconfig::load_merged(&paths)?;
             let (context, namespace) =
                 commands::pick_context_namespace(&merged, kubeconfig_env.as_deref())?;
 
-            let mut kubeconfig =
+            let initial_kubeconfig =
                 commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
-
-            if commands::check_session_alive(
-                &kubeconfig,
+            let kubeconfig = commands::ensure_session_alive(
+                &initial_kubeconfig,
                 &context,
-                commands::SESSION_CHECK_TIMEOUT_SECS,
-            )
-            .is_err()
-            {
-                if io::stdin().is_terminal() {
-                    let written = commands::try_relogin(&context, namespace.as_deref(), &paths)?;
-                    // Use the written kubeconfig directly (OCP/Rancher write ready-to-use files)
-                    // Only rebuild if no file was written (shouldn't happen for OCP/Rancher)
-                    kubeconfig = if let Some(ref p) = written {
-                        p.clone()
-                    } else {
-                        commands::ensure_isolated_kubeconfig(
-                            &context,
-                            namespace.as_deref(),
-                            &paths,
-                        )?
-                    };
-                } else {
-                    return Err(K8pkError::Other(
-                        "Session expired and not interactive; run 'k8pk login' to refresh".into(),
-                    )
-                    .into());
-                }
-            }
+                namespace.as_deref(),
+                &paths,
+            )?;
 
+            let shell = commands::detect_shell();
             match output.as_deref() {
-                Some("env") => {
+                Some("env") | None => {
                     commands::print_env_exports(
                         &context,
                         namespace.as_deref(),
                         &kubeconfig,
-                        "bash",
-                        verbose,
+                        shell,
+                        detail,
                     )?;
                 }
                 Some("json") => {
@@ -222,13 +199,11 @@ fn main() -> anyhow::Result<()> {
                     });
                     println!("{}", serde_json::to_string_pretty(&j)?);
                 }
-                Some("spawn") | None => {
+                Some("spawn") => {
                     spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
                 }
                 Some(other) => {
-                    return Err(
-                        K8pkError::Other(format!("unknown output format: {}", other)).into(),
-                    );
+                    return Err(K8pkError::UnknownOutputFormat(other.to_string()).into());
                 }
             }
         }
@@ -255,7 +230,7 @@ fn main() -> anyhow::Result<()> {
 
             if interactive {
                 if json {
-                    return Err(K8pkError::Other(
+                    return Err(K8pkError::InvalidArgument(
                         "--json is not supported with --interactive".into(),
                     )
                     .into());
@@ -332,7 +307,7 @@ fn main() -> anyhow::Result<()> {
                 None => default_kubeconfig_path()?,
             };
 
-            let result = remove_contexts_from_file(
+            let result = commands::remove_contexts_from_file(
                 &file_path,
                 context.as_deref(),
                 interactive,
@@ -342,7 +317,7 @@ fn main() -> anyhow::Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else if !quiet {
-                print_remove_context_summary(&result);
+                commands::print_remove_context_summary(&result);
             }
         }
 
@@ -359,11 +334,12 @@ fn main() -> anyhow::Result<()> {
                 None => default_kubeconfig_path()?,
             };
 
-            let result = rename_context_in_file(&file_path, &context, &new_name, dry_run)?;
+            let result =
+                commands::rename_context_in_file(&file_path, &context, &new_name, dry_run)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else if !quiet {
-                print_rename_context_summary(&result);
+                commands::print_rename_context_summary(&result);
             }
         }
 
@@ -381,7 +357,7 @@ fn main() -> anyhow::Result<()> {
                 None => default_kubeconfig_path()?,
             };
 
-            let result = copy_context_between_files(
+            let result = commands::copy_context_between_files(
                 &from_file,
                 &dest_path,
                 &context,
@@ -391,7 +367,7 @@ fn main() -> anyhow::Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else if !quiet {
-                print_copy_context_summary(&result);
+                commands::print_copy_context_summary(&result);
             }
         }
 
@@ -431,6 +407,7 @@ fn main() -> anyhow::Result<()> {
             command,
             fail_early,
             no_headers,
+            json,
         } => {
             let merged = kubeconfig::load_merged(&paths)?;
             let all_contexts = merged.context_names();
@@ -440,17 +417,56 @@ fn main() -> anyhow::Result<()> {
                 return Err(K8pkError::ContextNotFound(context).into());
             }
 
-            for ctx in &matched {
-                let exit_code = exec_command_in_context(
-                    ctx,
-                    &namespace,
-                    &command,
-                    !no_headers && matched.len() > 1,
-                    &paths,
-                )?;
+            if json {
+                let mut results = Vec::new();
+                for ctx in &matched {
+                    let result = exec_command_in_context_captured(
+                        ctx,
+                        namespace.as_deref(),
+                        &command,
+                        &paths,
+                    )?;
+                    let success = result.exit_code == 0;
+                    results.push(result);
+                    if !success && fail_early {
+                        break;
+                    }
+                }
+                println!("{}", serde_json::to_string_pretty(&results)?);
+                let any_failed = results.iter().any(|r| r.exit_code != 0);
+                if any_failed {
+                    return Err(
+                        K8pkError::CommandFailed("one or more commands failed".into()).into(),
+                    );
+                }
+            } else {
+                let mut last_exit_code = 0;
+                for ctx in &matched {
+                    let exit_code = exec_command_in_context(
+                        ctx,
+                        namespace.as_deref(),
+                        &command,
+                        !no_headers && matched.len() > 1,
+                        &paths,
+                    )?;
 
-                if fail_early && exit_code != 0 {
-                    std::process::exit(exit_code);
+                    if exit_code != 0 {
+                        last_exit_code = exit_code;
+                        if fail_early {
+                            return Err(K8pkError::CommandFailed(format!(
+                                "command failed in context '{}' with exit code {}",
+                                ctx, exit_code
+                            ))
+                            .into());
+                        }
+                    }
+                }
+                if last_exit_code != 0 {
+                    return Err(K8pkError::CommandFailed(format!(
+                        "command failed with exit code {}",
+                        last_exit_code
+                    ))
+                    .into());
                 }
             }
         }
@@ -460,9 +476,10 @@ fn main() -> anyhow::Result<()> {
             match what.as_str() {
                 "ctx" | "context" => {
                     if display && raw {
-                        return Err(
-                            K8pkError::Other("use only one of --display or --raw".into()).into(),
-                        );
+                        return Err(K8pkError::InvalidArgument(
+                            "use only one of --display or --raw".into(),
+                        )
+                        .into());
                     }
                     if display {
                         if let Some(ctx) = state.context_display.as_ref().or(state.context.as_ref())
@@ -475,9 +492,10 @@ fn main() -> anyhow::Result<()> {
                 }
                 "ns" | "namespace" => {
                     if display || raw {
-                        return Err(
-                            K8pkError::Other("--display/--raw only apply to ctx".into()).into()
-                        );
+                        return Err(K8pkError::InvalidArgument(
+                            "--display/--raw only apply to ctx".into(),
+                        )
+                        .into());
                     }
                     if let Some(ns) = &state.namespace {
                         println!("{}", ns);
@@ -485,17 +503,19 @@ fn main() -> anyhow::Result<()> {
                 }
                 "depth" => {
                     if display || raw {
-                        return Err(
-                            K8pkError::Other("--display/--raw only apply to ctx".into()).into()
-                        );
+                        return Err(K8pkError::InvalidArgument(
+                            "--display/--raw only apply to ctx".into(),
+                        )
+                        .into());
                     }
                     println!("{}", state.depth);
                 }
                 "config" | "kubeconfig" => {
                     if display || raw {
-                        return Err(
-                            K8pkError::Other("--display/--raw only apply to ctx".into()).into()
-                        );
+                        return Err(K8pkError::InvalidArgument(
+                            "--display/--raw only apply to ctx".into(),
+                        )
+                        .into());
                     }
                     if let Some(p) = &state.config_path {
                         println!("{}", p.display());
@@ -503,15 +523,16 @@ fn main() -> anyhow::Result<()> {
                 }
                 "all" | "json" => {
                     if display || raw {
-                        return Err(
-                            K8pkError::Other("--display/--raw only apply to ctx".into()).into()
-                        );
+                        return Err(K8pkError::InvalidArgument(
+                            "--display/--raw only apply to ctx".into(),
+                        )
+                        .into());
                     }
                     println!("{}", serde_json::to_string_pretty(&state.to_json())?);
                 }
                 _ => {
-                    return Err(K8pkError::Other(format!(
-                        "unknown info type: {}. Use: ctx, ns, depth, config, all",
+                    return Err(K8pkError::InvalidArgument(format!(
+                        "unknown info type: '{}'. Use: ctx, ns, depth, config, all",
                         what
                     ))
                     .into());
@@ -531,42 +552,61 @@ fn main() -> anyhow::Result<()> {
                 Some(c) if c == "-" => {
                     commands::get_previous_context()?.ok_or(K8pkError::NoPreviousContext)?
                 }
-                Some(c) => config::resolve_alias(&c),
+                Some(c) => {
+                    let resolved = config::resolve_alias(&c);
+                    // Use match_pattern for exact -> substring fallback
+                    let all = merged.context_names();
+                    let matches = commands::match_pattern(&resolved, &all);
+                    match matches.len() {
+                        0 => {
+                            let suggestions = crate::error::closest_matches(&resolved, &all, 3);
+                            if suggestions.is_empty() {
+                                return Err(K8pkError::ContextNotFound(resolved).into());
+                            } else {
+                                return Err(K8pkError::ContextNotFoundSuggestions {
+                                    pattern: resolved,
+                                    suggestions: suggestions
+                                        .iter()
+                                        .map(|s| format!("    - {}", s))
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                }
+                                .into());
+                            }
+                        }
+                        1 => matches.into_iter().next().unwrap(),
+                        _ => {
+                            // Multiple matches -- let user disambiguate
+                            if io::stdin().is_terminal() {
+                                eprintln!("'{}' matched {} contexts:", c, matches.len());
+                                inquire::Select::new("Select context:", matches)
+                                    .prompt()
+                                    .map_err(|_| K8pkError::Cancelled)?
+                            } else {
+                                return Err(K8pkError::InvalidArgument(format!(
+                                    "'{}' matches multiple contexts: {}. Be more specific.",
+                                    c,
+                                    matches.join(", ")
+                                ))
+                                .into());
+                            }
+                        }
+                    }
+                }
                 None => {
                     // Interactive pick with dedup and active marker
                     commands::pick_context(&merged)?
                 }
             };
 
-            let mut kubeconfig =
+            let initial_kubeconfig =
                 commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
-
-            if commands::check_session_alive(
-                &kubeconfig,
+            let kubeconfig = commands::ensure_session_alive(
+                &initial_kubeconfig,
                 &context,
-                commands::SESSION_CHECK_TIMEOUT_SECS,
-            )
-            .is_err()
-            {
-                if io::stdin().is_terminal() {
-                    let written = commands::try_relogin(&context, namespace.as_deref(), &paths)?;
-                    // Use the written kubeconfig directly (OCP/Rancher write ready-to-use files)
-                    kubeconfig = if let Some(ref p) = written {
-                        p.clone()
-                    } else {
-                        commands::ensure_isolated_kubeconfig(
-                            &context,
-                            namespace.as_deref(),
-                            &paths,
-                        )?
-                    };
-                } else {
-                    return Err(K8pkError::Other(
-                        "Session expired and not interactive; run 'k8pk login' to refresh".into(),
-                    )
-                    .into());
-                }
-            }
+                namespace.as_deref(),
+                &paths,
+            )?;
 
             commands::save_to_history(&context, namespace.as_deref())?;
 
@@ -583,33 +623,22 @@ fn main() -> anyhow::Result<()> {
                         });
                         println!("{}", serde_json::to_string_pretty(&j)?);
                     }
-                    Some("env") => {
+                    Some("spawn") => {
+                        spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                    }
+                    Some("env") | None => {
+                        // Default to env exports (eval-friendly).
+                        // Use `--output spawn` or `-r` for subshell mode.
                         commands::print_env_exports(
                             &context,
                             namespace.as_deref(),
                             &kubeconfig,
-                            "bash",
+                            commands::detect_shell(),
                             false,
                         )?;
                     }
-                    Some("spawn") | None => {
-                        // Auto-detect: if TTY, spawn shell; otherwise print exports
-                        if io::stdout().is_terminal() {
-                            spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
-                        } else {
-                            commands::print_env_exports(
-                                &context,
-                                namespace.as_deref(),
-                                &kubeconfig,
-                                "bash",
-                                false,
-                            )?;
-                        }
-                    }
                     Some(other) => {
-                        return Err(
-                            K8pkError::Other(format!("unknown output format: {}", other)).into(),
-                        );
+                        return Err(K8pkError::UnknownOutputFormat(other.to_string()).into());
                     }
                 }
             }
@@ -667,57 +696,76 @@ fn main() -> anyhow::Result<()> {
                         });
                         println!("{}", serde_json::to_string_pretty(&j)?);
                     }
-                    Some("env") => {
+                    Some("spawn") => {
+                        spawn_shell(&context, Some(&namespace), &kubeconfig)?;
+                    }
+                    Some("env") | None => {
+                        // Default to env exports (eval-friendly).
+                        // Use `--output spawn` or `-r` for subshell mode.
                         commands::print_env_exports(
                             &context,
                             Some(&namespace),
                             &kubeconfig,
-                            "bash",
+                            commands::detect_shell(),
                             false,
                         )?;
                     }
-                    Some("spawn") | None => {
-                        // Auto-detect: if TTY, spawn shell; otherwise print exports
-                        if io::stdout().is_terminal() {
-                            spawn_shell(&context, Some(&namespace), &kubeconfig)?;
-                        } else {
-                            commands::print_env_exports(
-                                &context,
-                                Some(&namespace),
-                                &kubeconfig,
-                                "bash",
-                                false,
-                            )?;
-                        }
-                    }
                     Some(other) => {
-                        return Err(
-                            K8pkError::Other(format!("unknown output format: {}", other)).into(),
-                        );
+                        return Err(K8pkError::UnknownOutputFormat(other.to_string()).into());
                     }
                 }
             }
         }
 
-        Command::Clean { output } => {
-            // If run interactively without explicit output format, spawn a cleaned shell
-            // Otherwise, just output the commands
-            match output.as_deref() {
-                Some("json") => {
-                    commands::print_exit_commands(Some("json"))?;
+        Command::History { json, clear } => {
+            if clear {
+                commands::clear_history()?;
+                if !json {
+                    println!("History cleared.");
                 }
-                Some("env") => {
-                    commands::print_exit_commands(None)?;
-                }
-                None if io::stdout().is_terminal() => {
-                    // Spawn a new shell with cleaned environment
-                    spawn_cleaned_shell()?;
-                }
-                _ => {
-                    commands::print_exit_commands(None)?;
+            } else {
+                let (contexts, namespaces) = commands::get_history()?;
+                if json {
+                    let j = serde_json::json!({
+                        "contexts": contexts,
+                        "namespaces": namespaces,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&j)?);
+                } else if contexts.is_empty() && namespaces.is_empty() {
+                    println!("No history yet.");
+                } else {
+                    if !contexts.is_empty() {
+                        println!("Recent contexts:");
+                        for (i, ctx) in contexts.iter().enumerate() {
+                            let marker = if i == 0 { " (current)" } else { "" };
+                            println!("  {}. {}{}", i + 1, ctx, marker);
+                        }
+                    }
+                    if !namespaces.is_empty() {
+                        println!("Recent namespaces:");
+                        for (i, ns) in namespaces.iter().enumerate() {
+                            let marker = if i == 0 { " (current)" } else { "" };
+                            println!("  {}. {}{}", i + 1, ns, marker);
+                        }
+                    }
                 }
             }
         }
+
+        Command::Clean { output } => match output.as_deref() {
+            Some("json") => {
+                commands::print_exit_commands(Some("json"))?;
+            }
+            Some("spawn") => {
+                spawn_cleaned_shell()?;
+            }
+            Some("env") | None => {
+                commands::print_exit_commands(None)?;
+            }
+            Some(other) => {
+                return Err(K8pkError::UnknownOutputFormat(other.to_string()).into());
+            }
+        },
 
         Command::Update {
             check,
@@ -752,18 +800,36 @@ fn main() -> anyhow::Result<()> {
         }
 
         Command::Config(cmd) => match cmd {
-            cli::ConfigCommand::Path => {
+            cli::ConfigCommand::Path { json } => {
                 let config_path = config::config_path()?;
-                println!("{}", config_path.display());
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"path": config_path.to_string_lossy()})
+                    );
+                } else {
+                    println!("{}", config_path.display());
+                }
             }
-            cli::ConfigCommand::Init => {
+            cli::ConfigCommand::Init { json } => {
                 let config_path = config::init_config()?;
-                println!("Config file initialized at: {}", config_path.display());
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"path": config_path.to_string_lossy(), "status": "initialized"})
+                    );
+                } else {
+                    println!("Config file initialized at: {}", config_path.display());
+                }
             }
-            cli::ConfigCommand::Show => {
+            cli::ConfigCommand::Show { json } => {
                 let cfg = config::load_uncached()?;
-                let yaml = serde_yaml_ng::to_string(&cfg)?;
-                println!("{}", yaml);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&cfg)?);
+                } else {
+                    let yaml = serde_yaml_ng::to_string(&cfg)?;
+                    println!("{}", yaml);
+                }
             }
             cli::ConfigCommand::Edit => {
                 commands::edit_config()?;
@@ -786,13 +852,13 @@ fn main() -> anyhow::Result<()> {
                 );
             }
             if result.failed {
-                return Err(K8pkError::Other("lint failed".into()).into());
+                return Err(K8pkError::LintFailed.into());
             }
         }
 
         Command::Edit { context, editor } => {
             let merged = kubeconfig::load_merged(&paths)?;
-            edit_kubeconfig(context.as_deref(), editor.as_deref(), &merged, &paths)?;
+            commands::edit_kubeconfig(context.as_deref(), editor.as_deref(), &merged, &paths)?;
         }
 
         Command::Login {
@@ -853,29 +919,73 @@ fn main() -> anyhow::Result<()> {
                         &context_name,
                         namespace.as_deref(),
                         &kubeconfig_path,
-                        "bash",
+                        commands::detect_shell(),
                         false,
                     )?;
                 }
                 return Ok(());
             }
 
-            // Parse login type
-            let login_type = login_type.parse::<commands::LoginType>()?;
-
             // Use --server flag if provided, otherwise fall back to positional argument
             let server_url = server.or(server_pos).ok_or_else(|| {
-                K8pkError::Other(
+                K8pkError::InvalidArgument(
                     "server URL is required (use --server or provide as positional argument)"
                         .into(),
                 )
             })?;
+
+            // Resolve login type: explicit, auto-detect from URL, or prompt
+            let login_type = if login_type == "auto" {
+                if let Some(detected) = commands::detect_login_type_from_url(&server_url) {
+                    eprintln!(
+                        "Auto-detected cluster type: {}",
+                        match detected {
+                            commands::LoginType::Ocp => "ocp",
+                            commands::LoginType::K8s => "k8s",
+                            commands::LoginType::Gke => "gke",
+                            commands::LoginType::Rancher => "rancher",
+                        }
+                    );
+                    detected
+                } else if io::stdin().is_terminal() {
+                    eprintln!("Could not detect cluster type from URL. Please select:");
+                    let choice = inquire::Select::new(
+                        "Cluster type:",
+                        vec![
+                            "ocp (OpenShift)",
+                            "k8s (generic Kubernetes)",
+                            "gke (Google)",
+                            "rancher",
+                        ],
+                    )
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?;
+                    match choice {
+                        "ocp (OpenShift)" => commands::LoginType::Ocp,
+                        "gke (Google)" => commands::LoginType::Gke,
+                        "rancher" => commands::LoginType::Rancher,
+                        _ => commands::LoginType::K8s,
+                    }
+                } else {
+                    return Err(K8pkError::InvalidArgument(
+                        "could not auto-detect cluster type from server URL; \
+                         specify --type explicitly (ocp, k8s, gke, rancher)"
+                            .into(),
+                    )
+                    .into());
+                }
+            } else {
+                login_type.parse::<commands::LoginType>()?
+            };
             if json && dry_run {
-                return Err(K8pkError::Other("--json cannot be used with --dry-run".into()).into());
+                return Err(K8pkError::InvalidArgument(
+                    "--json cannot be used with --dry-run".into(),
+                )
+                .into());
             }
 
             if exec_preset.is_some() && exec_command.is_some() {
-                return Err(K8pkError::Other(
+                return Err(K8pkError::InvalidArgument(
                     "use either --exec-preset or --exec-command, not both".into(),
                 )
                 .into());
@@ -902,29 +1012,28 @@ fn main() -> anyhow::Result<()> {
             }
 
             let effective_quiet = quiet || json;
-            let login_result = commands::login(
-                login_type,
-                &server_url,
-                token.as_deref(),
-                username.as_deref(),
-                password.as_deref(),
-                name.as_deref(),
-                output_dir.as_deref(),
-                insecure_skip_tls_verify,
-                use_vault,
-                pass_entry.as_deref(),
-                certificate_authority.as_deref(),
-                client_certificate.as_deref(),
-                client_key.as_deref(),
-                auth_mode.as_str(),
-                &exec,
-                dry_run,
-                test,
-                test_timeout,
-                rancher_auth_provider.as_str(),
-                effective_quiet,
-                None, // rancher_cluster_server (CLI: single server)
-            )?;
+            let mut req = commands::LoginRequest::new(&server_url);
+            req.login_type = Some(login_type);
+            req.token = token;
+            req.username = username;
+            req.password = password;
+            req.name = name;
+            req.output_dir = output_dir;
+            req.insecure = insecure_skip_tls_verify;
+            req.use_vault = use_vault;
+            req.pass_entry = pass_entry;
+            req.certificate_authority = certificate_authority;
+            req.client_certificate = client_certificate;
+            req.client_key = client_key;
+            req.auth = auth_mode;
+            req.exec = exec;
+            req.dry_run = dry_run;
+            req.test = test;
+            req.test_timeout = test_timeout;
+            req.rancher_auth_provider = rancher_auth_provider;
+            req.quiet = effective_quiet;
+
+            let login_result = commands::login(&req)?;
 
             if dry_run {
                 return Ok(());
@@ -937,7 +1046,7 @@ fn main() -> anyhow::Result<()> {
 
             let kubeconfig_path = login_result
                 .kubeconfig_path
-                .ok_or_else(|| K8pkError::Other("kubeconfig not generated".into()))?;
+                .ok_or_else(|| K8pkError::LoginFailed("kubeconfig not generated".into()))?;
             let context_name = login_result.context_name;
             let namespace = login_result.namespace;
 
@@ -968,7 +1077,7 @@ fn main() -> anyhow::Result<()> {
                     &context_name,
                     namespace.as_deref(),
                     &kubeconfig,
-                    "bash",
+                    commands::detect_shell(),
                     false,
                 )?;
             }
@@ -1007,6 +1116,76 @@ fn main() -> anyhow::Result<()> {
             commands::alias(install, uninstall, shell.as_deref())?;
         }
 
+        Command::Vault(vault_cmd) => {
+            use crate::cli::VaultCommand;
+            match vault_cmd {
+                VaultCommand::List { json } => {
+                    let vault = commands::Vault::new()?;
+                    let keys = vault.list_keys();
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&keys)?);
+                    } else if keys.is_empty() {
+                        println!("No credentials stored in vault.");
+                    } else {
+                        eprintln!(
+                            "Warning: vault stores credentials as plaintext JSON at {}",
+                            vault.path().display()
+                        );
+                        println!("Stored entries ({}):", keys.len());
+                        for key in &keys {
+                            println!("  - {}", key);
+                        }
+                    }
+                }
+                VaultCommand::Delete { key, json } => {
+                    let mut vault = commands::Vault::new()?;
+                    let deleted = vault.delete(&key)?;
+                    if json {
+                        println!("{}", serde_json::json!({"key": key, "deleted": deleted}));
+                    } else if deleted {
+                        println!("Deleted vault entry: {}", key);
+                    } else {
+                        eprintln!("No vault entry found for: {}", key);
+                    }
+                }
+                VaultCommand::Path { json } => {
+                    let vault = commands::Vault::new()?;
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({"path": vault.path().to_string_lossy()})
+                        );
+                    } else {
+                        println!("{}", vault.path().display());
+                    }
+                }
+            }
+        }
+
+        Command::Complete {
+            complete_type,
+            context,
+        } => match complete_type.as_str() {
+            "contexts" => {
+                let merged = kubeconfig::load_merged(&paths)?;
+                for name in merged.context_names() {
+                    println!("{}", name);
+                }
+            }
+            "namespaces" => {
+                let ctx =
+                    context.unwrap_or_else(|| std::env::var("K8PK_CONTEXT").unwrap_or_default());
+                if !ctx.is_empty() {
+                    if let Ok(nss) = kubeconfig::list_namespaces(&ctx, kubeconfig_env.as_deref()) {
+                        for ns in nss {
+                            println!("{}", ns);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        },
+
         Command::Doctor { fix, json } => {
             commands::doctor(fix, json)?;
         }
@@ -1015,15 +1194,21 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Return the path to the user's login shell.
+fn login_shell() -> String {
+    #[cfg(unix)]
+    {
+        env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    }
+    #[cfg(windows)]
+    {
+        env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string())
+    }
+}
+
 /// Spawn a new shell with cleaned k8pk environment (KUBECONFIG=/dev/null, all k8pk vars unset)
 fn spawn_cleaned_shell() -> Result<()> {
-    // Detect shell: SHELL on Unix, ComSpec on Windows
-    #[cfg(unix)]
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    #[cfg(windows)]
-    let shell = env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
-
-    let mut cmd = ProcCommand::new(&shell);
+    let mut cmd = ProcCommand::new(login_shell());
     cmd.env("KUBECONFIG", "/dev/null");
     // Don't set any K8PK_* variables - they'll be unset in the new shell
 
@@ -1043,11 +1228,30 @@ fn spawn_cleaned_shell() -> Result<()> {
     }
 }
 
+/// Maximum allowed nesting depth for recursive shells
+const MAX_SHELL_DEPTH: u32 = 10;
+
 /// Spawn a new shell with context/namespace set
 /// Context names are automatically normalized for cleaner display.
 fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Result<()> {
     let state = CurrentState::from_env();
     let new_depth = state.next_depth();
+
+    // Warn about nesting depth
+    if new_depth > 1 {
+        eprintln!(
+            "Note: entering nested k8pk shell (depth {}). Use 'exit' to return to the parent shell.",
+            new_depth
+        );
+    }
+
+    if new_depth > MAX_SHELL_DEPTH {
+        return Err(K8pkError::InvalidArgument(format!(
+            "maximum shell nesting depth ({}) reached. Use 'exit' to leave nested shells, \
+             or use eval-based switching: eval $(k8pk ctx ...)",
+            MAX_SHELL_DEPTH
+        )));
+    }
 
     // Always normalize context name for display (automatic normalization)
     let display_context = {
@@ -1071,13 +1275,7 @@ fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Res
         }
     }
 
-    // Detect shell: SHELL on Unix, ComSpec on Windows
-    #[cfg(unix)]
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    #[cfg(windows)]
-    let shell = env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
-
-    let mut cmd = ProcCommand::new(&shell);
+    let mut cmd = ProcCommand::new(login_shell());
     cmd.env("KUBECONFIG", kubeconfig.as_os_str());
     cmd.env("K8PK_CONTEXT", context);
     cmd.env("K8PK_CONTEXT_DISPLAY", &display_context);
@@ -1104,9 +1302,14 @@ fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Res
     }
 }
 
-/// Run a hook command
+/// Run a hook command using the user's shell.
 fn run_hook(command: &str) -> Result<()> {
-    let status = ProcCommand::new("sh").arg("-c").arg(command).status()?;
+    let (shell, flag) = if commands::detect_shell() == "fish" {
+        ("fish", "-c")
+    } else {
+        ("sh", "-c")
+    };
+    let status = ProcCommand::new(shell).arg(flag).arg(command).status()?;
 
     if !status.success() {
         warn!(command = %command, "hook command failed");
@@ -1118,34 +1321,89 @@ fn run_hook(command: &str) -> Result<()> {
 /// Execute a command in a specific context
 fn exec_command_in_context(
     context: &str,
-    namespace: &str,
+    namespace: Option<&str>,
     command: &[String],
     show_header: bool,
     paths: &[PathBuf],
 ) -> Result<i32> {
     if command.is_empty() {
-        return Err(K8pkError::Other("no command specified".into()));
+        return Err(K8pkError::InvalidArgument(
+            "no command specified after '--'".into(),
+        ));
     }
 
-    let kubeconfig = commands::ensure_isolated_kubeconfig(context, Some(namespace), paths)?;
+    let kubeconfig = commands::ensure_isolated_kubeconfig(context, namespace, paths)?;
 
     let (cmd_name, args) = command
         .split_first()
-        .ok_or_else(|| K8pkError::Other("empty command".into()))?;
+        .ok_or_else(|| K8pkError::InvalidArgument("empty command".into()))?;
 
     let mut cmd = ProcCommand::new(cmd_name);
     cmd.args(args);
     cmd.env("KUBECONFIG", kubeconfig.as_os_str());
     cmd.env("K8PK_CONTEXT", context);
-    cmd.env("K8PK_NAMESPACE", namespace);
-    cmd.env("OC_NAMESPACE", namespace);
+    if let Some(ns) = namespace {
+        cmd.env("K8PK_NAMESPACE", ns);
+        cmd.env("OC_NAMESPACE", ns);
+    }
 
     if show_header && io::stdout().is_terminal() {
-        eprintln!("CONTEXT => {} (namespace: {})", context, namespace);
+        let ns_display = namespace.unwrap_or("(default)");
+        eprintln!("CONTEXT => {} (namespace: {})", context, ns_display);
     }
 
     let status = cmd.status()?;
     Ok(status.code().unwrap_or(1))
+}
+
+/// Structured result from exec --json
+#[derive(Debug, serde::Serialize)]
+struct ExecResult {
+    context: String,
+    namespace: String,
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+/// Execute a command and capture stdout/stderr for JSON output
+fn exec_command_in_context_captured(
+    context: &str,
+    namespace: Option<&str>,
+    command: &[String],
+    paths: &[PathBuf],
+) -> Result<ExecResult> {
+    if command.is_empty() {
+        return Err(K8pkError::InvalidArgument(
+            "no command specified after '--'".into(),
+        ));
+    }
+
+    let kubeconfig = commands::ensure_isolated_kubeconfig(context, namespace, paths)?;
+
+    let (cmd_name, args) = command
+        .split_first()
+        .ok_or_else(|| K8pkError::InvalidArgument("empty command".into()))?;
+
+    let mut cmd = ProcCommand::new(cmd_name);
+    cmd.args(args);
+    cmd.env("KUBECONFIG", kubeconfig.as_os_str());
+    cmd.env("K8PK_CONTEXT", context);
+    if let Some(ns) = namespace {
+        cmd.env("K8PK_NAMESPACE", ns);
+        cmd.env("OC_NAMESPACE", ns);
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output = cmd.output()?;
+    Ok(ExecResult {
+        context: context.to_string(),
+        namespace: namespace.unwrap_or("(default)").to_string(),
+        exit_code: output.status.code().unwrap_or(1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 /// Generate shell completions
@@ -1154,313 +1412,53 @@ fn generate_completions(shell: &str) -> Result<()> {
     let mut stdout = io::stdout();
 
     match shell {
-        "bash" => generate(shells::Bash, &mut cmd, "k8pk", &mut stdout),
-        "zsh" => generate(shells::Zsh, &mut cmd, "k8pk", &mut stdout),
-        "fish" => generate(shells::Fish, &mut cmd, "k8pk", &mut stdout),
-        _ => return Err(K8pkError::Other(format!("unsupported shell: {}", shell))),
-    }
-
-    Ok(())
-}
-
-/// Remove contexts from a kubeconfig file
-fn remove_contexts_from_file(
-    file_path: &Path,
-    context: Option<&str>,
-    interactive: bool,
-    remove_orphaned: bool,
-    dry_run: bool,
-) -> Result<RemoveContextResult> {
-    if !file_path.exists() {
-        return Err(K8pkError::KubeconfigNotFound(file_path.to_path_buf()));
-    }
-
-    let content = fs::read_to_string(file_path)?;
-    let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
-
-    let contexts_to_remove: Vec<String> = if interactive {
-        let names: Vec<String> = cfg.contexts.iter().map(|c| c.name.clone()).collect();
-        if names.is_empty() {
-            println!("No contexts in file");
-            return Ok(RemoveContextResult {
-                file: file_path.to_path_buf(),
-                removed_contexts: Vec::new(),
-                removed_clusters: Vec::new(),
-                removed_users: Vec::new(),
-                dry_run,
-            });
+        "bash" => {
+            generate(shells::Bash, &mut cmd, "k8pk", &mut stdout);
+            // Append dynamic context/namespace completions
+            print!(
+                r#"
+# Dynamic context completions for ctx subcommand
+_k8pk_dynamic_ctx() {{
+    local cur="${{COMP_WORDS[COMP_CWORD]}}"
+    if [[ "${{COMP_WORDS[1]}}" == "ctx" && $COMP_CWORD -eq 2 ]]; then
+        COMPREPLY=($(compgen -W "$(k8pk complete contexts 2>/dev/null)" -- "$cur"))
+    elif [[ "${{COMP_WORDS[1]}}" == "ns" && $COMP_CWORD -eq 2 ]]; then
+        COMPREPLY=($(compgen -W "$(k8pk complete namespaces 2>/dev/null)" -- "$cur"))
+    fi
+}}
+complete -F _k8pk_dynamic_ctx k8pk
+"#
+            );
         }
-        MultiSelect::new("Select contexts to remove:", names)
-            .prompt()
-            .map_err(|_| K8pkError::Cancelled)?
-    } else if let Some(ctx) = context {
-        vec![ctx.to_string()]
-    } else {
-        return Err(K8pkError::Other(
-            "specify --context or --interactive".into(),
-        ));
-    };
-
-    let mut removed_contexts = Vec::new();
-    let mut removed_clusters = Vec::new();
-    let mut removed_users = Vec::new();
-
-    for ctx_name in &contexts_to_remove {
-        if dry_run {
-            // no-op
-        } else {
-            cfg.contexts.retain(|c| c.name != *ctx_name);
-            removed_contexts.push(ctx_name.clone());
+        "zsh" => {
+            generate(shells::Zsh, &mut cmd, "k8pk", &mut stdout);
+            print!(
+                r#"
+# Dynamic context/namespace completions
+_k8pk_contexts() {{
+    local -a contexts
+    contexts=(${{(f)"$(k8pk complete contexts 2>/dev/null)"}})
+    _describe 'context' contexts
+}}
+_k8pk_namespaces() {{
+    local -a namespaces
+    namespaces=(${{(f)"$(k8pk complete namespaces 2>/dev/null)"}})
+    _describe 'namespace' namespaces
+}}
+"#
+            );
         }
-    }
-
-    if remove_orphaned {
-        // Find referenced clusters/users
-        let referenced_clusters: HashSet<String> = cfg
-            .contexts
-            .iter()
-            .filter_map(|c| {
-                kubeconfig::extract_context_refs(&c.rest)
-                    .ok()
-                    .map(|(cl, _)| cl)
-            })
-            .collect();
-
-        let referenced_users: HashSet<String> = cfg
-            .contexts
-            .iter()
-            .filter_map(|c| {
-                kubeconfig::extract_context_refs(&c.rest)
-                    .ok()
-                    .map(|(_, u)| u)
-            })
-            .collect();
-
-        let orphaned_clusters: Vec<String> = cfg
-            .clusters
-            .iter()
-            .filter(|c| !referenced_clusters.contains(&c.name))
-            .map(|c| c.name.clone())
-            .collect();
-
-        let orphaned_users: Vec<String> = cfg
-            .users
-            .iter()
-            .filter(|u| !referenced_users.contains(&u.name))
-            .map(|u| u.name.clone())
-            .collect();
-
-        for name in &orphaned_clusters {
-            if dry_run {
-                // no-op
-            } else {
-                cfg.clusters.retain(|c| c.name != *name);
-                removed_clusters.push(name.clone());
-            }
+        "fish" => {
+            generate(shells::Fish, &mut cmd, "k8pk", &mut stdout);
+            print!(
+                r#"
+# Dynamic context completions
+complete -c k8pk -n '__fish_seen_subcommand_from ctx' -f -a '(k8pk complete contexts 2>/dev/null)'
+complete -c k8pk -n '__fish_seen_subcommand_from ns' -f -a '(k8pk complete namespaces 2>/dev/null)'
+"#
+            );
         }
-
-        for name in &orphaned_users {
-            if dry_run {
-                // no-op
-            } else {
-                cfg.users.retain(|u| u.name != *name);
-                removed_users.push(name.clone());
-            }
-        }
-    }
-
-    if !dry_run {
-        let yaml = serde_yaml_ng::to_string(&cfg)?;
-        fs::write(file_path, yaml)?;
-    }
-
-    Ok(RemoveContextResult {
-        file: file_path.to_path_buf(),
-        removed_contexts: if dry_run {
-            contexts_to_remove
-        } else {
-            removed_contexts
-        },
-        removed_clusters,
-        removed_users,
-        dry_run,
-    })
-}
-
-/// Rename a context in a kubeconfig file
-fn rename_context_in_file(
-    file_path: &Path,
-    old_name: &str,
-    new_name: &str,
-    dry_run: bool,
-) -> Result<RenameContextResult> {
-    if !file_path.exists() {
-        return Err(K8pkError::KubeconfigNotFound(file_path.to_path_buf()));
-    }
-
-    let content = fs::read_to_string(file_path)?;
-    let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content)?;
-
-    let ctx = cfg
-        .contexts
-        .iter_mut()
-        .find(|c| c.name == old_name)
-        .ok_or_else(|| K8pkError::ContextNotFound(old_name.to_string()))?;
-
-    if dry_run {
-        Ok(RenameContextResult {
-            file: file_path.to_path_buf(),
-            old_name: old_name.to_string(),
-            new_name: new_name.to_string(),
-            dry_run,
-        })
-    } else {
-        ctx.name = new_name.to_string();
-
-        // Update current-context if it matches
-        if cfg.current_context.as_deref() == Some(old_name) {
-            cfg.current_context = Some(new_name.to_string());
-        }
-
-        let yaml = serde_yaml_ng::to_string(&cfg)?;
-        fs::write(file_path, yaml)?;
-        Ok(RenameContextResult {
-            file: file_path.to_path_buf(),
-            old_name: old_name.to_string(),
-            new_name: new_name.to_string(),
-            dry_run,
-        })
-    }
-}
-
-/// Copy a context between kubeconfig files
-fn copy_context_between_files(
-    from_file: &Path,
-    to_file: &Path,
-    context: &str,
-    new_name: Option<&str>,
-    dry_run: bool,
-) -> Result<CopyContextResult> {
-    if !from_file.exists() {
-        return Err(K8pkError::KubeconfigNotFound(from_file.to_path_buf()));
-    }
-
-    let source_content = fs::read_to_string(from_file)?;
-    let source_cfg: KubeConfig = serde_yaml_ng::from_str(&source_content)?;
-
-    // Find the context and its references
-    let ctx = source_cfg
-        .find_context(context)
-        .ok_or_else(|| K8pkError::ContextNotFound(context.to_string()))?;
-
-    let (cluster_name, user_name) = kubeconfig::extract_context_refs(&ctx.rest)?;
-
-    let cluster = source_cfg
-        .find_cluster(&cluster_name)
-        .ok_or_else(|| K8pkError::ClusterNotFound(cluster_name.clone()))?;
-
-    let user = source_cfg
-        .find_user(&user_name)
-        .ok_or_else(|| K8pkError::UserNotFound(user_name.clone()))?;
-
-    let target_name = new_name.unwrap_or(context);
-
-    if dry_run {
-        return Ok(CopyContextResult {
-            from_file: from_file.to_path_buf(),
-            to_file: to_file.to_path_buf(),
-            context: context.to_string(),
-            new_name: target_name.to_string(),
-            dry_run,
-        });
-    }
-
-    // Load or create target file
-    let mut dest_cfg: KubeConfig = if to_file.exists() {
-        let content = fs::read_to_string(to_file)?;
-        serde_yaml_ng::from_str(&content)?
-    } else {
-        KubeConfig::default()
-    };
-
-    // Add/update cluster
-    dest_cfg.clusters.retain(|c| c.name != cluster_name);
-    dest_cfg.clusters.push(cluster.clone());
-
-    // Add/update user
-    dest_cfg.users.retain(|u| u.name != user_name);
-    dest_cfg.users.push(user.clone());
-
-    // Add/update context (with new name if specified)
-    let mut new_ctx = ctx.clone();
-    new_ctx.name = target_name.to_string();
-    dest_cfg.contexts.retain(|c| c.name != target_name);
-    dest_cfg.contexts.push(new_ctx);
-
-    dest_cfg.ensure_defaults(None);
-
-    let yaml = serde_yaml_ng::to_string(&dest_cfg)?;
-    fs::write(to_file, yaml)?;
-    Ok(CopyContextResult {
-        from_file: from_file.to_path_buf(),
-        to_file: to_file.to_path_buf(),
-        context: context.to_string(),
-        new_name: target_name.to_string(),
-        dry_run,
-    })
-}
-
-/// Edit a kubeconfig file
-fn edit_kubeconfig(
-    context: Option<&str>,
-    editor: Option<&str>,
-    _merged: &KubeConfig,
-    paths: &[PathBuf],
-) -> Result<()> {
-    let ctx_paths = kubeconfig::list_contexts_with_paths(paths)?;
-
-    let file_to_edit = if let Some(ctx) = context {
-        ctx_paths
-            .get(ctx)
-            .cloned()
-            .ok_or_else(|| K8pkError::ContextNotFound(ctx.to_string()))?
-    } else {
-        // Show file picker
-        let files: Vec<PathBuf> = paths.iter().filter(|p| p.exists()).cloned().collect();
-        if files.is_empty() {
-            return Err(K8pkError::Other("no kubeconfig files found".into()));
-        }
-
-        let display: Vec<String> = files.iter().map(|p| p.display().to_string()).collect();
-        let selected = Select::new("Select file to edit:", display)
-            .prompt()
-            .map_err(|_| K8pkError::Cancelled)?;
-
-        PathBuf::from(selected)
-    };
-
-    let editor_cmd = editor
-        .map(String::from)
-        .or_else(|| env::var("EDITOR").ok())
-        .unwrap_or_else(|| "vim".to_string());
-
-    let mut parts = shell_words::split(&editor_cmd)
-        .map_err(|e| K8pkError::Other(format!("invalid editor command '{}': {}", editor_cmd, e)))?;
-    if parts.is_empty() {
-        return Err(K8pkError::Other("editor command is empty".into()));
-    }
-    let cmd = parts.remove(0);
-
-    let status = ProcCommand::new(&cmd)
-        .args(parts)
-        .arg(&file_to_edit)
-        .status()?;
-
-    if !status.success() {
-        return Err(K8pkError::CommandFailed(format!(
-            "{} exited with error",
-            editor_cmd
-        )));
+        _ => return Err(K8pkError::UnsupportedShell(shell.to_string())),
     }
 
     Ok(())
@@ -1470,82 +1468,6 @@ fn edit_kubeconfig(
 impl Cli {
     pub fn command() -> clap::Command {
         <Self as clap::CommandFactory>::command()
-    }
-}
-
-#[derive(Debug, serde::Serialize)]
-struct RemoveContextResult {
-    file: PathBuf,
-    removed_contexts: Vec<String>,
-    removed_clusters: Vec<String>,
-    removed_users: Vec<String>,
-    dry_run: bool,
-}
-
-#[derive(Debug, serde::Serialize)]
-struct RenameContextResult {
-    file: PathBuf,
-    old_name: String,
-    new_name: String,
-    dry_run: bool,
-}
-
-#[derive(Debug, serde::Serialize)]
-struct CopyContextResult {
-    from_file: PathBuf,
-    to_file: PathBuf,
-    context: String,
-    new_name: String,
-    dry_run: bool,
-}
-
-fn print_remove_context_summary(result: &RemoveContextResult) {
-    if result.dry_run {
-        for name in &result.removed_contexts {
-            println!("Would remove context: {}", name);
-        }
-    } else {
-        for name in &result.removed_contexts {
-            println!("Removed context: {}", name);
-        }
-        for name in &result.removed_clusters {
-            println!("Removed orphaned cluster: {}", name);
-        }
-        for name in &result.removed_users {
-            println!("Removed orphaned user: {}", name);
-        }
-    }
-}
-
-fn print_rename_context_summary(result: &RenameContextResult) {
-    if result.dry_run {
-        println!(
-            "Would rename context: {} -> {}",
-            result.old_name, result.new_name
-        );
-    } else {
-        println!(
-            "Renamed context: {} -> {}",
-            result.old_name, result.new_name
-        );
-    }
-}
-
-fn print_copy_context_summary(result: &CopyContextResult) {
-    if result.dry_run {
-        println!(
-            "Would copy context: {} -> {} ({})",
-            result.context,
-            result.new_name,
-            result.to_file.display()
-        );
-    } else {
-        println!(
-            "Copied context: {} -> {} ({})",
-            result.context,
-            result.new_name,
-            result.to_file.display()
-        );
     }
 }
 
@@ -1579,5 +1501,147 @@ mod tests {
         let state = CurrentState::from_env();
         // Just verify it doesn't panic
         assert!(state.depth == 0 || state.depth >= 1);
+    }
+
+    // --- CLI parsing tests ---
+
+    use clap::Parser;
+
+    #[test]
+    fn test_cli_ctx_parse() {
+        let cli = Cli::parse_from(["k8pk", "ctx", "my-context"]);
+        match cli.command {
+            Some(Command::Ctx {
+                context,
+                namespace,
+                recursive,
+                output,
+            }) => {
+                assert_eq!(context, Some("my-context".to_string()));
+                assert!(namespace.is_none());
+                assert!(!recursive);
+                assert!(output.is_none());
+            }
+            _ => panic!("expected Ctx command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_ctx_with_namespace() {
+        let cli = Cli::parse_from(["k8pk", "ctx", "my-ctx", "--namespace", "kube-system"]);
+        match cli.command {
+            Some(Command::Ctx {
+                context, namespace, ..
+            }) => {
+                assert_eq!(context, Some("my-ctx".to_string()));
+                assert_eq!(namespace, Some("kube-system".to_string()));
+            }
+            _ => panic!("expected Ctx command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_ns_parse() {
+        let cli = Cli::parse_from(["k8pk", "ns", "default"]);
+        match cli.command {
+            Some(Command::Ns {
+                namespace, output, ..
+            }) => {
+                assert_eq!(namespace, Some("default".to_string()));
+                assert!(output.is_none());
+            }
+            _ => panic!("expected Ns command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_info_default() {
+        let cli = Cli::parse_from(["k8pk", "info"]);
+        match cli.command {
+            Some(Command::Info { what, display, raw }) => {
+                assert_eq!(what, "all");
+                assert!(!display);
+                assert!(!raw);
+            }
+            _ => panic!("expected Info command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_info_ctx_display() {
+        let cli = Cli::parse_from(["k8pk", "info", "ctx", "--display"]);
+        match cli.command {
+            Some(Command::Info { what, display, .. }) => {
+                assert_eq!(what, "ctx");
+                assert!(display);
+            }
+            _ => panic!("expected Info command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_status_alias() {
+        let cli = Cli::parse_from(["k8pk", "status"]);
+        match cli.command {
+            Some(Command::Info { what, .. }) => {
+                assert_eq!(what, "all");
+            }
+            _ => panic!("expected Info command via status alias"),
+        }
+    }
+
+    #[test]
+    fn test_cli_history() {
+        let cli = Cli::parse_from(["k8pk", "history", "--json"]);
+        match cli.command {
+            Some(Command::History { json, clear }) => {
+                assert!(json);
+                assert!(!clear);
+            }
+            _ => panic!("expected History command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_clean() {
+        let cli = Cli::parse_from(["k8pk", "clean", "-o", "json"]);
+        match cli.command {
+            Some(Command::Clean { output }) => {
+                assert_eq!(output, Some("json".to_string()));
+            }
+            _ => panic!("expected Clean command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_pick_default() {
+        let cli = Cli::parse_from(["k8pk", "pick"]);
+        match cli.command {
+            Some(Command::Pick { output, detail }) => {
+                assert!(output.is_none());
+                assert!(!detail);
+            }
+            _ => panic!("expected Pick command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_login_type_auto() {
+        let cli = Cli::parse_from(["k8pk", "login", "--server", "https://api.test.com:6443"]);
+        match cli.command {
+            Some(Command::Login {
+                login_type, server, ..
+            }) => {
+                assert_eq!(login_type, "auto");
+                assert_eq!(server, Some("https://api.test.com:6443".to_string()));
+            }
+            _ => panic!("expected Login command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_no_subcommand() {
+        let cli = Cli::parse_from(["k8pk"]);
+        assert!(cli.command.is_none());
     }
 }

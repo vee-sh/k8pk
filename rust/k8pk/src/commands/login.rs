@@ -6,6 +6,7 @@ use inquire::{Confirm, Password, Select, Text};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -22,6 +23,32 @@ pub enum LoginType {
     Rancher,
 }
 
+/// Auto-detect login type from a server URL using heuristics.
+/// Returns None if the URL does not match any known pattern.
+pub fn detect_login_type_from_url(server: &str) -> Option<LoginType> {
+    let lower = server.to_lowercase();
+    if lower.contains(".eks.amazonaws.com") {
+        return Some(LoginType::K8s); // EKS uses exec-based auth, handled as k8s
+    }
+    if lower.contains(".container.googleapis.com") || lower.contains("gke.io") {
+        return Some(LoginType::Gke);
+    }
+    if lower.contains(".azmk8s.io") || lower.contains("azure") {
+        return Some(LoginType::K8s); // AKS uses exec-based auth, handled as k8s
+    }
+    if lower.contains("rancher") || lower.contains("/k8s/clusters/") {
+        return Some(LoginType::Rancher);
+    }
+    if lower.contains(":6443")
+        || lower.contains("openshift")
+        || lower.contains("ocp")
+        || lower.contains("api.")
+    {
+        return Some(LoginType::Ocp);
+    }
+    None
+}
+
 impl std::str::FromStr for LoginType {
     type Err = K8pkError;
 
@@ -31,8 +58,8 @@ impl std::str::FromStr for LoginType {
             "k8s" | "kubernetes" | "kube" => Ok(LoginType::K8s),
             "gke" | "gcp" => Ok(LoginType::Gke),
             "rancher" => Ok(LoginType::Rancher),
-            _ => Err(K8pkError::Other(format!(
-                "Unknown login type: {}. Use 'ocp', 'k8s', 'gke', or 'rancher'",
+            _ => Err(K8pkError::InvalidArgument(format!(
+                "unknown login type: '{}'. Use: ocp, k8s, gke, rancher",
                 s
             ))),
         }
@@ -46,15 +73,15 @@ struct VaultEntry {
     password: String,
 }
 
-/// Vault for storing credentials securely
-/// Uses OS keychain when available, falls back to encrypted JSON file
-struct Vault {
+/// Vault for storing credentials (plaintext JSON with 0o600 permissions).
+/// Future: OS keychain integration via `keyring` crate.
+pub struct Vault {
     path: PathBuf,
     entries: HashMap<String, VaultEntry>,
 }
 
 impl Vault {
-    fn new() -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
         let path = home.join(".kube/k8pk-vault.json");
         let entries = if path.exists() {
@@ -67,42 +94,44 @@ impl Vault {
     }
 
     fn get(&self, key: &str) -> Option<VaultEntry> {
-        // For now, use file-based storage
-        // Keyring support can be added later when the dependency is available
         self.entries.get(key).cloned()
     }
 
     fn set(&mut self, key: String, entry: VaultEntry) -> Result<()> {
-        // For now, use file-based storage
-        // Keyring support can be added later when the dependency is available
         self.entries.insert(key, entry);
         self.save()
+    }
+
+    /// List all vault entry keys
+    pub fn list_keys(&self) -> Vec<&str> {
+        self.entries.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Delete a vault entry by key. Returns true if the key existed.
+    pub fn delete(&mut self, key: &str) -> Result<bool> {
+        let removed = self.entries.remove(key).is_some();
+        if removed {
+            self.save()?;
+        }
+        Ok(removed)
+    }
+
+    /// Get the vault file path
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     fn save(&self) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        // Set restrictive permissions (read/write for owner only)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let content = serde_json::to_string_pretty(&self.entries)?;
-            fs::write(&self.path, content)?;
-            let mut perms = fs::metadata(&self.path)?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&self.path, perms)?;
-        }
-        #[cfg(not(unix))]
-        {
-            let content = serde_json::to_string_pretty(&self.entries)?;
-            fs::write(&self.path, content)?;
-        }
+        let content = serde_json::to_string_pretty(&self.entries)?;
+        kubeconfig::write_restricted(&self.path, &content)?;
         Ok(())
     }
 }
 
-/// Login to a cluster based on type
+/// Exec-based authentication configuration (for EKS, GKE, AKS, custom)
 #[derive(Clone, Debug, Default)]
 pub struct ExecAuthConfig {
     pub command: Option<String>,
@@ -111,6 +140,7 @@ pub struct ExecAuthConfig {
     pub api_version: Option<String>,
 }
 
+/// Result of a login operation
 #[derive(Debug, Clone, Serialize)]
 pub struct LoginResult {
     pub context_name: String,
@@ -118,8 +148,9 @@ pub struct LoginResult {
     pub kubeconfig_path: Option<PathBuf>,
 }
 
+/// Authentication mode for login
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AuthMode {
+pub enum AuthMode {
     Auto,
     Token,
     UserPass,
@@ -137,48 +168,108 @@ impl std::str::FromStr for AuthMode {
             "userpass" | "basic" => Ok(AuthMode::UserPass),
             "client-cert" | "cert" => Ok(AuthMode::ClientCert),
             "exec" => Ok(AuthMode::Exec),
-            _ => Err(K8pkError::Other(format!(
-                "Unknown auth mode: {}. Use auto, token, userpass, client-cert, or exec",
+            _ => Err(K8pkError::InvalidArgument(format!(
+                "unknown auth mode: '{}'. Use: auto, token, userpass, client-cert, exec",
                 s
             ))),
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn login(
-    login_type: LoginType,
-    server: &str,
-    token: Option<&str>,
-    username: Option<&str>,
-    password: Option<&str>,
-    name: Option<&str>,
-    output_dir: Option<&Path>,
-    insecure: bool,
-    use_vault: bool,
-    pass_entry: Option<&str>,
-    certificate_authority: Option<&Path>,
-    client_certificate: Option<&Path>,
-    client_key: Option<&Path>,
-    auth: &str,
-    exec: &ExecAuthConfig,
-    dry_run: bool,
-    test: bool,
-    test_timeout: u64,
-    rancher_auth_provider: &str,
-    quiet: bool,
-    rancher_cluster_server: Option<&str>, // re-login: server = login API base, this = kubeconfig cluster URL
-) -> Result<LoginResult> {
-    let mut final_token = token.map(str::to_string);
-    let mut final_username = username.map(str::to_string);
-    let mut final_password = password.map(str::to_string);
+/// All parameters needed for a login operation, replacing 20+ individual arguments.
+#[derive(Debug, Clone, Default)]
+pub struct LoginRequest {
+    pub login_type: Option<LoginType>,
+    pub server: String,
+    pub token: Option<String>,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub name: Option<String>,
+    pub output_dir: Option<PathBuf>,
+    pub insecure: bool,
+    pub use_vault: bool,
+    pub pass_entry: Option<String>,
+    pub certificate_authority: Option<PathBuf>,
+    pub client_certificate: Option<PathBuf>,
+    pub client_key: Option<PathBuf>,
+    pub auth: String,
+    pub exec: ExecAuthConfig,
+    pub dry_run: bool,
+    pub test: bool,
+    pub test_timeout: u64,
+    pub rancher_auth_provider: String,
+    pub quiet: bool,
+    /// For re-login: server is the login API base URL, this is the kubeconfig cluster URL
+    pub rancher_cluster_server: Option<String>,
+}
 
-    let mut auth_mode = auth.parse::<AuthMode>()?;
-    if auth_mode == AuthMode::Auto && exec.command.is_some() {
+impl LoginRequest {
+    /// Create a minimal request for the given server
+    pub fn new(server: &str) -> Self {
+        Self {
+            server: server.to_string(),
+            auth: "auto".to_string(),
+            test_timeout: 10,
+            rancher_auth_provider: "local".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Set login type
+    pub fn with_type(mut self, login_type: LoginType) -> Self {
+        self.login_type = Some(login_type);
+        self
+    }
+
+    /// Set context name
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = Some(name.to_string());
+        self
+    }
+
+    /// Set token
+    pub fn with_token(mut self, token: &str) -> Self {
+        self.token = Some(token.to_string());
+        self
+    }
+
+    /// Set username and password
+    pub fn with_credentials(mut self, username: &str, password: &str) -> Self {
+        self.username = Some(username.to_string());
+        self.password = Some(password.to_string());
+        self
+    }
+
+    /// Set auth mode
+    pub fn with_auth(mut self, auth: &str) -> Self {
+        self.auth = auth.to_string();
+        self
+    }
+
+    /// Set rancher cluster server override (for re-login)
+    pub fn with_rancher_cluster_server(mut self, url: &str) -> Self {
+        self.rancher_cluster_server = Some(url.to_string());
+        self
+    }
+}
+
+/// Login to a cluster based on type.
+/// If credentials are missing and stdin is a TTY, prompts interactively.
+pub fn login(req: &LoginRequest) -> Result<LoginResult> {
+    let login_type = req
+        .login_type
+        .ok_or_else(|| K8pkError::InvalidArgument("login type is required".into()))?;
+
+    let mut final_token = req.token.clone();
+    let mut final_username = req.username.clone();
+    let mut final_password = req.password.clone();
+
+    let mut auth_mode = req.auth.parse::<AuthMode>()?;
+    if auth_mode == AuthMode::Auto && req.exec.command.is_some() {
         auth_mode = AuthMode::Exec;
     }
 
-    if let Some(entry) = pass_entry {
+    if let Some(ref entry) = req.pass_entry {
         apply_pass_credentials(
             &mut final_token,
             &mut final_username,
@@ -188,80 +279,134 @@ pub fn login(
         )?;
     }
 
+    // If no credentials provided and we're interactive, prompt the user
+    let has_creds = final_token.is_some()
+        || final_username.is_some()
+        || final_password.is_some()
+        || req.client_certificate.is_some()
+        || req.exec.command.is_some();
+
+    if !has_creds && std::io::stdin().is_terminal() && login_type != LoginType::Gke {
+        // GKE uses gcloud auth plugin, no credentials needed
+        let needs_prompt = match auth_mode {
+            AuthMode::Auto | AuthMode::Token | AuthMode::UserPass => true,
+            AuthMode::ClientCert | AuthMode::Exec => false,
+        };
+        if needs_prompt {
+            let mode = if auth_mode == AuthMode::Auto {
+                let choice =
+                    Select::new("Authentication method:", vec!["token", "username/password"])
+                        .prompt()
+                        .map_err(|_| K8pkError::Cancelled)?;
+                if choice == "token" {
+                    AuthMode::Token
+                } else {
+                    AuthMode::UserPass
+                }
+            } else {
+                auth_mode
+            };
+
+            match mode {
+                AuthMode::Token => {
+                    let t = Password::new("Token:")
+                        .without_confirmation()
+                        .prompt()
+                        .map_err(|_| K8pkError::Cancelled)?;
+                    final_token = Some(t);
+                    auth_mode = AuthMode::Token;
+                }
+                AuthMode::UserPass | AuthMode::Auto => {
+                    let u = Text::new("Username:")
+                        .prompt()
+                        .map_err(|_| K8pkError::Cancelled)?;
+                    let p = Password::new("Password:")
+                        .without_confirmation()
+                        .prompt()
+                        .map_err(|_| K8pkError::Cancelled)?;
+                    final_username = Some(u);
+                    final_password = Some(p);
+                    auth_mode = AuthMode::UserPass;
+                }
+                _ => {}
+            }
+        }
+    }
+
     validate_auth(
         login_type,
         final_token.as_deref(),
         final_username.as_deref(),
         final_password.as_deref(),
-        client_certificate,
-        client_key,
+        req.client_certificate.as_deref(),
+        req.client_key.as_deref(),
         auth_mode,
-        exec.command.as_deref(),
+        req.exec.command.as_deref(),
     )?;
 
     match login_type {
         LoginType::Ocp => ocp_login(
-            server,
+            &req.server,
             final_token.as_deref(),
             final_username.as_deref(),
             final_password.as_deref(),
-            name,
-            output_dir,
-            insecure,
-            use_vault,
-            certificate_authority,
+            req.name.as_deref(),
+            req.output_dir.as_deref(),
+            req.insecure,
+            req.use_vault,
+            req.certificate_authority.as_deref(),
             auth_mode,
-            dry_run,
-            test,
-            test_timeout,
-            quiet,
+            req.dry_run,
+            req.test,
+            req.test_timeout,
+            req.quiet,
         ),
         LoginType::K8s => k8s_login(
-            server,
+            &req.server,
             final_token.as_deref(),
             final_username.as_deref(),
             final_password.as_deref(),
-            name,
-            output_dir,
-            insecure,
-            certificate_authority,
-            client_certificate,
-            client_key,
+            req.name.as_deref(),
+            req.output_dir.as_deref(),
+            req.insecure,
+            req.certificate_authority.as_deref(),
+            req.client_certificate.as_deref(),
+            req.client_key.as_deref(),
             auth_mode,
-            exec,
-            dry_run,
-            test,
-            test_timeout,
-            quiet,
+            &req.exec,
+            req.dry_run,
+            req.test,
+            req.test_timeout,
+            req.quiet,
         ),
         LoginType::Gke => gke_login(
-            server,
+            &req.server,
             final_token.as_deref(),
-            name,
-            output_dir,
-            insecure,
-            certificate_authority,
-            dry_run,
-            test,
-            test_timeout,
-            quiet,
+            req.name.as_deref(),
+            req.output_dir.as_deref(),
+            req.insecure,
+            req.certificate_authority.as_deref(),
+            req.dry_run,
+            req.test,
+            req.test_timeout,
+            req.quiet,
         ),
         LoginType::Rancher => rancher_login(
-            server,
+            &req.server,
             final_token.as_deref(),
             final_username.as_deref(),
             final_password.as_deref(),
-            name,
-            output_dir,
-            insecure,
-            use_vault,
-            certificate_authority,
-            rancher_auth_provider,
-            dry_run,
-            test,
-            test_timeout,
-            quiet,
-            rancher_cluster_server,
+            req.name.as_deref(),
+            req.output_dir.as_deref(),
+            req.insecure,
+            req.use_vault,
+            req.certificate_authority.as_deref(),
+            &req.rancher_auth_provider,
+            req.dry_run,
+            req.test,
+            req.test_timeout,
+            req.quiet,
+            req.rancher_cluster_server.as_deref(),
         ),
     }
 }
@@ -275,8 +420,9 @@ pub fn apply_exec_preset(
 ) -> Result<()> {
     match preset {
         "aws-eks" => {
-            let cluster = cluster
-                .ok_or_else(|| K8pkError::Other("aws-eks preset requires --exec-cluster".into()))?;
+            let cluster = cluster.ok_or_else(|| {
+                K8pkError::InvalidArgument("aws-eks preset requires --exec-cluster".into())
+            })?;
             exec.command = Some("aws".to_string());
             exec.args = vec![
                 "eks".to_string(),
@@ -294,8 +440,9 @@ pub fn apply_exec_preset(
             exec.args.clear();
         }
         "aks" => {
-            let server_id = server_id
-                .ok_or_else(|| K8pkError::Other("aks preset requires --exec-server-id".into()))?;
+            let server_id = server_id.ok_or_else(|| {
+                K8pkError::InvalidArgument("aks preset requires --exec-server-id".into())
+            })?;
             exec.command = Some("kubelogin".to_string());
             exec.args = vec![
                 "get-token".to_string(),
@@ -304,8 +451,8 @@ pub fn apply_exec_preset(
             ];
         }
         _ => {
-            return Err(K8pkError::Other(format!(
-                "unknown exec preset: {} (use aws-eks, gke, or aks)",
+            return Err(K8pkError::InvalidArgument(format!(
+                "unknown exec preset: '{}'. Use: aws-eks, gke, aks",
                 preset
             )));
         }
@@ -551,34 +698,27 @@ pub fn login_wizard() -> Result<LoginResult> {
     };
 
     let login_type = login_type.parse::<LoginType>()?;
-    let output_dir = output_dir.as_deref().map(Path::new);
-    let cert_auth = certificate_authority.as_deref().map(Path::new);
-    let client_certificate = client_certificate.as_deref().map(Path::new);
-    let client_key = client_key.as_deref().map(Path::new);
 
-    login(
-        login_type,
-        &server,
-        token.as_deref(),
-        username.as_deref(),
-        password.as_deref(),
-        name.as_deref(),
-        output_dir,
-        insecure,
-        use_vault,
-        pass_entry.as_deref(),
-        cert_auth,
-        client_certificate,
-        client_key,
-        auth_mode,
-        &exec,
-        dry_run,
-        test,
-        test_timeout,
-        "local", // rancher_auth_provider (wizard default; use CLI for activedirectory)
-        false,
-        None, // rancher_cluster_server (wizard: single server)
-    )
+    let mut req = LoginRequest::new(&server);
+    req.login_type = Some(login_type);
+    req.token = token;
+    req.username = username;
+    req.password = password;
+    req.name = name;
+    req.output_dir = output_dir.map(PathBuf::from);
+    req.insecure = insecure;
+    req.use_vault = use_vault;
+    req.pass_entry = pass_entry;
+    req.certificate_authority = certificate_authority.map(PathBuf::from);
+    req.client_certificate = client_certificate.map(PathBuf::from);
+    req.client_key = client_key.map(PathBuf::from);
+    req.auth = auth_mode.to_string();
+    req.exec = exec;
+    req.dry_run = dry_run;
+    req.test = test;
+    req.test_timeout = test_timeout;
+
+    login(&req)
 }
 
 pub fn print_auth_help() {
@@ -659,7 +799,7 @@ fn k8s_login(
     let quiet = quiet || dry_run;
 
     if test && dry_run {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::InvalidArgument(
             "--test cannot be used with --dry-run".into(),
         ));
     }
@@ -744,11 +884,17 @@ fn k8s_login(
 
             user_map.insert(
                 serde_yaml_ng::Value::String("username".to_string()),
-                serde_yaml_ng::Value::String(final_username.unwrap()),
+                serde_yaml_ng::Value::String(
+                    final_username
+                        .ok_or_else(|| K8pkError::InvalidArgument("username is required".into()))?,
+                ),
             );
             user_map.insert(
                 serde_yaml_ng::Value::String("password".to_string()),
-                serde_yaml_ng::Value::String(final_password.unwrap()),
+                serde_yaml_ng::Value::String(
+                    final_password
+                        .ok_or_else(|| K8pkError::InvalidArgument("password is required".into()))?,
+                ),
             );
         }
 
@@ -818,7 +964,7 @@ fn k8s_login(
         });
     }
 
-    fs::write(&kubeconfig_path, yaml)?;
+    kubeconfig::write_restricted(&kubeconfig_path, &yaml)?;
 
     if test {
         test_k8s_auth(&kubeconfig_path, &context_name, test_timeout)?;
@@ -850,19 +996,19 @@ fn ocp_login(
     quiet: bool,
 ) -> Result<LoginResult> {
     if auth_mode == AuthMode::Exec || auth_mode == AuthMode::ClientCert {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::InvalidArgument(
             "exec or client-cert auth is not supported for --type ocp".into(),
         ));
     }
     if dry_run {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::InvalidArgument(
             "--dry-run is not supported for --type ocp".into(),
         ));
     }
 
     // Verify oc is available
     if which::which("oc").is_err() {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::CommandFailed(
             "oc command not found. Please install OpenShift CLI.".into(),
         ));
     }
@@ -954,8 +1100,8 @@ fn ocp_login(
                     v.set(
                         vault_key,
                         VaultEntry {
-                            username: final_username.as_ref().unwrap().clone(),
-                            password: final_password.as_ref().unwrap().clone(),
+                            username: final_username.clone().unwrap_or_default(),
+                            password: final_password.clone().unwrap_or_default(),
                         },
                     )?;
                 }
@@ -1037,7 +1183,7 @@ fn ocp_login(
         cfg.current_context = Some(context_name.clone());
 
         let yaml = serde_yaml_ng::to_string(&cfg)?;
-        fs::write(&kubeconfig_path, yaml)?;
+        kubeconfig::write_restricted(&kubeconfig_path, &yaml)?;
     }
 
     // Refresh token: get a new token from the cluster
@@ -1072,14 +1218,14 @@ fn gke_login(
 ) -> Result<LoginResult> {
     // Verify gcloud is available
     if which::which("gcloud").is_err() {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::CommandFailed(
             "gcloud command not found. Please install Google Cloud SDK.".into(),
         ));
     }
 
     // Verify gke-gcloud-auth-plugin is available
     if which::which("gke-gcloud-auth-plugin").is_err() {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::CommandFailed(
             "gke-gcloud-auth-plugin not found.\n\n\
              Install it with:\n  \
              gcloud components install gke-gcloud-auth-plugin\n\n\
@@ -1210,7 +1356,7 @@ fn gke_login(
     cfg.current_context = Some(context_name.clone());
 
     let yaml = serde_yaml_ng::to_string(&cfg)?;
-    fs::write(&kubeconfig_path, yaml)?;
+    kubeconfig::write_restricted(&kubeconfig_path, &yaml)?;
 
     if test {
         test_k8s_auth(&kubeconfig_path, &context_name, test_timeout)?;
@@ -1307,10 +1453,16 @@ fn rancher_login(
         if !quiet {
             println!("Authenticating with Rancher API...");
         }
+        let u = final_username.as_deref().ok_or_else(|| {
+            K8pkError::InvalidArgument("username is required for Rancher login".into())
+        })?;
+        let p = final_password.as_deref().ok_or_else(|| {
+            K8pkError::InvalidArgument("password is required for Rancher login".into())
+        })?;
         final_token = Some(rancher_get_token(
             server,
-            final_username.as_ref().unwrap(),
-            final_password.as_ref().unwrap(),
+            u,
+            p,
             insecure,
             rancher_auth_provider,
             quiet,
@@ -1351,10 +1503,16 @@ fn rancher_login(
                     .prompt()
                     .map_err(|_| K8pkError::Cancelled)?,
             );
+            let u = final_username
+                .as_deref()
+                .ok_or_else(|| K8pkError::InvalidArgument("username is required".into()))?;
+            let p = final_password
+                .as_deref()
+                .ok_or_else(|| K8pkError::InvalidArgument("password is required".into()))?;
             final_token = Some(rancher_get_token(
                 server,
-                final_username.as_ref().unwrap(),
-                final_password.as_ref().unwrap(),
+                u,
+                p,
                 insecure,
                 rancher_auth_provider,
                 quiet,
@@ -1372,8 +1530,8 @@ fn rancher_login(
                     v.set(
                         vault_key,
                         VaultEntry {
-                            username: final_username.as_ref().unwrap().clone(),
-                            password: final_password.as_ref().unwrap().clone(),
+                            username: final_username.clone().unwrap_or_default(),
+                            password: final_password.clone().unwrap_or_default(),
                         },
                     )?;
                 }
@@ -1434,7 +1592,14 @@ fn rancher_login(
         let mut user_map = serde_yaml_ng::Mapping::new();
         user_map.insert(
             serde_yaml_ng::Value::String("token".to_string()),
-            serde_yaml_ng::Value::String(final_token.as_ref().unwrap().clone()),
+            serde_yaml_ng::Value::String(
+                final_token
+                    .as_ref()
+                    .ok_or_else(|| {
+                        K8pkError::LoginFailed("Rancher authentication token is missing".into())
+                    })?
+                    .clone(),
+            ),
         );
         map.insert(
             serde_yaml_ng::Value::String("user".to_string()),
@@ -1471,7 +1636,7 @@ fn rancher_login(
     cfg.current_context = Some(context_name.clone());
 
     let yaml = serde_yaml_ng::to_string(&cfg)?;
-    fs::write(&kubeconfig_path, yaml)?;
+    kubeconfig::write_restricted(&kubeconfig_path, &yaml)?;
 
     if test {
         test_k8s_auth(&kubeconfig_path, &context_name, test_timeout)?;
@@ -1509,7 +1674,7 @@ fn rancher_get_token(
     let client = reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(insecure)
         .build()
-        .map_err(|e| K8pkError::Other(format!("Failed to create HTTP client: {}", e)))?;
+        .map_err(|e| K8pkError::HttpError(format!("failed to create HTTP client: {}", e)))?;
 
     let server_clean = server.trim_end_matches('/');
     let provider_path = rancher_auth_provider_path(provider);
@@ -1531,12 +1696,14 @@ fn rancher_get_token(
         .header("Accept", "application/json")
         .json(&request_body)
         .send()
-        .map_err(|e| K8pkError::Other(format!("Failed to send request to Rancher API: {}", e)))?;
+        .map_err(|e| {
+            K8pkError::HttpError(format!("failed to send request to Rancher API: {}", e))
+        })?;
 
     let status = response.status();
     let response_text = response
         .text()
-        .map_err(|e| K8pkError::Other(format!("Failed to read response body: {}", e)))?;
+        .map_err(|e| K8pkError::HttpError(format!("failed to read response body: {}", e)))?;
 
     // On 401 with local provider, try activedirectory once (common for RKE2 / Rancher Prime)
     if status.as_u16() == 401 && provider.eq_ignore_ascii_case("local") {
@@ -1559,23 +1726,23 @@ fn rancher_get_token(
         } else {
             ""
         };
-        return Err(K8pkError::Other(format!(
-            "Rancher authentication failed with status 401 Unauthorized: {}{}",
+        return Err(K8pkError::LoginFailed(format!(
+            "Rancher authentication failed (401 Unauthorized): {}{}",
             response_text.trim(),
             hint
         )));
     }
 
     if !status.is_success() {
-        return Err(K8pkError::Other(format!(
-            "Rancher authentication failed with status {}: {}",
+        return Err(K8pkError::HttpError(format!(
+            "Rancher authentication failed (HTTP {}): {}",
             status, response_text
         )));
     }
 
     let json: serde_json::Value = serde_json::from_str(&response_text).map_err(|e| {
-        K8pkError::Other(format!(
-            "Failed to parse Rancher API response as JSON: {}. Response: {}",
+        K8pkError::HttpError(format!(
+            "failed to parse Rancher API response as JSON: {}. Response: {}",
             e, response_text
         ))
     })?;
@@ -1606,8 +1773,8 @@ fn rancher_get_token(
     } else {
         let response_preview = serde_json::to_string_pretty(&json)
             .unwrap_or_else(|_| "Unable to format response".to_string());
-        Err(K8pkError::Other(format!(
-            "Failed to extract token from Rancher API response. Response: {}",
+        Err(K8pkError::LoginFailed(format!(
+            "failed to extract token from Rancher API response. Response: {}",
             response_preview
         )))
     }
@@ -1625,39 +1792,39 @@ fn validate_auth(
     exec_command: Option<&str>,
 ) -> Result<()> {
     if client_certificate.is_some() ^ client_key.is_some() {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::InvalidArgument(
             "client certificate auth requires both --client-certificate and --client-key".into(),
         ));
     }
 
     if login_type == LoginType::Ocp && (client_certificate.is_some() || client_key.is_some()) {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::InvalidArgument(
             "client certificate auth is only supported for --type k8s".into(),
         ));
     }
     if login_type == LoginType::Ocp && auth_mode == AuthMode::Exec {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::InvalidArgument(
             "exec auth is only supported for --type k8s".into(),
         ));
     }
     if login_type == LoginType::Gke && (client_certificate.is_some() || client_key.is_some()) {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::InvalidArgument(
             "client certificate auth is not supported for --type gke (uses gcloud auth plugin)"
                 .into(),
         ));
     }
     if login_type == LoginType::Gke && auth_mode == AuthMode::Exec {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::InvalidArgument(
             "exec auth is not supported for --type gke (uses gcloud auth plugin)".into(),
         ));
     }
     if login_type == LoginType::Rancher && (client_certificate.is_some() || client_key.is_some()) {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::InvalidArgument(
             "client certificate auth is not supported for --type rancher".into(),
         ));
     }
     if login_type == LoginType::Rancher && auth_mode == AuthMode::Exec {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::InvalidArgument(
             "exec auth is not supported for --type rancher".into(),
         ));
     }
@@ -1684,7 +1851,7 @@ fn validate_auth(
                 if has_exec {
                     detail.push("exec");
                 }
-                return Err(K8pkError::Other(format!(
+                return Err(K8pkError::InvalidArgument(format!(
                     "multiple auth methods provided: {}; use only one (or set --auth to choose)",
                     detail.join(", ")
                 )));
@@ -1692,44 +1859,44 @@ fn validate_auth(
         }
         AuthMode::Token => {
             if !has_token {
-                return Err(K8pkError::Other(
+                return Err(K8pkError::InvalidArgument(
                     "auth mode token requires --token or --pass-entry".into(),
                 ));
             }
             if has_userpass || has_cert || has_exec {
-                return Err(K8pkError::Other(
+                return Err(K8pkError::InvalidArgument(
                     "auth mode token does not allow other auth options".into(),
                 ));
             }
         }
         AuthMode::UserPass => {
             if has_token || has_cert || has_exec {
-                return Err(K8pkError::Other(
+                return Err(K8pkError::InvalidArgument(
                     "auth mode userpass does not allow other auth options".into(),
                 ));
             }
         }
         AuthMode::ClientCert => {
             if !has_cert {
-                return Err(K8pkError::Other(
+                return Err(K8pkError::InvalidArgument(
                     "auth mode client-cert requires --client-certificate and --client-key".into(),
                 ));
             }
             if has_token || has_userpass || has_exec {
-                return Err(K8pkError::Other(
+                return Err(K8pkError::InvalidArgument(
                     "auth mode client-cert does not allow other auth options".into(),
                 ));
             }
         }
         AuthMode::Exec => {
             if !has_exec {
-                return Err(K8pkError::Other(
+                return Err(K8pkError::InvalidArgument(
                     "auth mode exec requires --exec-command (use repeated --exec-arg and --exec-env KEY=VALUE as needed)"
                         .into(),
                 ));
             }
             if has_token || has_userpass || has_cert {
-                return Err(K8pkError::Other(
+                return Err(K8pkError::InvalidArgument(
                     "auth mode exec does not allow other auth options".into(),
                 ));
             }
@@ -1765,14 +1932,14 @@ fn apply_pass_credentials(
     auth_mode: AuthMode,
 ) -> Result<()> {
     if which::which("pass").is_err() {
-        return Err(K8pkError::Other(
+        return Err(K8pkError::CommandFailed(
             "pass not found on PATH. Install pass or omit --pass-entry.".into(),
         ));
     }
 
     let output = Command::new("pass").args(["show", entry]).output()?;
     if !output.status.success() {
-        return Err(K8pkError::Other(format!(
+        return Err(K8pkError::CommandFailed(format!(
             "failed to read pass entry: {}",
             entry
         )));
@@ -1863,7 +2030,7 @@ fn apply_pass_credentials(
 
 fn build_exec_auth(exec: &ExecAuthConfig) -> Result<serde_yaml_ng::Value> {
     let command = exec.command.as_ref().ok_or_else(|| {
-        K8pkError::Other(
+        K8pkError::InvalidArgument(
             "exec auth requires --exec-command (use repeated --exec-arg and --exec-env KEY=VALUE)"
                 .into(),
         )
@@ -1899,9 +2066,12 @@ fn build_exec_auth(exec: &ExecAuthConfig) -> Result<serde_yaml_ng::Value> {
     if !exec.env.is_empty() {
         let mut items = Vec::new();
         for kv in &exec.env {
-            let (k, v) = kv
-                .split_once('=')
-                .ok_or_else(|| K8pkError::Other(format!("invalid exec env: {}", kv)))?;
+            let (k, v) = kv.split_once('=').ok_or_else(|| {
+                K8pkError::InvalidArgument(format!(
+                    "invalid exec env '{}': expected KEY=VALUE format",
+                    kv
+                ))
+            })?;
             let mut env_map = serde_yaml_ng::Mapping::new();
             env_map.insert(
                 serde_yaml_ng::Value::String("name".to_string()),
@@ -1971,7 +2141,7 @@ pub fn try_relogin(
 
     let merged = kubeconfig::load_merged(paths)?;
     let server = kubeconfig::get_server_for_context(&merged, context)
-        .ok_or_else(|| K8pkError::Other("Cannot determine server URL for re-login".into()))?;
+        .ok_or_else(|| K8pkError::LoginFailed("cannot determine server URL for re-login".into()))?;
 
     let mut login_type = context::get_context_type(context)?
         .as_ref()
@@ -1997,9 +2167,7 @@ pub fn try_relogin(
         };
     }
 
-    let exec = ExecAuthConfig::default();
-    #[allow(unused_assignments)]
-    let mut written_path: Option<PathBuf> = None;
+    let written_path;
 
     match login_type {
         Some(LoginType::Rancher) => {
@@ -2007,12 +2175,10 @@ pub fn try_relogin(
                 "Session expired for '{}'. Re-login (username and password).",
                 context
             );
-            // For Rancher, we need the Rancher server base URL for the login API
             let (base, is_proxy_url) = rancher_server_base_url(&server);
             let rancher_server = if is_proxy_url {
                 base
             } else {
-                // Cluster URL doesn't contain /k8s/clusters - ask user for Rancher server
                 eprintln!("Cluster URL does not appear to be a Rancher proxy URL.");
                 Text::new("Rancher server URL (e.g., https://rancher.example.com):")
                     .prompt()
@@ -2025,32 +2191,15 @@ pub fn try_relogin(
                 .without_confirmation()
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
-            // Try authentication - first attempt
-            let auth_result = login(
-                LoginType::Rancher,
-                &rancher_server,
-                None,
-                Some(&username),
-                Some(&password),
-                Some(context),
-                None,
-                false,
-                false,
-                None,
-                None,
-                None,
-                None,
-                "userpass",
-                &exec,
-                false,
-                false,
-                SESSION_CHECK_TIMEOUT_SECS,
-                "local",
-                false,
-                Some(&server), // cluster URL for kubeconfig
-            );
-            // If auth fails, offer to retry with different credentials
-            let res = match auth_result {
+
+            let req = LoginRequest::new(&rancher_server)
+                .with_type(LoginType::Rancher)
+                .with_name(context)
+                .with_credentials(&username, &password)
+                .with_auth("userpass")
+                .with_rancher_cluster_server(&server);
+
+            let res = match login(&req) {
                 Ok(r) => r,
                 Err(e) => {
                     let err_msg = e.to_string();
@@ -2064,37 +2213,21 @@ pub fn try_relogin(
                             .prompt()
                             .unwrap_or(false);
                         if retry {
-                            let username2 =
+                            let u2 =
                                 Text::new("Username (for AD try DOMAIN\\user or user@domain.com):")
                                     .prompt()
                                     .map_err(|_| K8pkError::Cancelled)?;
-                            let password2 = Password::new("Password:")
+                            let p2 = Password::new("Password:")
                                 .without_confirmation()
                                 .prompt()
                                 .map_err(|_| K8pkError::Cancelled)?;
-                            login(
-                                LoginType::Rancher,
-                                &rancher_server,
-                                None,
-                                Some(&username2),
-                                Some(&password2),
-                                Some(context),
-                                None,
-                                false,
-                                false,
-                                None,
-                                None,
-                                None,
-                                None,
-                                "userpass",
-                                &exec,
-                                false,
-                                false,
-                                SESSION_CHECK_TIMEOUT_SECS,
-                                "local",
-                                false,
-                                Some(&server),
-                            )?
+                            let req2 = LoginRequest::new(&rancher_server)
+                                .with_type(LoginType::Rancher)
+                                .with_name(context)
+                                .with_credentials(&u2, &p2)
+                                .with_auth("userpass")
+                                .with_rancher_cluster_server(&server);
+                            login(&req2)?
                         } else {
                             return Err(e);
                         }
@@ -2118,29 +2251,13 @@ pub fn try_relogin(
                 .without_confirmation()
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
-            let res = login(
-                LoginType::Ocp,
-                &server,
-                None,
-                Some(&username),
-                Some(&password),
-                Some(context),
-                None,
-                false,
-                false,
-                None,
-                None,
-                None,
-                None,
-                "userpass",
-                &exec,
-                false,
-                false,
-                SESSION_CHECK_TIMEOUT_SECS,
-                "local",
-                false,
-                None,
-            )?;
+
+            let req = LoginRequest::new(&server)
+                .with_type(LoginType::Ocp)
+                .with_name(context)
+                .with_credentials(&username, &password)
+                .with_auth("userpass");
+            let res = login(&req)?;
             written_path = res.kubeconfig_path;
             context::save_context_type(context, "ocp")?;
         }
@@ -2149,29 +2266,10 @@ pub fn try_relogin(
                 "Session expired for '{}'. Re-authenticating with GKE...",
                 context
             );
-            let res = login(
-                LoginType::Gke,
-                &server,
-                None,
-                None,
-                None,
-                Some(context),
-                None,
-                false,
-                false,
-                None,
-                None,
-                None,
-                None,
-                "auto",
-                &exec,
-                false,
-                false,
-                SESSION_CHECK_TIMEOUT_SECS,
-                "local",
-                false,
-                None,
-            )?;
+            let req = LoginRequest::new(&server)
+                .with_type(LoginType::Gke)
+                .with_name(context);
+            let res = login(&req)?;
             written_path = res.kubeconfig_path;
             context::save_context_type(context, "gke")?;
         }
@@ -2188,29 +2286,12 @@ pub fn try_relogin(
                     .without_confirmation()
                     .prompt()
                     .map_err(|_| K8pkError::Cancelled)?;
-                login(
-                    LoginType::K8s,
-                    &server,
-                    Some(&token),
-                    None,
-                    None,
-                    Some(context),
-                    None,
-                    false,
-                    false,
-                    None,
-                    None,
-                    None,
-                    None,
-                    "token",
-                    &exec,
-                    false,
-                    false,
-                    SESSION_CHECK_TIMEOUT_SECS,
-                    "local",
-                    false,
-                    None,
-                )?
+                let req = LoginRequest::new(&server)
+                    .with_type(LoginType::K8s)
+                    .with_name(context)
+                    .with_token(&token)
+                    .with_auth("token");
+                login(&req)?
             } else {
                 let username = Text::new("Username:")
                     .prompt()
@@ -2219,29 +2300,12 @@ pub fn try_relogin(
                     .without_confirmation()
                     .prompt()
                     .map_err(|_| K8pkError::Cancelled)?;
-                login(
-                    LoginType::K8s,
-                    &server,
-                    None,
-                    Some(&username),
-                    Some(&password),
-                    Some(context),
-                    None,
-                    false,
-                    false,
-                    None,
-                    None,
-                    None,
-                    None,
-                    "userpass",
-                    &exec,
-                    false,
-                    false,
-                    SESSION_CHECK_TIMEOUT_SECS,
-                    "local",
-                    false,
-                    None,
-                )?
+                let req = LoginRequest::new(&server)
+                    .with_type(LoginType::K8s)
+                    .with_name(context)
+                    .with_credentials(&username, &password)
+                    .with_auth("userpass");
+                login(&req)?
             };
             written_path = res.kubeconfig_path;
             context::save_context_type(context, "k8s")?;
@@ -2353,7 +2417,7 @@ fn refresh_ocp_token(kubeconfig_path: &Path, context_name: &str) -> Result<()> {
     }
 
     let new_token = String::from_utf8(output.stdout)
-        .map_err(|_| K8pkError::Other("Failed to parse token".into()))?
+        .map_err(|_| K8pkError::LoginFailed("failed to parse token output".into()))?
         .trim()
         .to_string();
 
@@ -2394,7 +2458,164 @@ fn refresh_ocp_token(kubeconfig_path: &Path, context_name: &str) -> Result<()> {
     }
 
     let yaml = serde_yaml_ng::to_string(&cfg)?;
-    fs::write(kubeconfig_path, yaml)?;
+    kubeconfig::write_restricted(kubeconfig_path, &yaml)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- detect_login_type_from_url ---
+
+    #[test]
+    fn test_detect_eks() {
+        assert_eq!(
+            detect_login_type_from_url("https://ABC123.eks.amazonaws.com"),
+            Some(LoginType::K8s)
+        );
+    }
+
+    #[test]
+    fn test_detect_gke() {
+        assert_eq!(
+            detect_login_type_from_url("https://35.1.2.3.container.googleapis.com"),
+            Some(LoginType::Gke)
+        );
+        assert_eq!(
+            detect_login_type_from_url("https://something.gke.io/path"),
+            Some(LoginType::Gke)
+        );
+    }
+
+    #[test]
+    fn test_detect_aks() {
+        assert_eq!(
+            detect_login_type_from_url("https://my-cluster.azmk8s.io"),
+            Some(LoginType::K8s)
+        );
+    }
+
+    #[test]
+    fn test_detect_rancher() {
+        assert_eq!(
+            detect_login_type_from_url("https://rancher.example.com/k8s/clusters/c-12345"),
+            Some(LoginType::Rancher)
+        );
+    }
+
+    #[test]
+    fn test_detect_ocp() {
+        assert_eq!(
+            detect_login_type_from_url("https://api.cluster.example.com:6443"),
+            Some(LoginType::Ocp)
+        );
+        assert_eq!(
+            detect_login_type_from_url("https://openshift.internal:8443"),
+            Some(LoginType::Ocp)
+        );
+    }
+
+    #[test]
+    fn test_detect_unknown() {
+        assert_eq!(detect_login_type_from_url("https://10.0.0.1:8080"), None);
+    }
+
+    // --- LoginType::from_str ---
+
+    #[test]
+    fn test_login_type_from_str() {
+        assert_eq!("ocp".parse::<LoginType>().unwrap(), LoginType::Ocp);
+        assert_eq!("openshift".parse::<LoginType>().unwrap(), LoginType::Ocp);
+        assert_eq!("k8s".parse::<LoginType>().unwrap(), LoginType::K8s);
+        assert_eq!("kubernetes".parse::<LoginType>().unwrap(), LoginType::K8s);
+        assert_eq!("gke".parse::<LoginType>().unwrap(), LoginType::Gke);
+        assert_eq!("gcp".parse::<LoginType>().unwrap(), LoginType::Gke);
+        assert_eq!("rancher".parse::<LoginType>().unwrap(), LoginType::Rancher);
+        assert!("invalid".parse::<LoginType>().is_err());
+    }
+
+    // --- Vault ---
+
+    #[test]
+    fn test_vault_crud() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault_path = dir.path().join("vault.json");
+
+        // Create empty vault
+        let mut vault = Vault {
+            path: vault_path.clone(),
+            entries: HashMap::new(),
+        };
+
+        // Set an entry
+        vault
+            .set(
+                "cluster-a".to_string(),
+                VaultEntry {
+                    username: "admin".to_string(),
+                    password: "secret".to_string(),
+                },
+            )
+            .unwrap();
+
+        // Get it back
+        let entry = vault.get("cluster-a").unwrap();
+        assert_eq!(entry.username, "admin");
+        assert_eq!(entry.password, "secret");
+
+        // List keys
+        let keys = vault.list_keys();
+        assert_eq!(keys.len(), 1);
+        assert!(keys.contains(&"cluster-a"));
+
+        // Missing key
+        assert!(vault.get("nonexistent").is_none());
+
+        // Delete
+        assert!(vault.delete("cluster-a").unwrap());
+        assert!(vault.get("cluster-a").is_none());
+        assert!(!vault.delete("cluster-a").unwrap()); // Already gone
+
+        // Verify file on disk persists correctly
+        assert!(vault_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_vault_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let vault_path = dir.path().join("vault.json");
+
+        let mut vault = Vault {
+            path: vault_path.clone(),
+            entries: HashMap::new(),
+        };
+        vault
+            .set(
+                "test".to_string(),
+                VaultEntry {
+                    username: "u".to_string(),
+                    password: "p".to_string(),
+                },
+            )
+            .unwrap();
+
+        let mode = fs::metadata(&vault_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "vault file should be 0o600");
+    }
+
+    // --- LoginRequest builder ---
+
+    #[test]
+    fn test_login_request_builder() {
+        let mut req = LoginRequest::default();
+        req.server = "https://api.test.com:6443".to_string();
+        let req = req.with_token("my-token");
+        assert_eq!(req.server, "https://api.test.com:6443");
+        assert_eq!(req.token.as_deref(), Some("my-token"));
+        assert!(req.username.is_none());
+    }
 }

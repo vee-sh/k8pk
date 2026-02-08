@@ -98,22 +98,22 @@ pub enum Command {
         #[arg(long, default_value = "bash", value_name = "SHELL")]
         shell: String,
         /// Include additional debug info
-        #[arg(long)]
-        verbose: bool,
+        #[arg(long = "detail")]
+        detail: bool,
     },
 
     /// Interactive picker for context and namespace
     Pick {
-        /// Output format: env, json, spawn (default: auto-detect)
+        /// Output format: env, json, spawn (default: env)
         #[arg(
             long,
             value_name = "FORMAT",
-            help = "Output format: env | json | spawn"
+            help = "Output format: env | json | spawn (default: env)"
         )]
         output: Option<String>,
         /// Include additional info in output
-        #[arg(long)]
-        verbose: bool,
+        #[arg(long = "detail")]
+        detail: bool,
     },
 
     /// Spawn a new shell with isolated context/namespace
@@ -278,15 +278,16 @@ pub enum Command {
 
     /// Execute a command in a specific context/namespace
     #[command(after_help = "Examples:\n  \
-        k8pk exec prod default -- kubectl get pods\n  \
+        k8pk exec prod -- kubectl get pods           # Uses context's default namespace\n  \
+        k8pk exec prod default -- kubectl get pods   # Explicit namespace\n  \
         k8pk exec dev api -- kubectl logs -f deployment/api")]
     Exec {
-        /// Context to use
+        /// Context to use (supports glob patterns)
         #[arg(value_name = "CONTEXT")]
         context: String,
-        /// Namespace to use
+        /// Namespace to use (optional, defaults to context's configured namespace)
         #[arg(value_name = "NAMESPACE")]
-        namespace: String,
+        namespace: Option<String>,
         /// Command to execute (after --)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -296,17 +297,23 @@ pub enum Command {
         /// Suppress context/namespace headers
         #[arg(long, help = "Suppress context/namespace headers")]
         no_headers: bool,
+        /// Output results as JSON (wraps stdout/stderr per context)
+        #[arg(long)]
+        json: bool,
     },
 
     /// Get information about current context/namespace
     #[command(
-        after_help = "What to show: ctx, ns, cluster, user, server, all (default)\n\n\
+        visible_alias = "status",
+        after_help = "What to show: ctx, ns, depth, config, all (default)\n\n\
         Examples:\n  \
         k8pk info ctx --display\n  \
+        k8pk info depth\n  \
+        k8pk status              # Same as 'k8pk info all'\n  \
         k8pk info all"
     )]
     Info {
-        /// What to show: ctx, ns, cluster, user, server, all
+        /// What to show: ctx, ns, depth, config, all
         #[arg(default_value = "all", value_name = "WHAT")]
         what: String,
         /// Show friendly context display name (ctx only)
@@ -344,15 +351,12 @@ pub enum Command {
     },
 
     /// Switch to namespace (with history support, use '-' for previous)
-    #[command(
-        visible_alias = "nsls",
-        after_help = "Examples:\n  \
+    #[command(after_help = "Examples:\n  \
         k8pk ns production        # Switch to 'production'\n  \
         k8pk ns -                 # Switch to previous namespace\n  \
         k8pk ns                   # Interactive selection (spawns shell)\n  \
         k8pk ns prod -o json      # Output as JSON\n  \
-        k8pk ns prod -o env       # Output exports for eval"
-    )]
+        k8pk ns prod -o env       # Output exports for eval")]
     Ns {
         /// Namespace name (use '-' for previous)
         #[arg(value_name = "NAMESPACE")]
@@ -364,9 +368,23 @@ pub enum Command {
             help = "Spawn subshell instead of modifying current"
         )]
         recursive: bool,
-        /// Output format: env, json, spawn (default: auto-detect - spawns shell if TTY, else exports)
+        /// Output format: env, json, spawn (default: env)
         #[arg(short = 'o', long, value_name = "FORMAT")]
         output: Option<String>,
+    },
+
+    /// Show recent context/namespace switch history
+    #[command(after_help = "Examples:\n  \
+        k8pk history              # Show recent switches\n  \
+        k8pk history --json       # Output as JSON\n  \
+        k8pk history --clear      # Clear history")]
+    History {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Clear all history
+        #[arg(long)]
+        clear: bool,
     },
 
     /// Clean up current k8pk session (unset all K8PK_* environment variables)
@@ -378,7 +396,7 @@ pub enum Command {
         eval $(k8pk clean)        # Execute cleanup in current shell"
     )]
     Clean {
-        /// Output format: env, json (default: env for eval)
+        /// Output format: env, json, spawn (default: env)
         #[arg(short = 'o', long, value_name = "FORMAT")]
         output: Option<String>,
     },
@@ -458,7 +476,6 @@ pub enum Command {
         #[arg(value_name = "CONTEXT")]
         context: Option<String>,
         /// Override $EDITOR
-        /// Override $EDITOR
         #[arg(long, value_name = "CMD")]
         editor: Option<String>,
     },
@@ -478,8 +495,8 @@ pub enum Command {
         k8pk login --wizard\n  \
         k8pk login --auth-help")]
     Login {
-        /// Cluster type: 'ocp', 'k8s', 'gke', or 'rancher' (default: ocp)
-        #[arg(long = "type", value_name = "TYPE", default_value = "ocp")]
+        /// Cluster type: 'ocp', 'k8s', 'gke', or 'rancher' (default: auto-detect from server URL)
+        #[arg(long = "type", value_name = "TYPE", default_value = "auto")]
         login_type: String,
         /// Authentication mode: auto | token | userpass | client-cert | exec
         #[arg(long, value_name = "MODE", default_value = "auto")]
@@ -640,6 +657,25 @@ pub enum Command {
         shell: Option<String>,
     },
 
+    /// Manage stored credentials vault
+    #[command(after_help = "Examples:\n  \
+        k8pk vault list              # List stored entries\n  \
+        k8pk vault delete my-cluster # Delete an entry\n  \
+        k8pk vault path              # Show vault file location")]
+    #[command(subcommand)]
+    Vault(VaultCommand),
+
+    /// Output context or namespace names for shell completion
+    #[command(hide = true)]
+    Complete {
+        /// What to complete: contexts, namespaces
+        #[arg(value_name = "TYPE")]
+        complete_type: String,
+        /// Context name (required for namespace completion)
+        #[arg(long, value_name = "NAME")]
+        context: Option<String>,
+    },
+
     /// Diagnose common k8pk and kubectl issues
     #[command(after_help = "Examples:\n  \
         k8pk doctor               # Run all checks\n  \
@@ -657,11 +693,48 @@ pub enum Command {
 #[derive(Subcommand)]
 pub enum ConfigCommand {
     /// Create default config file if it doesn't exist
-    Init,
+    Init {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show current configuration
-    Show,
+    Show {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show config file path
-    Path,
+    Path {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Open interactive config editor
     Edit,
+}
+
+#[derive(Subcommand)]
+pub enum VaultCommand {
+    /// List all stored credential entries
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a stored credential entry
+    Delete {
+        /// Entry key (server URL or context name)
+        #[arg(value_name = "KEY")]
+        key: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show vault file location
+    Path {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }

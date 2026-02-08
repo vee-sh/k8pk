@@ -7,9 +7,12 @@ Cross-terminal Kubernetes context/namespace switcher. Works in any terminal via 
 - **Cross-terminal**: Works in bash, zsh, fish, tmux, kitty, Ghostty, Alacritty, iTerm2, and more
 - **WezTerm integration**: Native plugin with in-terminal selectors and per-tab isolation
 - **Interactive picker**: Built-in UI with arrow key navigation and type-to-search (no external dependencies needed)
+- **Eval-first model**: Context switching modifies the current shell via `eval` -- no subshell nesting
 - **Namespace support**: Pick context and namespace (kubie-like)
 - **Pretty labels**: EKS ARNs like `arn:aws:eks:us-east-1:...:cluster/my-cluster` shown as `aws:us-east-1/my-cluster`
-- **Remembers selections**: Last namespace per context stored in `~/.local/share/k8pk/ns.json`
+- **History**: Switch back to your previous context or namespace with `kctx -` / `kns -`
+- **Fuzzy matching**: `k8pk ctx prod` finds `gke_myproject_us-east1_prod-cluster` via substring match, with "did you mean?" suggestions on typos
+- **Credential vault**: Store and retrieve login credentials locally with `k8pk vault`
 - **Shell exports**: Output `export` statements for easy integration
 
 ## Quick Start
@@ -87,12 +90,14 @@ source /path/to/k8pk/shell/k8pk.fish
 **Usage:**
 ```bash
 kpick              # Interactive picker (evals exports in current shell)
-kswitch dev        # Switch to context 'dev'
-kswitch dev prod   # Switch to context 'dev', namespace 'prod'
 kctx dev           # Switch to context 'dev' (with history)
 kctx -             # Switch back to previous context
+kctx               # Interactive context selection
 kns prod           # Switch to namespace 'prod' (with history)
 kns -              # Switch back to previous namespace
+kswitch dev        # Quick non-interactive switch (no history)
+kswitch dev prod   # Quick switch to context 'dev', namespace 'prod'
+kclean             # Unset all k8pk environment variables
 ```
 
 **Prompt Integration:**
@@ -146,18 +151,16 @@ k8pk which --json   # JSON output
 k8pk
 
 # Or explicitly: k8pk pick
-# Automatically spawns shell in interactive TTY
+# Outputs env exports for eval (use the shell wrapper kpick for convenience)
+eval "$(k8pk pick)"
 
-# Or explicitly request exports (requires eval):
-k8pk pick --output env | eval
-
-# Or use the shell function (also handles this automatically):
+# Or use the shell function (recommended):
 kpick
 
 # Interactive picker (outputs JSON)
 k8pk pick --output json
 
-# Interactive picker (spawns new shell)
+# Interactive picker (spawns new subshell)
 k8pk pick --output spawn
 
 # Switch to context (with history support)
@@ -340,6 +343,21 @@ k8pk login --type k8s https://k8s.example.com:6443 --token $TOKEN --test --test-
 # Organize a messy kubeconfig by cluster type
 k8pk organize --dry-run  # Preview what would be created
 k8pk organize            # Split into ~/.kube/organized/{eks,gke,ocp,aks,k8s}/
+
+# Session management
+k8pk status              # Show current context, namespace, and session info (alias for k8pk info all)
+k8pk clean               # Output env unsets (use with eval, or kclean wrapper)
+k8pk history             # Show recent context/namespace switches
+k8pk history --clear     # Clear switch history
+
+# Credential vault (local plaintext, 0600 permissions)
+k8pk vault list          # List stored credential entries
+k8pk vault delete KEY    # Delete a stored entry
+k8pk vault path          # Show vault file location
+
+# Diagnostics
+k8pk doctor              # Check kubectl, kubeconfigs, permissions, shell integration
+k8pk doctor --fix        # Auto-fix file permissions
 ```
 
 **OpenShift:** When `oc` is available, `k8pk` automatically uses it. Generated kubeconfigs work with both `kubectl` and `oc`. The `env` command also sets `OC_NAMESPACE` for OpenShift compatibility.
@@ -389,26 +407,14 @@ Or use the shell prompt integration:
 export PROMPT_COMMAND='echo -en "\033]1;⎈ ${K8PK_CONTEXT_DISPLAY:-${K8PK_CONTEXT:-$SHELL}}${K8PK_NAMESPACE:+:$K8PK_NAMESPACE}\007"'
 ```
 
-### Ghostty
-
-Ghostty integration uses keybindings and the native interactive picker. See [ghostty/README.md](ghostty/README.md) for setup instructions.
-
-**Quick setup:**
-1. Add to `~/.config/ghostty/config`:
-   ```ini
-   keybind = "ctrl+shift+k", "spawn", "k8pk", "pick"
-   ```
-2. Configure hooks in `~/.kube/k8pk.yaml` for window title updates (see Ghostty section above)
-
-**Usage:** Press `CTRL+SHIFT+K` to open the picker. The native terminal UI works beautifully in Ghostty.
-
 ### Standalone
 
 Just use `kpick` or `kswitch` - they work in any terminal that runs your shell.
 
 ## Configuration
 
-Create `~/.kube/k8pk.yaml` to configure where k8pk looks for kubeconfig files:
+k8pk reads its config from `~/.config/k8pk/config.yaml` (XDG) or `~/.kube/k8pk.yaml` (legacy).
+Existing legacy configs are found automatically; new installs default to the XDG location.
 
 ```yaml
 configs:
@@ -436,7 +442,8 @@ hooks:
 ## Architecture
 
 - **`k8pk` CLI**: Core Rust binary, works everywhere
-- **Shell functions**: `kpick`/`kswitch` wrappers for convenience (included in releases)
+- **Shell functions**: `kpick`/`kctx`/`kns`/`kswitch`/`kclean` wrappers for convenience (included in releases)
+- **Eval-first model**: Context switches output shell `export`/`unset` statements; shell wrappers `eval` them in the current process. No subshell nesting unless explicitly requested with `--output spawn` or `-r`.
 - **WezTerm plugin**: Native integration with WezTerm's UI (optional, uses `k8pk` when available)
 
 ## Releases
@@ -479,8 +486,10 @@ curl -fsSL https://raw.githubusercontent.com/vee-sh/k8pk/main/install.sh | bash
 
 ## Troubleshooting
 
+Run `k8pk doctor` to diagnose common issues automatically, or `k8pk doctor --fix` to auto-fix file permissions.
+
 - **k8pk not found**: Install it or add to PATH. Check with `command -v k8pk`
-- **No contexts found**: Verify `kubectl config get-contexts -o name` works
+- **No contexts found**: Run `k8pk login --wizard` to add your first cluster, or verify `kubectl config get-contexts -o name` works
 - **Shell exports not working**: Make sure you `eval "$(k8pk pick)"` or use `kpick` function
 - **KUBECONFIG overridden**: Your shell rc may override it. Use:
   ```bash
@@ -503,24 +512,11 @@ busted tests/plugin_spec.lua
 
 ## Future Improvements
 
-### High priority
-
-- **Safer writes**: Atomic writes via temp file + rename; file locking to avoid concurrent edits; timestamped backups; enforce 0600 permissions on generated files.
-
-### Medium priority
-
-- **Fast context discovery**: Cache indexed contexts keyed by file path + mtime; invalidate on change; parallel glob scanning.
-- **Config clarity**: `k8pk config path` and `k8pk config print`; config schema version + migration notice.
-- **Validation/doctor**: `k8pk doctor` to detect broken kubeconfigs, missing clusters/users, invalid cert/key refs.
-- **Merge conflict strategies**: `--prefer left|right`, `--rename-on-conflict`, and dry-run previews.
-- **Cleanup enhancements**: `--pattern <glob>`, size/age filters, `--keep N` per context.
-- **Diff UX**: Colorized unified diff, `--json` machine-readable diff, highlight renamed entries.
-- **Security**: Redact tokens/certs in logs; enforce 0600 for generated files; warn on insecure permissions.
-
-### WezTerm plugin
-
-- **Status bar**: Segment showing `context[:namespace]` with colorization.
-- **Tab title sync**: Auto-update tab title when context changes.
+- **Distribution**: AUR, Nix, deb/rpm packages
+- **Fast context discovery**: Cache indexed contexts keyed by file path + mtime
+- **Merge conflict strategies**: `--prefer left|right`, `--rename-on-conflict`
+- **Diff UX**: Colorized unified diff, highlight renamed entries
+- **WezTerm plugin**: Status bar segment, auto-update tab title on context change
 
 ## License
 

@@ -1,6 +1,7 @@
 //! K8pk configuration file handling with caching
 
 use crate::error::{K8pkError, Result};
+use crate::kubeconfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -72,10 +73,34 @@ fn default_exclude_patterns() -> Vec<String> {
     vec!["~/.kube/k8pk.yaml".to_string()]
 }
 
-/// Get the config file path
+/// Get the config file path.
+///
+/// Checks the following locations in order:
+///
+/// 1. `$XDG_CONFIG_HOME/k8pk/config.yaml` (or `~/.config/k8pk/config.yaml`)
+/// 2. `~/.kube/k8pk.yaml` (legacy location)
+///
+/// For new installs, prefers the XDG location. Existing legacy configs are found automatically.
 pub fn config_path() -> Result<PathBuf> {
     let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
-    Ok(home.join(".kube").join("k8pk.yaml"))
+
+    // Check XDG location first
+    let xdg_dir = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home.join(".config"));
+    let xdg_path = xdg_dir.join("k8pk").join("config.yaml");
+    if xdg_path.exists() {
+        return Ok(xdg_path);
+    }
+
+    // Fall back to legacy location
+    let legacy_path = home.join(".kube").join("k8pk.yaml");
+    if legacy_path.exists() {
+        return Ok(legacy_path);
+    }
+
+    // Neither exists -- prefer XDG for new installs
+    Ok(xdg_path)
 }
 
 /// Load k8pk configuration (cached after first load)
@@ -123,7 +148,8 @@ pub fn expand_home(path: &str) -> PathBuf {
 /// Generate a default config template with comments
 pub fn generate_template() -> String {
     r#"# k8pk configuration file
-# This file is located at ~/.kube/k8pk.yaml
+# Default location: ~/.config/k8pk/config.yaml (XDG)
+# Legacy location:  ~/.kube/k8pk.yaml (still supported)
 # All parameters are optional and have sensible defaults
 
 # Kubeconfig file discovery patterns
@@ -185,7 +211,7 @@ pub fn init_config() -> Result<PathBuf> {
 
     // Write template
     let template = generate_template();
-    fs::write(&path, template)?;
+    kubeconfig::write_restricted(&path, &template)?;
 
     Ok(path)
 }
@@ -207,5 +233,40 @@ mod tests {
         let path = expand_home("~/.kube/config");
         assert!(path.to_string_lossy().contains(".kube/config"));
         assert!(!path.to_string_lossy().starts_with("~"));
+    }
+
+    #[test]
+    fn test_expand_home_no_tilde() {
+        let path = expand_home("/absolute/path");
+        assert_eq!(path, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn test_config_path_xdg() {
+        // When XDG_CONFIG_HOME is set and the file exists there, it should be used
+        let dir = tempfile::tempdir().unwrap();
+        let xdg_dir = dir.path().join("k8pk");
+        std::fs::create_dir_all(&xdg_dir).unwrap();
+        let xdg_config = xdg_dir.join("config.yaml");
+        std::fs::write(&xdg_config, "configs:\n  include: ['~/.kube/config']").unwrap();
+
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        let path = config_path().unwrap();
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        assert_eq!(path, xdg_config);
+    }
+
+    #[test]
+    fn test_resolve_alias_passthrough() {
+        // When no alias matches, should return the input unchanged
+        let result = resolve_alias("some-context-that-has-no-alias");
+        assert_eq!(result, "some-context-that-has-no-alias");
+    }
+
+    #[test]
+    fn test_default_config_includes() {
+        let config = K8pkConfig::default();
+        assert!(config.configs.include.iter().any(|p| p.contains("config")));
     }
 }

@@ -175,7 +175,8 @@ pub fn pick_namespace(context: &str, kubeconfig_env: Option<&str>) -> Result<Str
 }
 
 /// Pick a context interactively (without namespace selection)
-/// Returns the selected context name (without the " *" marker)
+/// Returns the selected context name (without the " *" marker).
+/// Recent contexts from history are shown at the top for quick access.
 pub fn pick_context(cfg: &KubeConfig) -> Result<String> {
     if !io::stdin().is_terminal() {
         return Err(K8pkError::NoTty);
@@ -183,31 +184,59 @@ pub fn pick_context(cfg: &KubeConfig) -> Result<String> {
 
     let current = cfg.current_context.as_deref();
 
-    // Deduplicate and mark active context
+    // Load recent history to prioritize those contexts
+    let recent = super::context::get_history()
+        .map(|(ctxs, _)| ctxs)
+        .unwrap_or_default();
+
+    // Deduplicate context names
     let mut seen = HashSet::new();
-    let contexts: Vec<String> = cfg
+    let all_names: Vec<String> = cfg
         .contexts
         .iter()
         .filter_map(|c| {
             if seen.insert(c.name.clone()) {
-                let display = if Some(c.name.as_str()) == current {
-                    format!("{} *", c.name)
-                } else {
-                    c.name.clone()
-                };
-                Some(display)
+                Some(c.name.clone())
             } else {
                 None
             }
         })
         .collect();
 
-    if contexts.is_empty() {
+    if all_names.is_empty() {
         return Err(K8pkError::NoContexts);
     }
 
+    // Build ordered list: recent contexts first (that still exist), then the rest
+    let all_set: HashSet<&str> = all_names.iter().map(|s| s.as_str()).collect();
+    let mut ordered: Vec<String> = Vec::with_capacity(all_names.len());
+
+    // Add recent contexts first (skip the very first one if it's the current -- it goes last)
+    for r in &recent {
+        if all_set.contains(r.as_str()) && !ordered.contains(r) {
+            ordered.push(r.clone());
+        }
+    }
+
+    // Add remaining contexts alphabetically
+    let mut rest: Vec<&String> = all_names.iter().filter(|n| !ordered.contains(n)).collect();
+    rest.sort();
+    ordered.extend(rest.into_iter().cloned());
+
+    // Format with markers
+    let contexts: Vec<String> = ordered
+        .iter()
+        .map(|name| {
+            if Some(name.as_str()) == current {
+                format!("{} *", name)
+            } else {
+                name.clone()
+            }
+        })
+        .collect();
+
     let selected = Select::new("Select context:", contexts)
-        .with_page_size(20) // Better for navigation
+        .with_page_size(20)
         .prompt()
         .map_err(|_| K8pkError::Cancelled)?;
 

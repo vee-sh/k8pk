@@ -1,8 +1,13 @@
 [package]
 name = "k8pk"
-version = "0.12.2"
+version = "1.13.0"
 edition = "2021"
 license = "MIT"
+description = "Fast Kubernetes context and namespace switcher with session isolation"
+repository = "https://github.com/vee-sh/k8pk"
+authors = ["vee-sh"]
+keywords = ["kubernetes", "kubectl", "kubeconfig", "context", "namespace"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0"
@@ -24,6 +29,13 @@ indicatif = "0.17"  # Progress spinners
 shell-words = "1.1"
 colored = "2.1"  # Terminal colors for TUI
 # keyring = "2.3"  # OS keychain credential storage (optional, can be enabled later)
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+clap = { version = "4.5", features = ["derive"] }
+clap_mangen = "0.2"
 
 [dev-dependencies]
 
