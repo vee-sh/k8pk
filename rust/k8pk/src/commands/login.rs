@@ -2186,7 +2186,7 @@ pub fn try_relogin(
         .ok_or_else(|| K8pkError::LoginFailed("cannot determine server URL for re-login".into()))?;
 
     // Fail fast if the cluster is not reachable so we don't prompt for credentials.
-    const REACHABILITY_TIMEOUT_SECS: u64 = 4;
+    const REACHABILITY_TIMEOUT_SECS: u64 = 2;
     check_server_reachable(&server, REACHABILITY_TIMEOUT_SECS)?;
 
     let mut login_type = context::get_context_type(context)?
