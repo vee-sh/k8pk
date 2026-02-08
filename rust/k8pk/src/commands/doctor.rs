@@ -578,8 +578,6 @@ fn check_kubeconfig_permissions() -> Vec<DiagnosticResult> {
 
 /// Apply automatic fixes for issues that can be safely corrected.
 fn apply_fixes(results: &mut [DiagnosticResult]) -> usize {
-    let mut fixed = 0;
-
     for result in results.iter_mut() {
         if result.status == DiagStatus::Ok {
             continue;
@@ -599,11 +597,13 @@ fn apply_fixes(results: &mut [DiagnosticResult]) -> usize {
                         result.status = DiagStatus::Ok;
                         result.message = "fixed: permissions set to 0600".to_string();
                         result.fix_hint = None;
-                        fixed += 1;
                     }
                 }
             }
         }
     }
-    fixed
+    results
+        .iter()
+        .filter(|r| r.message.starts_with("fixed:"))
+        .count()
 }
