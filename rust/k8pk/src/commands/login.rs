@@ -7,8 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::IsTerminal;
+use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// Type of cluster to login to
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2129,6 +2131,46 @@ fn parse_stored_type(s: &str) -> Option<LoginType> {
     }
 }
 
+/// Parse server URL (e.g. "https://api.example.com:6443") into (host, port).
+/// Returns (host, port) or None if unparseable.
+fn parse_server_host_port(server: &str) -> Option<(String, u16)> {
+    let after_scheme = server
+        .strip_prefix("https://")
+        .or_else(|| server.strip_prefix("http://"))
+        .unwrap_or(server);
+    let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
+    if let Some((h, p)) = authority.rsplit_once(':') {
+        if let Ok(port) = p.parse::<u16>() {
+            return Some((h.to_string(), port));
+        }
+    }
+    let default_port = if server.starts_with("https://") {
+        443
+    } else {
+        80
+    };
+    Some((authority.to_string(), default_port))
+}
+
+/// Check if the cluster server is reachable (TCP connect) before prompting for credentials.
+/// Fails fast with a clear error if the server is down or unreachable.
+fn check_server_reachable(server: &str, timeout_secs: u64) -> Result<()> {
+    let (host, port) = parse_server_host_port(server)
+        .ok_or_else(|| K8pkError::LoginFailed("invalid server URL".into()))?;
+    let addr = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| K8pkError::LoginFailed(format!("cannot resolve server host: {}", e)))?
+        .next()
+        .ok_or_else(|| K8pkError::LoginFailed("no address for server".into()))?;
+    std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(timeout_secs)).map_err(|e| {
+        K8pkError::LoginFailed(format!(
+            "cluster unreachable ({}). The server may be down or the URL may be wrong. Choose another context or check your network.",
+            e
+        ))
+    })?;
+    Ok(())
+}
+
 /// Re-login for a context whose session is dead. Uses stored type (from previous re-login) if set,
 /// else infers from context name prefix; prompts for cluster type when unknown (e.g. legacy OCP).
 /// Returns the kubeconfig path that was written so the caller can use it when building the isolated kubeconfig.
@@ -2142,6 +2184,10 @@ pub fn try_relogin(
     let merged = kubeconfig::load_merged(paths)?;
     let server = kubeconfig::get_server_for_context(&merged, context)
         .ok_or_else(|| K8pkError::LoginFailed("cannot determine server URL for re-login".into()))?;
+
+    // Fail fast if the cluster is not reachable so we don't prompt for credentials.
+    const REACHABILITY_TIMEOUT_SECS: u64 = 4;
+    check_server_reachable(&server, REACHABILITY_TIMEOUT_SECS)?;
 
     let mut login_type = context::get_context_type(context)?
         .as_ref()
