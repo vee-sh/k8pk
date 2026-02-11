@@ -70,9 +70,9 @@ impl std::str::FromStr for LoginType {
 
 /// Vault entry for storing credentials
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct VaultEntry {
-    username: String,
-    password: String,
+pub(crate) struct VaultEntry {
+    pub(crate) username: String,
+    pub(crate) password: String,
 }
 
 /// Vault for storing credentials (plaintext JSON with 0o600 permissions).
@@ -95,7 +95,7 @@ impl Vault {
         Ok(Self { path, entries })
     }
 
-    fn get(&self, key: &str) -> Option<VaultEntry> {
+    pub(crate) fn get(&self, key: &str) -> Option<VaultEntry> {
         self.entries.get(key).cloned()
     }
 
@@ -2213,15 +2213,61 @@ pub fn try_relogin(
         };
     }
 
+    // ----------------------------------------------------------------
+    // Try vault-based silent re-login first (no prompts).
+    // If credentials are stored, attempt to authenticate automatically.
+    // ----------------------------------------------------------------
+    let vault = Vault::new().ok();
+
     let written_path;
 
     match login_type {
         Some(LoginType::Rancher) => {
+            let (base, is_proxy_url) = rancher_server_base_url(&server);
+            let vault_key = format!("rancher:{}", server);
+
+            // Attempt silent re-login from vault.
+            if let Some(ref v) = vault {
+                if let Some(entry) = v.get(&vault_key) {
+                    let rancher_server = if is_proxy_url {
+                        base.clone()
+                    } else {
+                        // Without a known Rancher URL we cannot silently re-login;
+                        // fall through to interactive.
+                        String::new()
+                    };
+                    if !rancher_server.is_empty() {
+                        eprintln!(
+                            "Session expired for '{}'. Re-authenticating from vault...",
+                            context
+                        );
+                        let req = LoginRequest::new(&rancher_server)
+                            .with_type(LoginType::Rancher)
+                            .with_name(context)
+                            .with_credentials(&entry.username, &entry.password)
+                            .with_auth("userpass")
+                            .with_rancher_cluster_server(&server);
+                        match login(&req) {
+                            Ok(res) => {
+                                eprintln!("Re-authenticated successfully (vault).");
+                                context::save_context_type(context, "rancher")?;
+                                return Ok(res.kubeconfig_path);
+                            }
+                            Err(_) => {
+                                eprintln!(
+                                    "Vault credentials are stale. Falling back to interactive login."
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Interactive fallback.
             eprintln!(
                 "Session expired for '{}'. Re-login (username and password).",
                 context
             );
-            let (base, is_proxy_url) = rancher_server_base_url(&server);
             let rancher_server = if is_proxy_url {
                 base
             } else {
@@ -2282,10 +2328,52 @@ pub fn try_relogin(
                     }
                 }
             };
+
+            // Save credentials to vault on successful interactive login.
+            if let Ok(mut v) = Vault::new() {
+                let _ = v.set(
+                    vault_key,
+                    VaultEntry {
+                        username: username.clone(),
+                        password: password.clone(),
+                    },
+                );
+            }
+
             written_path = res.kubeconfig_path;
             context::save_context_type(context, "rancher")?;
         }
         Some(LoginType::Ocp) => {
+            let vault_key = format!("ocp:{}", server);
+
+            // Attempt silent re-login from vault.
+            if let Some(ref v) = vault {
+                if let Some(entry) = v.get(&vault_key) {
+                    eprintln!(
+                        "Session expired for '{}'. Re-authenticating from vault...",
+                        context
+                    );
+                    let req = LoginRequest::new(&server)
+                        .with_type(LoginType::Ocp)
+                        .with_name(context)
+                        .with_credentials(&entry.username, &entry.password)
+                        .with_auth("userpass");
+                    match login(&req) {
+                        Ok(res) => {
+                            eprintln!("Re-authenticated successfully (vault).");
+                            context::save_context_type(context, "ocp")?;
+                            return Ok(res.kubeconfig_path);
+                        }
+                        Err(_) => {
+                            eprintln!(
+                                "Vault credentials are stale. Falling back to interactive login."
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Interactive fallback.
             eprintln!(
                 "Session expired for '{}'. Re-login (username and password).",
                 context
@@ -2304,6 +2392,18 @@ pub fn try_relogin(
                 .with_credentials(&username, &password)
                 .with_auth("userpass");
             let res = login(&req)?;
+
+            // Save credentials to vault on successful interactive login.
+            if let Ok(mut v) = Vault::new() {
+                let _ = v.set(
+                    vault_key,
+                    VaultEntry {
+                        username: username.clone(),
+                        password: password.clone(),
+                    },
+                );
+            }
+
             written_path = res.kubeconfig_path;
             context::save_context_type(context, "ocp")?;
         }
