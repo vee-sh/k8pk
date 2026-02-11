@@ -283,12 +283,14 @@ pub fn detect_shell() -> &'static str {
 ///
 /// For non-recursive switching: always reset to depth=1 (fresh k8pk session).
 /// Context names are automatically normalized for cleaner display.
+/// When `from_picker` is true, the hint suggests `eval $(k8pk)`; otherwise `eval $(k8pk ctx ...)`.
 pub fn print_env_exports(
     context: &str,
     namespace: Option<&str>,
     kubeconfig: &Path,
     shell: &str,
     verbose: bool,
+    from_picker: bool,
 ) -> Result<()> {
     // Always reset to depth 1 for non-recursive context/namespace switching
     // This prevents depth from accumulating when switching contexts
@@ -368,8 +370,15 @@ pub fn print_env_exports(
     // If stdout is a terminal, the user is probably running this directly
     // instead of through eval or the shell aliases. Show a hint.
     if std::io::stdout().is_terminal() {
-        eprintln!("# Hint: wrap in eval to apply, or use the kctx/kns shell aliases:");
-        eprintln!("#   eval \"$(k8pk ctx ...)\"");
+        if from_picker {
+            eprintln!("# To apply in this shell run: eval \"$(k8pk)\"");
+            eprintln!("# Or use aliases: kctx <context>  kns <namespace>");
+        } else {
+            eprintln!(
+                "# To apply: eval \"$(k8pk ctx {})\" or use kctx/kns aliases",
+                context
+            );
+        }
     }
 
     print!("{}", exports);

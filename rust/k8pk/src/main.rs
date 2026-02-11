@@ -163,6 +163,7 @@ fn main() -> anyhow::Result<()> {
                 &kubeconfig,
                 &shell,
                 detail,
+                false,
             )?;
         }
 
@@ -182,13 +183,14 @@ fn main() -> anyhow::Result<()> {
 
             let shell = commands::detect_shell();
             match output.as_deref() {
-                Some("env") | None => {
+                Some("env") => {
                     commands::print_env_exports(
                         &context,
                         namespace.as_deref(),
                         &kubeconfig,
                         shell,
                         detail,
+                        true,
                     )?;
                 }
                 Some("json") => {
@@ -201,6 +203,23 @@ fn main() -> anyhow::Result<()> {
                 }
                 Some("spawn") => {
                     spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                }
+                None => {
+                    // No explicit output format: if stdout is a terminal the user
+                    // ran k8pk directly (not via eval), so spawn a subshell that
+                    // actually applies the context. When piped (eval), print exports.
+                    if io::stdout().is_terminal() {
+                        spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                    } else {
+                        commands::print_env_exports(
+                            &context,
+                            namespace.as_deref(),
+                            &kubeconfig,
+                            shell,
+                            detail,
+                            true,
+                        )?;
+                    }
                 }
                 Some(other) => {
                     return Err(K8pkError::UnknownOutputFormat(other.to_string()).into());
@@ -626,16 +645,30 @@ fn main() -> anyhow::Result<()> {
                     Some("spawn") => {
                         spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
                     }
-                    Some("env") | None => {
-                        // Default to env exports (eval-friendly).
-                        // Use `--output spawn` or `-r` for subshell mode.
+                    Some("env") => {
                         commands::print_env_exports(
                             &context,
                             namespace.as_deref(),
                             &kubeconfig,
                             commands::detect_shell(),
                             false,
+                            false,
                         )?;
+                    }
+                    None => {
+                        // No explicit format: spawn when interactive, print exports when piped.
+                        if io::stdout().is_terminal() {
+                            spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                        } else {
+                            commands::print_env_exports(
+                                &context,
+                                namespace.as_deref(),
+                                &kubeconfig,
+                                commands::detect_shell(),
+                                false,
+                                false,
+                            )?;
+                        }
                     }
                     Some(other) => {
                         return Err(K8pkError::UnknownOutputFormat(other.to_string()).into());
@@ -699,16 +732,30 @@ fn main() -> anyhow::Result<()> {
                     Some("spawn") => {
                         spawn_shell(&context, Some(&namespace), &kubeconfig)?;
                     }
-                    Some("env") | None => {
-                        // Default to env exports (eval-friendly).
-                        // Use `--output spawn` or `-r` for subshell mode.
+                    Some("env") => {
                         commands::print_env_exports(
                             &context,
                             Some(&namespace),
                             &kubeconfig,
                             commands::detect_shell(),
                             false,
+                            false,
                         )?;
+                    }
+                    None => {
+                        // No explicit format: spawn when interactive, print exports when piped.
+                        if io::stdout().is_terminal() {
+                            spawn_shell(&context, Some(&namespace), &kubeconfig)?;
+                        } else {
+                            commands::print_env_exports(
+                                &context,
+                                Some(&namespace),
+                                &kubeconfig,
+                                commands::detect_shell(),
+                                false,
+                                false,
+                            )?;
+                        }
                     }
                     Some(other) => {
                         return Err(K8pkError::UnknownOutputFormat(other.to_string()).into());
@@ -921,6 +968,7 @@ fn main() -> anyhow::Result<()> {
                         &kubeconfig_path,
                         commands::detect_shell(),
                         false,
+                        false,
                     )?;
                 }
                 return Ok(());
@@ -1078,6 +1126,7 @@ fn main() -> anyhow::Result<()> {
                     namespace.as_deref(),
                     &kubeconfig,
                     commands::detect_shell(),
+                    false,
                     false,
                 )?;
             }
