@@ -1,6 +1,6 @@
 [package]
 name = "k8pk"
-version = "1.14.1"
+version = "1.14.2"
 edition = "2021"
 license = "MIT"
 description = "Fast Kubernetes context and namespace switcher with session isolation"

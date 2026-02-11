@@ -1240,6 +1240,18 @@ fn main() -> anyhow::Result<()> {
             json,
         } => match action.as_str() {
             "list" | "ls" => {
+                // Auto-register the current shell if it is in a k8pk session
+                // but not yet tracked (e.g. session predates the registry feature,
+                // or the user upgraded k8pk mid-session).
+                if let Ok(ctx) = env::var("K8PK_CONTEXT") {
+                    if !ctx.is_empty() {
+                        let ns = env::var("K8PK_NAMESPACE").ok();
+                        let kc = env::var("KUBECONFIG").unwrap_or_default();
+                        // Use parent PID (= the shell that ran k8pk sessions list).
+                        let _ = commands::sessions::register(&ctx, ns.as_deref(), &kc, None);
+                    }
+                }
+
                 // Merge sessions from the registry and tmux (deduplicate by PID/context).
                 let registry = commands::sessions::list_active().unwrap_or_default();
                 let tmux_sessions = commands::tmux::list_sessions().unwrap_or_default();
