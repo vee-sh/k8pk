@@ -114,6 +114,9 @@ pub enum Command {
         /// Include additional info in output
         #[arg(long = "detail")]
         detail: bool,
+        /// Force subshell even when inside tmux
+        #[arg(long, help = "Force subshell instead of tmux window/session")]
+        no_tmux: bool,
     },
 
     /// Spawn a new shell with isolated context/namespace
@@ -348,6 +351,9 @@ pub enum Command {
         /// Output format: env, json, spawn (default: env for eval)
         #[arg(short = 'o', long, value_name = "FORMAT")]
         output: Option<String>,
+        /// Force subshell even when inside tmux
+        #[arg(long, help = "Force subshell instead of tmux window/session")]
+        no_tmux: bool,
     },
 
     /// Switch to namespace (with history support, use '-' for previous)
@@ -371,6 +377,9 @@ pub enum Command {
         /// Output format: env, json, spawn (default: env)
         #[arg(short = 'o', long, value_name = "FORMAT")]
         output: Option<String>,
+        /// Force subshell even when inside tmux
+        #[arg(long, help = "Force subshell instead of tmux window/session")]
+        no_tmux: bool,
     },
 
     /// Show recent context/namespace switch history
@@ -664,6 +673,23 @@ pub enum Command {
         k8pk vault path              # Show vault file location")]
     #[command(subcommand)]
     Vault(VaultCommand),
+
+    /// List or switch active k8pk tmux sessions/windows
+    #[command(after_help = "Examples:\n  \
+        k8pk sessions              # List active k8pk sessions\n  \
+        k8pk sessions --json       # Machine-readable output\n  \
+        k8pk sessions adopt 3      # Adopt same context as window 3")]
+    Sessions {
+        /// Action: list (default), adopt
+        #[arg(value_name = "ACTION", default_value = "list")]
+        action: String,
+        /// Target window/session id (for adopt)
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Output context or namespace names for shell completion
     #[command(hide = true)]

@@ -65,6 +65,7 @@ fn main() -> anyhow::Result<()> {
     let command = cli.command.unwrap_or(Command::Pick {
         output: None,
         detail: false,
+        no_tmux: false,
     });
 
     match command {
@@ -167,7 +168,11 @@ fn main() -> anyhow::Result<()> {
             )?;
         }
 
-        Command::Pick { output, detail } => {
+        Command::Pick {
+            output,
+            detail,
+            no_tmux,
+        } => {
             let merged = kubeconfig::load_merged(&paths)?;
             let (context, namespace) =
                 commands::pick_context_namespace(&merged, kubeconfig_env.as_deref())?;
@@ -182,6 +187,13 @@ fn main() -> anyhow::Result<()> {
             )?;
 
             let shell = commands::detect_shell();
+            let do_spawn = |ctx: &str, ns: Option<&str>, kc: &Path| -> Result<()> {
+                if no_tmux {
+                    spawn_shell_no_tmux(ctx, ns, kc)
+                } else {
+                    spawn_shell(ctx, ns, kc)
+                }
+            };
             match output.as_deref() {
                 Some("env") => {
                     commands::print_env_exports(
@@ -202,14 +214,11 @@ fn main() -> anyhow::Result<()> {
                     println!("{}", serde_json::to_string_pretty(&j)?);
                 }
                 Some("spawn") => {
-                    spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                    do_spawn(&context, namespace.as_deref(), &kubeconfig)?;
                 }
                 None => {
-                    // No explicit output format: if stdout is a terminal the user
-                    // ran k8pk directly (not via eval), so spawn a subshell that
-                    // actually applies the context. When piped (eval), print exports.
                     if io::stdout().is_terminal() {
-                        spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                        do_spawn(&context, namespace.as_deref(), &kubeconfig)?;
                     } else {
                         commands::print_env_exports(
                             &context,
@@ -564,6 +573,7 @@ fn main() -> anyhow::Result<()> {
             namespace,
             recursive,
             output,
+            no_tmux,
         } => {
             let merged = kubeconfig::load_merged(&paths)?;
 
@@ -630,8 +640,15 @@ fn main() -> anyhow::Result<()> {
             commands::save_to_history(&context, namespace.as_deref())?;
 
             // Handle output format (recursive takes precedence)
+            let do_spawn = |ctx: &str, ns: Option<&str>, kc: &Path| -> Result<()> {
+                if no_tmux {
+                    spawn_shell_no_tmux(ctx, ns, kc)
+                } else {
+                    spawn_shell(ctx, ns, kc)
+                }
+            };
             if recursive {
-                spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                do_spawn(&context, namespace.as_deref(), &kubeconfig)?;
             } else {
                 match output.as_deref() {
                     Some("json") => {
@@ -643,7 +660,7 @@ fn main() -> anyhow::Result<()> {
                         println!("{}", serde_json::to_string_pretty(&j)?);
                     }
                     Some("spawn") => {
-                        spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                        do_spawn(&context, namespace.as_deref(), &kubeconfig)?;
                     }
                     Some("env") => {
                         commands::print_env_exports(
@@ -656,9 +673,8 @@ fn main() -> anyhow::Result<()> {
                         )?;
                     }
                     None => {
-                        // No explicit format: spawn when interactive, print exports when piped.
                         if io::stdout().is_terminal() {
-                            spawn_shell(&context, namespace.as_deref(), &kubeconfig)?;
+                            do_spawn(&context, namespace.as_deref(), &kubeconfig)?;
                         } else {
                             commands::print_env_exports(
                                 &context,
@@ -681,6 +697,7 @@ fn main() -> anyhow::Result<()> {
             namespace,
             recursive,
             output,
+            no_tmux,
         } => {
             let state = CurrentState::from_env();
             // Try to get context from K8PK_CONTEXT, or fall back to current-context from kubeconfig
@@ -717,8 +734,15 @@ fn main() -> anyhow::Result<()> {
                 commands::ensure_isolated_kubeconfig(&context, Some(&namespace), &paths)?;
 
             // Handle output format (recursive takes precedence)
+            let do_spawn = |ctx: &str, ns: Option<&str>, kc: &Path| -> Result<()> {
+                if no_tmux {
+                    spawn_shell_no_tmux(ctx, ns, kc)
+                } else {
+                    spawn_shell(ctx, ns, kc)
+                }
+            };
             if recursive {
-                spawn_shell(&context, Some(&namespace), &kubeconfig)?;
+                do_spawn(&context, Some(&namespace), &kubeconfig)?;
             } else {
                 match output.as_deref() {
                     Some("json") => {
@@ -730,7 +754,7 @@ fn main() -> anyhow::Result<()> {
                         println!("{}", serde_json::to_string_pretty(&j)?);
                     }
                     Some("spawn") => {
-                        spawn_shell(&context, Some(&namespace), &kubeconfig)?;
+                        do_spawn(&context, Some(&namespace), &kubeconfig)?;
                     }
                     Some("env") => {
                         commands::print_env_exports(
@@ -743,9 +767,8 @@ fn main() -> anyhow::Result<()> {
                         )?;
                     }
                     None => {
-                        // No explicit format: spawn when interactive, print exports when piped.
                         if io::stdout().is_terminal() {
-                            spawn_shell(&context, Some(&namespace), &kubeconfig)?;
+                            do_spawn(&context, Some(&namespace), &kubeconfig)?;
                         } else {
                             commands::print_env_exports(
                                 &context,
@@ -1211,6 +1234,71 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        Command::Sessions {
+            action,
+            target,
+            json,
+        } => match action.as_str() {
+            "list" | "ls" => {
+                let sessions = commands::tmux::list_sessions()?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&sessions)?);
+                } else if sessions.is_empty() {
+                    if commands::tmux::is_tmux() {
+                        println!("No active k8pk sessions in tmux.");
+                    } else {
+                        println!("Not inside tmux. Use 'k8pk sessions' inside a tmux session.");
+                    }
+                } else {
+                    println!("{:<6} {:<30} {:<20} STATUS", "WIN", "CONTEXT", "NAMESPACE");
+                    for s in &sessions {
+                        let status = if s.active { "*" } else { "" };
+                        println!(
+                            "{:<6} {:<30} {:<20} {}",
+                            s.window_index, s.context, s.namespace, status
+                        );
+                    }
+                }
+            }
+            "adopt" => {
+                let target_id = target.ok_or_else(|| {
+                    K8pkError::InvalidArgument(
+                        "specify a window/session id to adopt (see 'k8pk sessions')".into(),
+                    )
+                })?;
+                let sessions = commands::tmux::list_sessions()?;
+                let found = sessions
+                    .iter()
+                    .find(|s| s.window_index == target_id || s.window_name == target_id);
+                match found {
+                    Some(s) => {
+                        let ns_opt: Option<&str> = if s.namespace == "(default)" {
+                            None
+                        } else {
+                            Some(s.namespace.as_str())
+                        };
+                        let kubeconfig =
+                            commands::ensure_isolated_kubeconfig(&s.context, ns_opt, &paths)?;
+                        spawn_shell(&s.context, ns_opt, &kubeconfig)?;
+                    }
+                    None => {
+                        return Err(K8pkError::InvalidArgument(format!(
+                                "no k8pk session found for '{}'. Run 'k8pk sessions' to see active sessions.",
+                                target_id
+                            ))
+                            .into());
+                    }
+                }
+            }
+            other => {
+                return Err(K8pkError::InvalidArgument(format!(
+                    "unknown sessions action: '{}'. Use: list, adopt",
+                    other
+                ))
+                .into());
+            }
+        },
+
         Command::Complete {
             complete_type,
             context,
@@ -1283,6 +1371,28 @@ const MAX_SHELL_DEPTH: u32 = 10;
 /// Spawn a new shell with context/namespace set
 /// Context names are automatically normalized for cleaner display.
 fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Result<()> {
+    spawn_shell_inner(context, namespace, kubeconfig, false)
+}
+
+fn spawn_shell_no_tmux(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Result<()> {
+    spawn_shell_inner(context, namespace, kubeconfig, true)
+}
+
+fn spawn_shell_inner(
+    context: &str,
+    namespace: Option<&str>,
+    kubeconfig: &Path,
+    no_tmux: bool,
+) -> Result<()> {
+    // If inside tmux and not --no-tmux, use tmux mode instead of subshell
+    if !no_tmux && commands::tmux::is_tmux() {
+        let mode = commands::tmux::tmux_mode();
+        return match mode.as_str() {
+            "sessions" => commands::tmux::switch_or_create_session(context, namespace, kubeconfig),
+            _ => commands::tmux::switch_or_create_window(context, namespace, kubeconfig),
+        };
+    }
+
     let state = CurrentState::from_env();
     let new_depth = state.next_depth();
 
@@ -1565,11 +1675,13 @@ mod tests {
                 namespace,
                 recursive,
                 output,
+                no_tmux,
             }) => {
                 assert_eq!(context, Some("my-context".to_string()));
                 assert!(namespace.is_none());
                 assert!(!recursive);
                 assert!(output.is_none());
+                assert!(!no_tmux);
             }
             _ => panic!("expected Ctx command"),
         }
@@ -1666,9 +1778,14 @@ mod tests {
     fn test_cli_pick_default() {
         let cli = Cli::parse_from(["k8pk", "pick"]);
         match cli.command {
-            Some(Command::Pick { output, detail }) => {
+            Some(Command::Pick {
+                output,
+                detail,
+                no_tmux,
+            }) => {
                 assert!(output.is_none());
                 assert!(!detail);
+                assert!(!no_tmux);
             }
             _ => panic!("expected Pick command"),
         }

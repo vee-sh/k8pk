@@ -8,6 +8,7 @@ mod interactive;
 mod kubeconfig_ops;
 mod login;
 mod organize;
+pub mod tmux;
 mod update;
 
 pub use alias::run as alias;

@@ -22,6 +22,8 @@ pub struct K8pkConfig {
     pub aliases: Option<HashMap<String, String>>,
     #[serde(default)]
     pub pick: Option<PickSection>,
+    #[serde(default)]
+    pub tmux: Option<TmuxSection>,
 }
 
 /// Hooks configuration section
@@ -39,6 +41,21 @@ pub struct PickSection {
     /// Show only clusters (group contexts by base cluster name)
     #[serde(default)]
     pub clusters_only: bool,
+}
+
+/// Tmux integration configuration
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct TmuxSection {
+    /// Mode: "windows" (default) or "sessions"
+    #[serde(default = "default_tmux_mode")]
+    pub mode: String,
+    /// Naming template, e.g. "k8pk-{context}" (default: "{context}")
+    #[serde(default)]
+    pub name_template: Option<String>,
+}
+
+fn default_tmux_mode() -> String {
+    "windows".to_string()
 }
 
 /// Configs section for kubeconfig file discovery
@@ -192,6 +209,13 @@ configs:
 #   # instead of showing all namespace-specific contexts
 #   # Useful when you have thousands of namespace contexts
 #   clusters_only: false
+
+# Tmux integration (auto-detected when inside tmux)
+# When inside tmux, k8pk creates/switches tmux windows or sessions
+# instead of spawning nested subshells.
+# tmux:
+#   mode: windows           # "windows" (default) or "sessions"
+#   name_template: "{context}"  # naming for tmux windows/sessions
 "#
     .to_string()
 }
