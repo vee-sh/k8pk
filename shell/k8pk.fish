@@ -8,6 +8,13 @@
 # Optional: Set K8PK_VERBOSE to see confirmation messages
 #   set -x K8PK_VERBOSE 1
 
+# Auto-deregister session on shell exit (only if in a k8pk session).
+function _k8pk_exit_cleanup --on-event fish_exit
+  if test -n "$K8PK_CONTEXT"; and command -v k8pk >/dev/null 2>&1
+    k8pk sessions deregister 2>/dev/null; or true
+  end
+end
+
 # Build k8pk args with kubeconfig directories if set
 function _k8pk_args
   set -l args
@@ -31,12 +38,20 @@ function kpick
     return 1
   end
   set -l args (_k8pk_args)
-  # Exports go to stdout (for source)
-  k8pk $args pick --output env | source
-  # Only print confirmation if K8PK_VERBOSE is set
-  if test -n "$K8PK_VERBOSE"
-    set -l display_ctx (test -n "$K8PK_CONTEXT_DISPLAY"; and echo "$K8PK_CONTEXT_DISPLAY"; or echo "$K8PK_CONTEXT")
-    echo "Switched to $display_ctx"(test -n "$K8PK_NAMESPACE"; and echo " ($K8PK_NAMESPACE)"; or echo "") >&2
+  # Capture exports to a temp file so we can check exit status
+  set -l tmpfile (mktemp)
+  if k8pk $args pick --output env > $tmpfile 2>/dev/stderr
+    source $tmpfile
+    rm -f $tmpfile
+    if test -n "$K8PK_VERBOSE"
+      set -l display_ctx (test -n "$K8PK_CONTEXT_DISPLAY"; and echo "$K8PK_CONTEXT_DISPLAY"; or echo "$K8PK_CONTEXT")
+      echo "Switched to $display_ctx"(test -n "$K8PK_NAMESPACE"; and echo " ($K8PK_NAMESPACE)"; or echo "") >&2
+    end
+  else
+    set -l exit_code $status
+    cat $tmpfile >&2
+    rm -f $tmpfile
+    return $exit_code
   end
 end
 

@@ -185,6 +185,22 @@ fn install_aliases(config_path: &PathBuf, shell: &str) -> Result<()> {
         "  {}",
         format!("source {}", config_path.display()).bright_white()
     );
+    println!();
+    println!(
+        "{} For full shell integration (kpick, kctx, kns, session guards),",
+        "Tip:".bright_cyan()
+    );
+    println!("  add to your shell config:");
+    match shell {
+        "fish" => println!(
+            "  {}",
+            "source /path/to/k8pk.fish  # from the k8pk repo shell/ directory".bright_white()
+        ),
+        _ => println!(
+            "  {}",
+            "source /path/to/k8pk.sh    # from the k8pk repo shell/ directory".bright_white()
+        ),
+    }
 
     Ok(())
 }

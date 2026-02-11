@@ -9,6 +9,14 @@
 # Optional: Set K8PK_VERBOSE=1 to see confirmation messages
 #   export K8PK_VERBOSE=1
 
+# Auto-deregister session on shell exit (only if in a k8pk session).
+_k8pk_exit_cleanup() {
+  if [ -n "$K8PK_CONTEXT" ] && command -v k8pk >/dev/null 2>&1; then
+    k8pk sessions deregister 2>/dev/null || true
+  fi
+}
+trap _k8pk_exit_cleanup EXIT
+
 # Build k8pk args with kubeconfig directories if set
 _k8pk_args() {
   local args=""

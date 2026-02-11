@@ -52,6 +52,19 @@ fn init_tracing(verbosity: u8) {
 }
 
 fn main() -> anyhow::Result<()> {
+    match run() {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Cancelled (Ctrl-C / Esc in picker) should exit quietly.
+            if let Some(K8pkError::Cancelled) = e.downcast_ref::<K8pkError>() {
+                std::process::exit(130) // 128 + SIGINT
+            }
+            Err(e)
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
     let k8pk_config = config::load()?;
@@ -84,6 +97,9 @@ fn main() -> anyhow::Result<()> {
             } else {
                 let merged = kubeconfig::load_merged(&paths)?;
                 let names = merged.context_names();
+                if names.is_empty() {
+                    return Err(K8pkError::NoContexts.into());
+                }
                 if json {
                     println!("{}", serde_json::to_string(&names)?);
                 } else {
@@ -139,7 +155,26 @@ fn main() -> anyhow::Result<()> {
         }
 
         Command::Namespaces { context, json } => {
+            // Auto-detect context: explicit flag > K8PK_CONTEXT > current-context
+            let context = match context {
+                Some(c) => c,
+                None => {
+                    let state = CurrentState::from_env();
+                    if let Some(ctx) = state.context {
+                        ctx
+                    } else {
+                        let merged = kubeconfig::load_merged(&paths)?;
+                        merged
+                            .current_context
+                            .clone()
+                            .ok_or(K8pkError::NotInContext)?
+                    }
+                }
+            };
             let namespaces = kubeconfig::list_namespaces(&context, kubeconfig_env.as_deref())?;
+            if namespaces.is_empty() {
+                return Err(K8pkError::NoNamespaces(context).into());
+            }
             if json {
                 println!("{}", serde_json::to_string(&namespaces)?);
             } else {
@@ -510,12 +545,15 @@ fn main() -> anyhow::Result<()> {
                         .into());
                     }
                     if display {
-                        if let Some(ctx) = state.context_display.as_ref().or(state.context.as_ref())
-                        {
-                            println!("{}", ctx);
+                        match state.context_display.as_ref().or(state.context.as_ref()) {
+                            Some(ctx) => println!("{}", ctx),
+                            None => return Err(K8pkError::NotInContext.into()),
                         }
-                    } else if let Some(ctx) = &state.context {
-                        println!("{}", ctx);
+                    } else {
+                        match &state.context {
+                            Some(ctx) => println!("{}", ctx),
+                            None => return Err(K8pkError::NotInContext.into()),
+                        }
                     }
                 }
                 "ns" | "namespace" => {
@@ -525,8 +563,15 @@ fn main() -> anyhow::Result<()> {
                         )
                         .into());
                     }
-                    if let Some(ns) = &state.namespace {
-                        println!("{}", ns);
+                    match &state.namespace {
+                        Some(ns) => println!("{}", ns),
+                        None => {
+                            if state.context.is_some() {
+                                println!("(default)");
+                            } else {
+                                return Err(K8pkError::NotInContext.into());
+                            }
+                        }
                     }
                 }
                 "depth" => {
@@ -545,8 +590,9 @@ fn main() -> anyhow::Result<()> {
                         )
                         .into());
                     }
-                    if let Some(p) = &state.config_path {
-                        println!("{}", p.display());
+                    match &state.config_path {
+                        Some(p) => println!("{}", p.display()),
+                        None => return Err(K8pkError::NotInContext.into()),
                     }
                 }
                 "all" | "json" => {
@@ -981,6 +1027,11 @@ fn main() -> anyhow::Result<()> {
                 };
                 let context_name = login_result.context_name;
                 let namespace = login_result.namespace;
+                let ns_display = namespace.as_deref().unwrap_or("default");
+                eprintln!(
+                    "Login successful. Switching to context '{}' (namespace: {})...",
+                    context_name, ns_display
+                );
                 commands::save_to_history(&context_name, namespace.as_deref())?;
                 if io::stdout().is_terminal() {
                     spawn_shell(&context_name, namespace.as_deref(), &kubeconfig_path)?;
@@ -1121,9 +1172,12 @@ fn main() -> anyhow::Result<()> {
             let context_name = login_result.context_name;
             let namespace = login_result.namespace;
 
-            // Automatically switch to the new context after login
-            // Use the kubeconfig file directly that oc login created
-            // (it already has the correct credentials and context)
+            // Automatically switch to the new context after login.
+            let ns_display = namespace.as_deref().unwrap_or("default");
+            eprintln!(
+                "Login successful. Switching to context '{}' (namespace: {})...",
+                context_name, ns_display
+            );
 
             // Save to history
             commands::save_to_history(&context_name, namespace.as_deref())?;
@@ -1264,19 +1318,17 @@ fn main() -> anyhow::Result<()> {
                         println!("  Switch to a context to start a session:");
                         println!("    k8pk ctx <context>");
                     } else if io::stdin().is_terminal() && io::stderr().is_terminal() {
-                        // Interactive picker.
+                        // Interactive picker -- use index-based matching so that
+                        // time-dependent labels (age) don't cause a mismatch.
                         let labels: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
-                        let selection = inquire::Select::new("Switch to session:", labels)
+                        let selection = inquire::Select::new("Switch to session:", labels.clone())
                             .prompt()
                             .map_err(|_| K8pkError::Cancelled)?;
 
-                        // Find the group that matches the selected label.
-                        let chosen = groups
-                            .iter()
-                            .find(|g| g.to_string() == selection)
-                            .ok_or_else(|| {
-                                K8pkError::InvalidArgument("selection not found".into())
-                            })?;
+                        let idx = labels.iter().position(|l| *l == selection).ok_or_else(|| {
+                            K8pkError::InvalidArgument("selection not found".into())
+                        })?;
+                        let chosen = &groups[idx];
 
                         let ns_opt: Option<&str> = if chosen.namespace == "default" {
                             None

@@ -207,6 +207,13 @@ pub fn pick_context(cfg: &KubeConfig) -> Result<String> {
         return Err(K8pkError::NoContexts);
     }
 
+    // Auto-select when there is only one context.
+    if all_names.len() == 1 {
+        let name = all_names.into_iter().next().unwrap();
+        eprintln!("Auto-selected the only available context: {}", name);
+        return Ok(name);
+    }
+
     // Build ordered list: recent contexts first (that still exist), then the rest
     let all_set: HashSet<&str> = all_names.iter().map(|s| s.as_str()).collect();
     let mut ordered: Vec<String> = Vec::with_capacity(all_names.len());

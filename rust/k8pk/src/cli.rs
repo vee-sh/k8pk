@@ -77,9 +77,9 @@ pub enum Command {
 
     /// List namespaces accessible in a context
     Namespaces {
-        /// Context to query namespaces for
+        /// Context to query namespaces for (defaults to K8PK_CONTEXT or current-context)
         #[arg(long, value_name = "NAME")]
-        context: String,
+        context: Option<String>,
         /// Output as JSON array
         #[arg(long, help = "Output as JSON array")]
         json: bool,
