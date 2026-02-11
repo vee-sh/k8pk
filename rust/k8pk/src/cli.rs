@@ -674,13 +674,18 @@ pub enum Command {
     #[command(subcommand)]
     Vault(VaultCommand),
 
-    /// List or switch active k8pk tmux sessions/windows
-    #[command(after_help = "Examples:\n  \
+    /// Manage active k8pk sessions across terminals and tmux
+    #[command(after_help = "Actions:\n  \
+        list (default)  List all active k8pk sessions (registry + tmux)\n  \
+        adopt <ID>      Switch to the same context as another session\n  \
+        register        Register the current shell as a k8pk session (used by shell integration)\n  \
+        deregister      Remove the current shell from the session registry\n\n\
+        Examples:\n  \
         k8pk sessions              # List active k8pk sessions\n  \
         k8pk sessions --json       # Machine-readable output\n  \
         k8pk sessions adopt 3      # Adopt same context as window 3")]
     Sessions {
-        /// Action: list (default), adopt
+        /// Action: list (default), adopt, register, deregister
         #[arg(value_name = "ACTION", default_value = "list")]
         action: String,
         /// Target window/session id (for adopt)

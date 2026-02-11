@@ -195,3 +195,120 @@ kclean() {
   # Execute the cleanup commands automatically
   eval "$(k8pk $args clean)"
 }
+
+# List active k8pk sessions across terminals
+ksessions() {
+  if ! command -v k8pk >/dev/null 2>&1; then
+    echo "k8pk not found. Install it first." >&2
+    return 1
+  fi
+  k8pk sessions "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Session guards -- prevent accidental kubeconfig corruption from external
+# CLI tools (oc login, gcloud, aws eks) that write to KUBECONFIG globally.
+#
+# These wrappers are only active inside a k8pk session (K8PK_CONTEXT is set).
+# Outside a k8pk session they pass through transparently.
+#
+# To bypass a guard once:  command oc login ...
+# To disable guards:       export K8PK_NO_GUARDS=1
+# ---------------------------------------------------------------------------
+
+_k8pk_guard_oc() {
+  if [ -n "$K8PK_NO_GUARDS" ] || [ -z "$K8PK_CONTEXT" ]; then
+    command oc "$@"
+    return $?
+  fi
+  if [ "$1" = "login" ]; then
+    echo "k8pk: 'oc login' rewrites KUBECONFIG and may corrupt your isolated session." >&2
+    echo "  Current context: $K8PK_CONTEXT" >&2
+    echo "  KUBECONFIG:      $KUBECONFIG" >&2
+    echo "" >&2
+    echo "  Recommended: k8pk login --type ocp <server>" >&2
+    echo "  To proceed anyway: command oc login ..." >&2
+    echo "" >&2
+    if [ -t 0 ]; then
+      printf "  Continue? [y/N] " >&2
+      read -r _reply
+      case "$_reply" in
+        [Yy]*) command oc "$@"; return $? ;;
+        *) return 1 ;;
+      esac
+    else
+      echo "  (non-interactive -- blocked)" >&2
+      return 1
+    fi
+  fi
+  command oc "$@"
+}
+
+_k8pk_guard_gcloud() {
+  if [ -n "$K8PK_NO_GUARDS" ] || [ -z "$K8PK_CONTEXT" ]; then
+    command gcloud "$@"
+    return $?
+  fi
+  # Detect "gcloud container clusters get-credentials"
+  case "$*" in
+    *container*clusters*get-credentials*)
+      echo "k8pk: 'gcloud container clusters get-credentials' writes to KUBECONFIG." >&2
+      echo "  This will add a new context to your isolated kubeconfig, which may confuse k8pk." >&2
+      echo "  Current context: $K8PK_CONTEXT" >&2
+      echo "" >&2
+      echo "  Recommended: k8pk login --type gke <server>" >&2
+      echo "  To proceed anyway: command gcloud container clusters get-credentials ..." >&2
+      echo "" >&2
+      if [ -t 0 ]; then
+        printf "  Continue? [y/N] " >&2
+        read -r _reply
+        case "$_reply" in
+          [Yy]*) command gcloud "$@"; return $? ;;
+          *) return 1 ;;
+        esac
+      else
+        echo "  (non-interactive -- blocked)" >&2
+        return 1
+      fi
+      ;;
+  esac
+  command gcloud "$@"
+}
+
+_k8pk_guard_aws() {
+  if [ -n "$K8PK_NO_GUARDS" ] || [ -z "$K8PK_CONTEXT" ]; then
+    command aws "$@"
+    return $?
+  fi
+  # Detect "aws eks update-kubeconfig"
+  case "$*" in
+    *eks*update-kubeconfig*)
+      echo "k8pk: 'aws eks update-kubeconfig' writes to KUBECONFIG." >&2
+      echo "  This will modify your isolated kubeconfig, which may confuse k8pk." >&2
+      echo "  Current context: $K8PK_CONTEXT" >&2
+      echo "" >&2
+      echo "  Recommended: k8pk login --type k8s --exec-preset aws-eks --exec-cluster <name>" >&2
+      echo "  To proceed anyway: command aws eks update-kubeconfig ..." >&2
+      echo "" >&2
+      if [ -t 0 ]; then
+        printf "  Continue? [y/N] " >&2
+        read -r _reply
+        case "$_reply" in
+          [Yy]*) command aws "$@"; return $? ;;
+          *) return 1 ;;
+        esac
+      else
+        echo "  (non-interactive -- blocked)" >&2
+        return 1
+      fi
+      ;;
+  esac
+  command aws "$@"
+}
+
+# Install guards as shell functions (override the bare command names).
+# The functions check K8PK_CONTEXT at call time, so they are transparent
+# when not in a k8pk session.
+oc()     { _k8pk_guard_oc "$@"; }
+gcloud() { _k8pk_guard_gcloud "$@"; }
+aws()    { _k8pk_guard_aws "$@"; }

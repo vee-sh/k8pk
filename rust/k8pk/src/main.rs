@@ -1240,22 +1240,82 @@ fn main() -> anyhow::Result<()> {
             json,
         } => match action.as_str() {
             "list" | "ls" => {
-                let sessions = commands::tmux::list_sessions()?;
+                // Merge sessions from the registry and tmux (deduplicate by PID/context).
+                let registry = commands::sessions::list_active().unwrap_or_default();
+                let tmux_sessions = commands::tmux::list_sessions().unwrap_or_default();
+
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&sessions)?);
-                } else if sessions.is_empty() {
-                    if commands::tmux::is_tmux() {
-                        println!("No active k8pk sessions in tmux.");
-                    } else {
-                        println!("Not inside tmux. Use 'k8pk sessions' inside a tmux session.");
+                    // Unified JSON output combining both sources.
+                    #[derive(serde::Serialize)]
+                    struct UnifiedSession {
+                        source: String,
+                        pid: Option<u32>,
+                        context: String,
+                        namespace: String,
+                        terminal: String,
+                        age: String,
+                        active: bool,
                     }
+
+                    let mut unified: Vec<UnifiedSession> = Vec::new();
+
+                    for s in &registry {
+                        unified.push(UnifiedSession {
+                            source: "registry".to_string(),
+                            pid: Some(s.pid),
+                            context: s.context.clone(),
+                            namespace: s.namespace.clone(),
+                            terminal: s.terminal.clone(),
+                            age: commands::sessions::format_age(s.started_at),
+                            active: false,
+                        });
+                    }
+
+                    for s in &tmux_sessions {
+                        // Skip tmux entries already covered by registry.
+                        if registry.iter().any(|r| r.context == s.context) {
+                            continue;
+                        }
+                        unified.push(UnifiedSession {
+                            source: "tmux".to_string(),
+                            pid: None,
+                            context: s.context.clone(),
+                            namespace: s.namespace.clone(),
+                            terminal: format!("tmux:{}", s.window_index),
+                            age: String::new(),
+                            active: s.active,
+                        });
+                    }
+
+                    println!("{}", serde_json::to_string_pretty(&unified)?);
+                } else if registry.is_empty() && tmux_sessions.is_empty() {
+                    println!("No active k8pk sessions.");
+                    println!("  Switch to a context to start a session:");
+                    println!("    k8pk ctx <context>");
                 } else {
-                    println!("{:<6} {:<30} {:<20} STATUS", "WIN", "CONTEXT", "NAMESPACE");
-                    for s in &sessions {
-                        let status = if s.active { "*" } else { "" };
+                    println!(
+                        "{:<8} {:<30} {:<18} {:<8} TERMINAL",
+                        "PID", "CONTEXT", "NAMESPACE", "AGE"
+                    );
+                    for s in &registry {
                         println!(
-                            "{:<6} {:<30} {:<20} {}",
-                            s.window_index, s.context, s.namespace, status
+                            "{:<8} {:<30} {:<18} {:<8} {}",
+                            s.pid,
+                            s.context,
+                            s.namespace,
+                            commands::sessions::format_age(s.started_at),
+                            s.terminal,
+                        );
+                    }
+                    for s in &tmux_sessions {
+                        // Skip tmux entries already covered by registry.
+                        if registry.iter().any(|r| r.context == s.context) {
+                            continue;
+                        }
+                        let marker = if s.active { " *" } else { "" };
+                        println!(
+                            "{:<8} {:<30} {:<18} {:<8} tmux:{}{}",
+                            "-", s.context, s.namespace, "", s.window_index, marker
                         );
                     }
                 }
@@ -1263,11 +1323,27 @@ fn main() -> anyhow::Result<()> {
             "adopt" => {
                 let target_id = target.ok_or_else(|| {
                     K8pkError::InvalidArgument(
-                        "specify a window/session id to adopt (see 'k8pk sessions')".into(),
+                        "specify a PID or tmux window id to adopt (see 'k8pk sessions')".into(),
                     )
                 })?;
-                let sessions = commands::tmux::list_sessions()?;
-                let found = sessions
+
+                // Try registry first (match by PID).
+                let registry = commands::sessions::list_active().unwrap_or_default();
+                if let Some(s) = registry.iter().find(|s| s.pid.to_string() == target_id) {
+                    let ns_opt: Option<&str> = if s.namespace == "default" {
+                        None
+                    } else {
+                        Some(s.namespace.as_str())
+                    };
+                    let kubeconfig =
+                        commands::ensure_isolated_kubeconfig(&s.context, ns_opt, &paths)?;
+                    spawn_shell(&s.context, ns_opt, &kubeconfig)?;
+                    return Ok(());
+                }
+
+                // Fall back to tmux sessions (match by window index or name).
+                let tmux_sessions = commands::tmux::list_sessions().unwrap_or_default();
+                let found = tmux_sessions
                     .iter()
                     .find(|s| s.window_index == target_id || s.window_name == target_id);
                 match found {
@@ -1283,16 +1359,31 @@ fn main() -> anyhow::Result<()> {
                     }
                     None => {
                         return Err(K8pkError::InvalidArgument(format!(
-                                "no k8pk session found for '{}'. Run 'k8pk sessions' to see active sessions.",
-                                target_id
-                            ))
-                            .into());
+                            "no k8pk session found for '{}'. Run 'k8pk sessions' to see active sessions.",
+                            target_id
+                        ))
+                        .into());
                     }
                 }
             }
+            "register" | "reg" => {
+                // Register the calling shell as a k8pk session.
+                // Reads context/namespace/kubeconfig from environment.
+                let ctx = env::var("K8PK_CONTEXT").unwrap_or_default();
+                if ctx.is_empty() {
+                    // Nothing to register -- not in a k8pk session.
+                    return Ok(());
+                }
+                let ns = env::var("K8PK_NAMESPACE").ok();
+                let kc = env::var("KUBECONFIG").unwrap_or_default();
+                commands::sessions::register(&ctx, ns.as_deref(), &kc, None)?;
+            }
+            "deregister" | "dereg" | "unreg" => {
+                commands::sessions::deregister_current()?;
+            }
             other => {
                 return Err(K8pkError::InvalidArgument(format!(
-                    "unknown sessions action: '{}'. Use: list, adopt",
+                    "unknown sessions action: '{}'. Use: list, adopt, register, deregister",
                     other
                 ))
                 .into());
@@ -1444,6 +1535,15 @@ fn spawn_shell_inner(
         cmd.env("K8PK_NAMESPACE", ns);
         cmd.env("OC_NAMESPACE", ns);
     }
+
+    // Register session in the registry before exec replaces the process.
+    // On Unix, exec() keeps the same PID so our registration stays valid.
+    let _ = commands::sessions::register(
+        context,
+        namespace,
+        &kubeconfig.display().to_string(),
+        Some(std::process::id()),
+    );
 
     #[cfg(unix)]
     {

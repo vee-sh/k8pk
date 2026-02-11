@@ -363,8 +363,14 @@ pub fn print_env_exports(
         }
     };
 
+    // Append session registration so eval-based switches are tracked.
+    let exports_with_reg = match shell {
+        "fish" => format!("{}k8pk sessions register 2>/dev/null; or true;\n", exports),
+        _ => format!("{}k8pk sessions register 2>/dev/null || true;\n", exports),
+    };
+
     if verbose {
-        eprintln!("{}", exports);
+        eprintln!("{}", exports_with_reg);
     }
 
     // If stdout is a terminal, the user is probably running this directly
@@ -381,7 +387,7 @@ pub fn print_env_exports(
         }
     }
 
-    print!("{}", exports);
+    print!("{}", exports_with_reg);
     Ok(())
 }
 
@@ -423,6 +429,7 @@ pub fn print_exit_commands(output: Option<&str>) -> Result<()> {
                 println!("set -e K8PK_NAMESPACE;");
                 println!("set -e K8PK_DEPTH;");
                 println!("set -e OC_NAMESPACE;");
+                println!("k8pk sessions deregister 2>/dev/null; or true;");
             } else {
                 // Bash/Zsh syntax (default)
                 println!("export KUBECONFIG=\"/dev/null\";");
@@ -432,6 +439,7 @@ pub fn print_exit_commands(output: Option<&str>) -> Result<()> {
                 println!("unset K8PK_NAMESPACE;");
                 println!("unset K8PK_DEPTH;");
                 println!("unset OC_NAMESPACE;");
+                println!("k8pk sessions deregister 2>/dev/null || true;");
             }
         }
     }

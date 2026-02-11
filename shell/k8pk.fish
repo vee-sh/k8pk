@@ -116,3 +116,114 @@ function _k8pk_prompt
     echo "$prompt"
   end
 end
+
+function ksessions
+  if not command -v k8pk >/dev/null 2>&1
+    echo "k8pk not found. Install it first." >&2
+    return 1
+  end
+  k8pk sessions $argv
+end
+
+# ---------------------------------------------------------------------------
+# Session guards -- prevent accidental kubeconfig corruption from external
+# CLI tools (oc login, gcloud, aws eks) that write to KUBECONFIG globally.
+#
+# Only active inside a k8pk session (K8PK_CONTEXT is set).
+# To bypass once:   command oc login ...
+# To disable:       set -gx K8PK_NO_GUARDS 1
+# ---------------------------------------------------------------------------
+
+function oc
+  if test -n "$K8PK_NO_GUARDS"; or test -z "$K8PK_CONTEXT"
+    command oc $argv
+    return $status
+  end
+  if test (count $argv) -ge 1; and test "$argv[1]" = "login"
+    echo "k8pk: 'oc login' rewrites KUBECONFIG and may corrupt your isolated session." >&2
+    echo "  Current context: $K8PK_CONTEXT" >&2
+    echo "  KUBECONFIG:      $KUBECONFIG" >&2
+    echo "" >&2
+    echo "  Recommended: k8pk login --type ocp <server>" >&2
+    echo "  To proceed anyway: command oc login ..." >&2
+    echo "" >&2
+    if isatty stdin
+      read -l -P "  Continue? [y/N] " _reply
+      switch $_reply
+        case Y y
+          command oc $argv
+          return $status
+        case '*'
+          return 1
+      end
+    else
+      echo "  (non-interactive -- blocked)" >&2
+      return 1
+    end
+  end
+  command oc $argv
+end
+
+function gcloud
+  if test -n "$K8PK_NO_GUARDS"; or test -z "$K8PK_CONTEXT"
+    command gcloud $argv
+    return $status
+  end
+  # Detect "gcloud container clusters get-credentials"
+  set -l joined (string join " " -- $argv)
+  if string match -q "*container*clusters*get-credentials*" "$joined"
+    echo "k8pk: 'gcloud container clusters get-credentials' writes to KUBECONFIG." >&2
+    echo "  This will add a new context to your isolated kubeconfig." >&2
+    echo "  Current context: $K8PK_CONTEXT" >&2
+    echo "" >&2
+    echo "  Recommended: k8pk login --type gke <server>" >&2
+    echo "  To proceed anyway: command gcloud container clusters get-credentials ..." >&2
+    echo "" >&2
+    if isatty stdin
+      read -l -P "  Continue? [y/N] " _reply
+      switch $_reply
+        case Y y
+          command gcloud $argv
+          return $status
+        case '*'
+          return 1
+      end
+    else
+      echo "  (non-interactive -- blocked)" >&2
+      return 1
+    end
+  end
+  command gcloud $argv
+end
+
+function aws
+  if test -n "$K8PK_NO_GUARDS"; or test -z "$K8PK_CONTEXT"
+    command aws $argv
+    return $status
+  end
+  # Detect "aws eks update-kubeconfig"
+  set -l joined (string join " " -- $argv)
+  if string match -q "*eks*update-kubeconfig*" "$joined"
+    echo "k8pk: 'aws eks update-kubeconfig' writes to KUBECONFIG." >&2
+    echo "  This will modify your isolated kubeconfig." >&2
+    echo "  Current context: $K8PK_CONTEXT" >&2
+    echo "" >&2
+    echo "  Recommended: k8pk login --type k8s --exec-preset aws-eks --exec-cluster <name>" >&2
+    echo "  To proceed anyway: command aws eks update-kubeconfig ..." >&2
+    echo "" >&2
+    if isatty stdin
+      read -l -P "  Continue? [y/N] " _reply
+      switch $_reply
+        case Y y
+          command aws $argv
+          return $status
+        case '*'
+          return 1
+      end
+    else
+      echo "  (non-interactive -- blocked)" >&2
+      return 1
+    end
+  end
+  command aws $argv
+end
