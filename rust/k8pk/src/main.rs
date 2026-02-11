@@ -1238,169 +1238,180 @@ fn main() -> anyhow::Result<()> {
             action,
             target,
             json,
-        } => match action.as_str() {
-            "list" | "ls" => {
-                // Auto-register the current shell if it is in a k8pk session
-                // but not yet tracked (e.g. session predates the registry feature,
-                // or the user upgraded k8pk mid-session).
-                if let Ok(ctx) = env::var("K8PK_CONTEXT") {
-                    if !ctx.is_empty() {
-                        let ns = env::var("K8PK_NAMESPACE").ok();
-                        let kc = env::var("KUBECONFIG").unwrap_or_default();
-                        // Use parent PID (= the shell that ran k8pk sessions list).
-                        let _ = commands::sessions::register(&ctx, ns.as_deref(), &kc, None);
-                    }
-                }
-
-                // Merge sessions from the registry and tmux (deduplicate by PID/context).
-                let registry = commands::sessions::list_active().unwrap_or_default();
-                let tmux_sessions = commands::tmux::list_sessions().unwrap_or_default();
-
-                if json {
-                    // Unified JSON output combining both sources.
-                    #[derive(serde::Serialize)]
-                    struct UnifiedSession {
-                        source: String,
-                        pid: Option<u32>,
-                        context: String,
-                        namespace: String,
-                        terminal: String,
-                        age: String,
-                        active: bool,
-                    }
-
-                    let mut unified: Vec<UnifiedSession> = Vec::new();
-
-                    for s in &registry {
-                        unified.push(UnifiedSession {
-                            source: "registry".to_string(),
-                            pid: Some(s.pid),
-                            context: s.context.clone(),
-                            namespace: s.namespace.clone(),
-                            terminal: s.terminal.clone(),
-                            age: commands::sessions::format_age(s.started_at),
-                            active: false,
-                        });
-                    }
-
-                    for s in &tmux_sessions {
-                        // Skip tmux entries already covered by registry.
-                        if registry.iter().any(|r| r.context == s.context) {
-                            continue;
-                        }
-                        unified.push(UnifiedSession {
-                            source: "tmux".to_string(),
-                            pid: None,
-                            context: s.context.clone(),
-                            namespace: s.namespace.clone(),
-                            terminal: format!("tmux:{}", s.window_index),
-                            age: String::new(),
-                            active: s.active,
-                        });
-                    }
-
-                    println!("{}", serde_json::to_string_pretty(&unified)?);
-                } else if registry.is_empty() && tmux_sessions.is_empty() {
-                    println!("No active k8pk sessions.");
-                    println!("  Switch to a context to start a session:");
-                    println!("    k8pk ctx <context>");
-                } else {
-                    println!(
-                        "{:<8} {:<30} {:<18} {:<8} TERMINAL",
-                        "PID", "CONTEXT", "NAMESPACE", "AGE"
-                    );
-                    for s in &registry {
-                        println!(
-                            "{:<8} {:<30} {:<18} {:<8} {}",
-                            s.pid,
-                            s.context,
-                            s.namespace,
-                            commands::sessions::format_age(s.started_at),
-                            s.terminal,
-                        );
-                    }
-                    for s in &tmux_sessions {
-                        // Skip tmux entries already covered by registry.
-                        if registry.iter().any(|r| r.context == s.context) {
-                            continue;
-                        }
-                        let marker = if s.active { " *" } else { "" };
-                        println!(
-                            "{:<8} {:<30} {:<18} {:<8} tmux:{}{}",
-                            "-", s.context, s.namespace, "", s.window_index, marker
-                        );
-                    }
+            no_tmux,
+        } => {
+            // Auto-register the current shell if it is inside a k8pk session
+            // but not yet tracked (e.g. session predates the registry feature).
+            if let Ok(ctx) = env::var("K8PK_CONTEXT") {
+                if !ctx.is_empty() {
+                    let ns = env::var("K8PK_NAMESPACE").ok();
+                    let kc = env::var("KUBECONFIG").unwrap_or_default();
+                    let _ = commands::sessions::register(&ctx, ns.as_deref(), &kc, None);
                 }
             }
-            "adopt" => {
-                let target_id = target.ok_or_else(|| {
-                    K8pkError::InvalidArgument(
-                        "specify a PID or tmux window id to adopt (see 'k8pk sessions')".into(),
-                    )
-                })?;
 
-                // Try registry first (match by PID).
-                let registry = commands::sessions::list_active().unwrap_or_default();
-                if let Some(s) = registry.iter().find(|s| s.pid.to_string() == target_id) {
-                    let ns_opt: Option<&str> = if s.namespace == "default" {
-                        None
+            match action.as_str() {
+                "list" | "ls" => {
+                    let registry = commands::sessions::list_active().unwrap_or_default();
+                    let tmux_sessions = commands::tmux::list_sessions().unwrap_or_default();
+                    let groups =
+                        commands::sessions::deduplicated_sessions(&registry, &tmux_sessions);
+
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&groups)?);
+                    } else if groups.is_empty() {
+                        println!("No active k8pk sessions.");
+                        println!("  Switch to a context to start a session:");
+                        println!("    k8pk ctx <context>");
+                    } else if io::stdin().is_terminal() && io::stderr().is_terminal() {
+                        // Interactive picker.
+                        let labels: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
+                        let selection = inquire::Select::new("Switch to session:", labels)
+                            .prompt()
+                            .map_err(|_| K8pkError::Cancelled)?;
+
+                        // Find the group that matches the selected label.
+                        let chosen = groups
+                            .iter()
+                            .find(|g| g.to_string() == selection)
+                            .ok_or_else(|| {
+                                K8pkError::InvalidArgument("selection not found".into())
+                            })?;
+
+                        let ns_opt: Option<&str> = if chosen.namespace == "default" {
+                            None
+                        } else {
+                            Some(chosen.namespace.as_str())
+                        };
+
+                        let kubeconfig =
+                            commands::ensure_isolated_kubeconfig(&chosen.context, ns_opt, &paths)?;
+
+                        commands::save_to_history(&chosen.context, ns_opt)?;
+
+                        if io::stdout().is_terminal() {
+                            let do_spawn = |ctx: &str, ns: Option<&str>, kc: &Path| -> Result<()> {
+                                if no_tmux {
+                                    spawn_shell_no_tmux(ctx, ns, kc)
+                                } else {
+                                    spawn_shell(ctx, ns, kc)
+                                }
+                            };
+                            do_spawn(&chosen.context, ns_opt, &kubeconfig)?;
+                        } else {
+                            commands::print_env_exports(
+                                &chosen.context,
+                                ns_opt,
+                                &kubeconfig,
+                                commands::detect_shell(),
+                                false,
+                                false,
+                            )?;
+                        }
                     } else {
-                        Some(s.namespace.as_str())
-                    };
-                    let kubeconfig =
-                        commands::ensure_isolated_kubeconfig(&s.context, ns_opt, &paths)?;
-                    spawn_shell(&s.context, ns_opt, &kubeconfig)?;
-                    return Ok(());
+                        // Non-interactive table output.
+                        println!(
+                            "{:<30} {:<18} {:<8} {:<8} TERMINAL",
+                            "CONTEXT", "NAMESPACE", "AGE", "SHELLS"
+                        );
+                        for g in &groups {
+                            let current = if g.is_current { " *" } else { "" };
+                            println!(
+                                "{:<30} {:<18} {:<8} {:<8} {}{}",
+                                g.context,
+                                g.namespace,
+                                commands::sessions::format_age(g.newest_at),
+                                g.count,
+                                g.terminal,
+                                current,
+                            );
+                        }
+                    }
                 }
+                "adopt" => {
+                    let target_id = target.ok_or_else(|| {
+                        K8pkError::InvalidArgument(
+                            "specify a PID, context name, or tmux window id (see 'k8pk sessions')"
+                                .into(),
+                        )
+                    })?;
 
-                // Fall back to tmux sessions (match by window index or name).
-                let tmux_sessions = commands::tmux::list_sessions().unwrap_or_default();
-                let found = tmux_sessions
-                    .iter()
-                    .find(|s| s.window_index == target_id || s.window_name == target_id);
-                match found {
-                    Some(s) => {
-                        let ns_opt: Option<&str> = if s.namespace == "(default)" {
+                    // Try registry first (match by PID, then by context name).
+                    let registry = commands::sessions::list_active().unwrap_or_default();
+                    let found_reg = registry
+                        .iter()
+                        .find(|s| s.pid.to_string() == target_id)
+                        .or_else(|| registry.iter().find(|s| s.context == target_id));
+                    if let Some(s) = found_reg {
+                        let ns_opt: Option<&str> = if s.namespace == "default" {
                             None
                         } else {
                             Some(s.namespace.as_str())
                         };
                         let kubeconfig =
                             commands::ensure_isolated_kubeconfig(&s.context, ns_opt, &paths)?;
-                        spawn_shell(&s.context, ns_opt, &kubeconfig)?;
+                        commands::save_to_history(&s.context, ns_opt)?;
+                        if no_tmux {
+                            spawn_shell_no_tmux(&s.context, ns_opt, &kubeconfig)?;
+                        } else {
+                            spawn_shell(&s.context, ns_opt, &kubeconfig)?;
+                        }
+                        return Ok(());
                     }
-                    None => {
-                        return Err(K8pkError::InvalidArgument(format!(
-                            "no k8pk session found for '{}'. Run 'k8pk sessions' to see active sessions.",
-                            target_id
-                        ))
-                        .into());
+
+                    // Fall back to tmux sessions (match by window index or name).
+                    let tmux_sessions = commands::tmux::list_sessions().unwrap_or_default();
+                    let found = tmux_sessions
+                        .iter()
+                        .find(|s| s.window_index == target_id || s.window_name == target_id);
+                    match found {
+                        Some(s) => {
+                            let ns_opt: Option<&str> = if s.namespace == "(default)" {
+                                None
+                            } else {
+                                Some(s.namespace.as_str())
+                            };
+                            let kubeconfig =
+                                commands::ensure_isolated_kubeconfig(&s.context, ns_opt, &paths)?;
+                            commands::save_to_history(&s.context, ns_opt)?;
+                            if no_tmux {
+                                spawn_shell_no_tmux(&s.context, ns_opt, &kubeconfig)?;
+                            } else {
+                                spawn_shell(&s.context, ns_opt, &kubeconfig)?;
+                            }
+                        }
+                        None => {
+                            return Err(K8pkError::InvalidArgument(format!(
+                                "no k8pk session found for '{}'. Run 'k8pk sessions' to see active sessions.",
+                                target_id
+                            ))
+                            .into());
+                        }
                     }
                 }
-            }
-            "register" | "reg" => {
-                // Register the calling shell as a k8pk session.
-                // Reads context/namespace/kubeconfig from environment.
-                let ctx = env::var("K8PK_CONTEXT").unwrap_or_default();
-                if ctx.is_empty() {
-                    // Nothing to register -- not in a k8pk session.
-                    return Ok(());
+                "register" | "reg" => {
+                    // Register the calling shell as a k8pk session.
+                    // Reads context/namespace/kubeconfig from environment.
+                    let ctx = env::var("K8PK_CONTEXT").unwrap_or_default();
+                    if ctx.is_empty() {
+                        return Ok(());
+                    }
+                    let ns = env::var("K8PK_NAMESPACE").ok();
+                    let kc = env::var("KUBECONFIG").unwrap_or_default();
+                    commands::sessions::register(&ctx, ns.as_deref(), &kc, None)?;
                 }
-                let ns = env::var("K8PK_NAMESPACE").ok();
-                let kc = env::var("KUBECONFIG").unwrap_or_default();
-                commands::sessions::register(&ctx, ns.as_deref(), &kc, None)?;
+                "deregister" | "dereg" | "unreg" => {
+                    commands::sessions::deregister_current()?;
+                }
+                other => {
+                    return Err(K8pkError::InvalidArgument(format!(
+                        "unknown sessions action: '{}'. Use: list, adopt, register, deregister",
+                        other
+                    ))
+                    .into());
+                }
             }
-            "deregister" | "dereg" | "unreg" => {
-                commands::sessions::deregister_current()?;
-            }
-            other => {
-                return Err(K8pkError::InvalidArgument(format!(
-                    "unknown sessions action: '{}'. Use: list, adopt, register, deregister",
-                    other
-                ))
-                .into());
-            }
-        },
+        }
 
         Command::Complete {
             complete_type,

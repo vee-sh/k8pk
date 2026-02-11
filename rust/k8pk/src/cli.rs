@@ -676,12 +676,13 @@ pub enum Command {
 
     /// Manage active k8pk sessions across terminals and tmux
     #[command(after_help = "Actions:\n  \
-        list (default)  List all active k8pk sessions (registry + tmux)\n  \
+        list (default)  Interactive picker (TTY) or table (pipe)\n  \
         adopt <ID>      Switch to the same context as another session\n  \
-        register        Register the current shell as a k8pk session (used by shell integration)\n  \
-        deregister      Remove the current shell from the session registry\n\n\
+        register        Register current shell (used by shell integration)\n  \
+        deregister      Remove current shell from registry\n\n\
         Examples:\n  \
-        k8pk sessions              # List active k8pk sessions\n  \
+        k8pk sessions              # Interactive session picker\n  \
+        k8pk sessions list         # Table view\n  \
         k8pk sessions --json       # Machine-readable output\n  \
         k8pk sessions adopt 3      # Adopt same context as window 3")]
     Sessions {
@@ -694,6 +695,9 @@ pub enum Command {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Force subshell even when inside tmux
+        #[arg(long, help = "Force subshell instead of tmux window/session")]
+        no_tmux: bool,
     },
 
     /// Output context or namespace names for shell completion

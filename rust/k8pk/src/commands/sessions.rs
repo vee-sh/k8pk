@@ -161,6 +161,116 @@ pub fn list_active() -> Result<Vec<SessionEntry>> {
     Ok(alive)
 }
 
+/// A deduplicated session group (context + namespace).
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionGroup {
+    /// Kubernetes context.
+    pub context: String,
+    /// Namespace.
+    pub namespace: String,
+    /// Kubeconfig path (from the most recent entry).
+    pub kubeconfig: String,
+    /// Number of shells with this context+namespace.
+    pub count: usize,
+    /// Age of the most recent session.
+    pub newest_at: u64,
+    /// Terminal description of the most recent session.
+    pub terminal: String,
+    /// Whether the current shell (parent PID) is one of these sessions.
+    pub is_current: bool,
+}
+
+impl std::fmt::Display for SessionGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ns_display = if self.namespace == "default" {
+            String::new()
+        } else {
+            format!(" ({})", self.namespace)
+        };
+        let count_display = if self.count > 1 {
+            format!("  [{} shells]", self.count)
+        } else {
+            String::new()
+        };
+        let current = if self.is_current { " *" } else { "" };
+        write!(
+            f,
+            "{}{} -- {}{}{}",
+            self.context,
+            ns_display,
+            format_age(self.newest_at),
+            count_display,
+            current,
+        )
+    }
+}
+
+/// Deduplicate sessions by (context, namespace), merging counts and keeping
+/// the newest entry's metadata.  Also merges tmux sessions that are not in
+/// the registry.
+pub fn deduplicated_sessions(
+    registry: &[SessionEntry],
+    tmux: &[super::tmux::TmuxSession],
+) -> Vec<SessionGroup> {
+    use std::collections::HashMap;
+
+    let ppid = parent_pid();
+
+    let mut groups: HashMap<(String, String), SessionGroup> = HashMap::new();
+
+    for s in registry {
+        let key = (s.context.clone(), s.namespace.clone());
+        let entry = groups.entry(key).or_insert_with(|| SessionGroup {
+            context: s.context.clone(),
+            namespace: s.namespace.clone(),
+            kubeconfig: s.kubeconfig.clone(),
+            count: 0,
+            newest_at: s.started_at,
+            terminal: s.terminal.clone(),
+            is_current: false,
+        });
+        entry.count += 1;
+        if s.started_at >= entry.newest_at {
+            entry.newest_at = s.started_at;
+            entry.kubeconfig = s.kubeconfig.clone();
+            entry.terminal = s.terminal.clone();
+        }
+        if s.pid == ppid {
+            entry.is_current = true;
+        }
+    }
+
+    // Merge in tmux sessions that are not already in the registry.
+    for s in tmux {
+        let ns = if s.namespace == "(default)" {
+            "default".to_string()
+        } else {
+            s.namespace.clone()
+        };
+        let active = s.active;
+        let win_idx = s.window_index.clone();
+        let key = (s.context.clone(), ns.clone());
+        groups.entry(key).or_insert_with(|| SessionGroup {
+            context: s.context.clone(),
+            namespace: ns,
+            kubeconfig: String::new(),
+            count: 1,
+            newest_at: 0,
+            terminal: format!("tmux:{}", win_idx),
+            is_current: active,
+        });
+    }
+
+    // Sort: current first, then by newest_at descending.
+    let mut result: Vec<SessionGroup> = groups.into_values().collect();
+    result.sort_by(|a, b| {
+        b.is_current
+            .cmp(&a.is_current)
+            .then(b.newest_at.cmp(&a.newest_at))
+    });
+    result
+}
+
 /// Format a duration in seconds into a human-readable age string.
 pub fn format_age(started_at: u64) -> String {
     let now = SystemTime::now()
