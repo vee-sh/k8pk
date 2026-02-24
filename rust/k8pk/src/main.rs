@@ -79,6 +79,7 @@ fn run() -> anyhow::Result<()> {
         output: None,
         detail: false,
         no_tmux: false,
+        insecure_skip_tls: false,
     });
 
     match command {
@@ -207,6 +208,7 @@ fn run() -> anyhow::Result<()> {
             output,
             detail,
             no_tmux,
+            insecure_skip_tls,
         } => {
             let merged = kubeconfig::load_merged(&paths)?;
             let (context, namespace) =
@@ -214,6 +216,12 @@ fn run() -> anyhow::Result<()> {
 
             let initial_kubeconfig =
                 commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
+
+            // Apply --insecure flag
+            if insecure_skip_tls {
+                commands::apply_insecure_to_kubeconfig(&initial_kubeconfig)?;
+            }
+
             let kubeconfig = commands::ensure_session_alive(
                 &initial_kubeconfig,
                 &context,
@@ -620,6 +628,7 @@ fn run() -> anyhow::Result<()> {
             recursive,
             output,
             no_tmux,
+            insecure_skip_tls,
         } => {
             let merged = kubeconfig::load_merged(&paths)?;
 
@@ -676,6 +685,12 @@ fn run() -> anyhow::Result<()> {
 
             let initial_kubeconfig =
                 commands::ensure_isolated_kubeconfig(&context, namespace.as_deref(), &paths)?;
+
+            // Apply --insecure flag
+            if insecure_skip_tls {
+                commands::apply_insecure_to_kubeconfig(&initial_kubeconfig)?;
+            }
+
             let kubeconfig = commands::ensure_session_alive(
                 &initial_kubeconfig,
                 &context,
@@ -744,6 +759,7 @@ fn run() -> anyhow::Result<()> {
             recursive,
             output,
             no_tmux,
+            insecure_skip_tls,
         } => {
             let state = CurrentState::from_env();
             // Try to get context from K8PK_CONTEXT, or fall back to current-context from kubeconfig
@@ -778,6 +794,11 @@ fn run() -> anyhow::Result<()> {
 
             let kubeconfig =
                 commands::ensure_isolated_kubeconfig(&context, Some(&namespace), &paths)?;
+
+            // Apply --insecure flag
+            if insecure_skip_tls {
+                commands::apply_insecure_to_kubeconfig(&kubeconfig)?;
+            }
 
             // Handle output format (recursive takes precedence)
             let do_spawn = |ctx: &str, ns: Option<&str>, kc: &Path| -> Result<()> {
@@ -1851,12 +1872,14 @@ mod tests {
                 recursive,
                 output,
                 no_tmux,
+                insecure_skip_tls,
             }) => {
                 assert_eq!(context, Some("my-context".to_string()));
                 assert!(namespace.is_none());
                 assert!(!recursive);
                 assert!(output.is_none());
                 assert!(!no_tmux);
+                assert!(!insecure_skip_tls);
             }
             _ => panic!("expected Ctx command"),
         }
@@ -1957,10 +1980,12 @@ mod tests {
                 output,
                 detail,
                 no_tmux,
+                insecure_skip_tls,
             }) => {
                 assert!(output.is_none());
                 assert!(!detail);
                 assert!(!no_tmux);
+                assert!(!insecure_skip_tls);
             }
             _ => panic!("expected Pick command"),
         }

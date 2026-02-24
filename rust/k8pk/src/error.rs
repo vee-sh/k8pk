@@ -64,6 +64,9 @@ pub enum K8pkError {
     #[error("session expired for '{0}'\n\n  Re-authenticate interactively:\n    k8pk ctx {0}\n\n  Or login directly:\n    k8pk login")]
     SessionExpired(String),
 
+    #[error("TLS certificate error for '{context}'\n\n  The cluster uses an untrusted certificate.\n  {hint}")]
+    TlsCertificateError { context: String, hint: String },
+
     #[error("unknown output format: '{0}'\n\n  Valid formats: env, json, spawn")]
     UnknownOutputFormat(String),
 

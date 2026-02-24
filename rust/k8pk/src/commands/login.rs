@@ -2251,6 +2251,12 @@ pub fn try_relogin(
                             Ok(res) => {
                                 eprintln!("Re-authenticated successfully (vault).");
                                 context::save_context_type(context, "rancher")?;
+                                if let Some(ref kc) = res.kubeconfig_path {
+                                    if let Err(msg) = post_login_cluster_check(kc, context) {
+                                        eprintln!("Warning: {}", msg);
+                                        eprintln!("  The shell will open, but the cluster may not be usable.");
+                                    }
+                                }
                                 return Ok(res.kubeconfig_path);
                             }
                             Err(_) => {
@@ -2362,6 +2368,14 @@ pub fn try_relogin(
                         Ok(res) => {
                             eprintln!("Re-authenticated successfully (vault).");
                             context::save_context_type(context, "ocp")?;
+                            if let Some(ref kc) = res.kubeconfig_path {
+                                if let Err(msg) = post_login_cluster_check(kc, context) {
+                                    eprintln!("Warning: {}", msg);
+                                    eprintln!(
+                                        "  The shell will open, but the cluster may not be usable."
+                                    );
+                                }
+                            }
                             return Ok(res.kubeconfig_path);
                         }
                         Err(_) => {
@@ -2458,7 +2472,91 @@ pub fn try_relogin(
         }
     }
 
+    // Post-login validation: verify the cluster API actually responds.
+    // This catches cases like Rancher auth succeeding but the downstream cluster being dead.
+    if let Some(ref kc_path) = written_path {
+        if let Err(msg) = post_login_cluster_check(kc_path, context) {
+            eprintln!("Warning: {}", msg);
+            eprintln!("  The shell will open, but the cluster may not be usable.");
+        }
+    }
+
     Ok(written_path)
+}
+
+/// Quick post-login check to verify the cluster API is actually responding.
+/// Returns Ok(()) if the cluster responds, or Err(message) if it appears broken.
+fn post_login_cluster_check(
+    kubeconfig_path: &Path,
+    context: &str,
+) -> std::result::Result<(), String> {
+    let cli = crate::kubeconfig::find_k8s_cli().map_err(|_| "no kubectl/oc found".to_string())?;
+
+    let output = Command::new(cli)
+        .args([
+            "--kubeconfig",
+            &kubeconfig_path.to_string_lossy(),
+            "--context",
+            context,
+            "--request-timeout=3s",
+            "api-versions",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run cluster check: {}", e))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("could not find the requested resource")
+        || stderr.contains("NotFound")
+        || stderr.contains("503")
+        || stderr.contains("502")
+        || stderr.contains("the server is currently unable")
+    {
+        Err(format!(
+            "cluster '{}' authenticated but API is not responding. The cluster may be down or decommissioned.",
+            context
+        ))
+    } else if stderr.contains("Unauthorized") || stderr.contains("401") {
+        Err(format!(
+            "cluster '{}' returned Unauthorized after login. Token may be invalid or expired immediately.",
+            context
+        ))
+    } else if !stderr.is_empty() {
+        Err(format!(
+            "cluster '{}' check failed: {}",
+            context,
+            stderr.trim()
+        ))
+    } else {
+        Err(format!(
+            "cluster '{}' check failed (exit {})",
+            context, output.status
+        ))
+    }
+}
+
+/// Common TLS-related error substrings in kubectl/oc stderr output.
+const TLS_ERROR_PATTERNS: &[&str] = &[
+    "certificate",
+    "x509",
+    "tls:",
+    "certificate signed by unknown authority",
+    "certificate is not trusted",
+    "certificate has expired",
+    "tls: failed to verify",
+    "certificate is valid for",
+    "ssl",
+];
+
+/// Check whether stderr output from kubectl/oc indicates a TLS error.
+fn is_tls_error(stderr: &str) -> bool {
+    let lower = stderr.to_lowercase();
+    TLS_ERROR_PATTERNS.iter().any(|p| lower.contains(p))
 }
 
 fn test_k8s_auth(kubeconfig_path: &Path, context_name: &str, timeout_secs: u64) -> Result<()> {
@@ -2484,7 +2582,7 @@ fn test_k8s_auth(kubeconfig_path: &Path, context_name: &str, timeout_secs: u64) 
         None
     };
 
-    // Spawn the process so we can enforce a hard timeout
+    // Capture stderr to detect TLS errors
     let mut child = Command::new(cli)
         .args([
             "--kubeconfig",
@@ -2498,13 +2596,13 @@ fn test_k8s_auth(kubeconfig_path: &Path, context_name: &str, timeout_secs: u64) 
             "pods",
             "--all-namespaces",
         ])
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()?;
 
     // Wait with timeout - check every 100ms
     let start = Instant::now();
-    let timeout = Duration::from_secs(timeout_secs + 2); // Buffer for kubectl's timeout
+    let timeout = Duration::from_secs(timeout_secs + 2);
 
     loop {
         match child.try_wait()? {
@@ -2513,13 +2611,28 @@ fn test_k8s_auth(kubeconfig_path: &Path, context_name: &str, timeout_secs: u64) 
                     pb.finish_and_clear();
                 }
                 if !status.success() {
+                    // Read stderr to check for TLS errors
+                    let stderr_output = if let Some(mut stderr) = child.stderr.take() {
+                        let mut buf = String::new();
+                        use std::io::Read;
+                        let _ = stderr.read_to_string(&mut buf);
+                        buf
+                    } else {
+                        String::new()
+                    };
+
+                    if is_tls_error(&stderr_output) {
+                        return Err(K8pkError::TlsCertificateError {
+                            context: context_name.to_string(),
+                            hint: "Retry with: k8pk ctx <context> --insecure\n  Or add to config: insecure_contexts: [\"<pattern>\"]".to_string(),
+                        });
+                    }
                     return Err(K8pkError::CommandFailed("credential test failed".into()));
                 }
                 return Ok(());
             }
             None => {
                 if start.elapsed() > timeout {
-                    // Kill the process
                     let _ = child.kill();
                     let _ = child.wait();
                     if let Some(pb) = spinner {

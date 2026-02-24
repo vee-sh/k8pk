@@ -117,6 +117,13 @@ pub enum Command {
         /// Force subshell even when inside tmux
         #[arg(long, help = "Force subshell instead of tmux window/session")]
         no_tmux: bool,
+        /// Skip TLS certificate verification for the chosen context
+        #[arg(
+            long,
+            visible_alias = "insecure",
+            help = "Skip TLS certificate verification"
+        )]
+        insecure_skip_tls: bool,
     },
 
     /// Spawn a new shell with isolated context/namespace
@@ -354,6 +361,13 @@ pub enum Command {
         /// Force subshell even when inside tmux
         #[arg(long, help = "Force subshell instead of tmux window/session")]
         no_tmux: bool,
+        /// Skip TLS certificate verification for this context
+        #[arg(
+            long,
+            visible_alias = "insecure",
+            help = "Skip TLS certificate verification"
+        )]
+        insecure_skip_tls: bool,
     },
 
     /// Switch to namespace (with history support, use '-' for previous)
@@ -380,6 +394,13 @@ pub enum Command {
         /// Force subshell even when inside tmux
         #[arg(long, help = "Force subshell instead of tmux window/session")]
         no_tmux: bool,
+        /// Skip TLS certificate verification for this context
+        #[arg(
+            long,
+            visible_alias = "insecure",
+            help = "Skip TLS certificate verification"
+        )]
+        insecure_skip_tls: bool,
     },
 
     /// Show recent context/namespace switch history

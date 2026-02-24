@@ -24,6 +24,10 @@ pub struct K8pkConfig {
     pub pick: Option<PickSection>,
     #[serde(default)]
     pub tmux: Option<TmuxSection>,
+    /// Context name patterns that should always use insecure-skip-tls-verify.
+    /// Supports simple glob patterns (* matches any sequence, ? matches single char).
+    #[serde(default)]
+    pub insecure_contexts: Vec<String>,
 }
 
 /// Hooks configuration section
@@ -152,6 +156,52 @@ pub fn resolve_alias(ctx: &str) -> String {
     ctx.to_string()
 }
 
+/// Check if a context name matches any of the configured insecure_contexts patterns.
+/// Supports simple glob: `*` matches any sequence, `?` matches one char.
+pub fn is_context_insecure(ctx: &str) -> bool {
+    let Ok(config) = load() else {
+        return false;
+    };
+    config
+        .insecure_contexts
+        .iter()
+        .any(|pat| glob_match(pat, ctx))
+}
+
+/// Simple glob matcher (only `*` and `?` wildcards).
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let txt: Vec<char> = text.chars().collect();
+    glob_match_inner(&pat, &txt, 0, 0)
+}
+
+fn glob_match_inner(pat: &[char], txt: &[char], mut pi: usize, mut ti: usize) -> bool {
+    while pi < pat.len() {
+        if pat[pi] == '*' {
+            pi += 1;
+            // '*' matches zero or more characters
+            while pi < pat.len() && pat[pi] == '*' {
+                pi += 1;
+            }
+            if pi == pat.len() {
+                return true;
+            }
+            for start in ti..=txt.len() {
+                if glob_match_inner(pat, txt, pi, start) {
+                    return true;
+                }
+            }
+            return false;
+        } else if ti < txt.len() && (pat[pi] == '?' || pat[pi] == txt[ti]) {
+            pi += 1;
+            ti += 1;
+        } else {
+            return false;
+        }
+    }
+    ti == txt.len()
+}
+
 /// Expand ~ to home directory in path strings
 pub fn expand_home(path: &str) -> PathBuf {
     if let Some(stripped) = path.strip_prefix("~/") {
@@ -209,6 +259,15 @@ configs:
 #   # instead of showing all namespace-specific contexts
 #   # Useful when you have thousands of namespace contexts
 #   clusters_only: false
+
+# Insecure contexts (skip TLS verification for matching patterns)
+# Glob patterns: * matches any sequence, ? matches a single character.
+# Matching contexts automatically get insecure-skip-tls-verify: true
+# in their isolated kubeconfig. Saves you from editing kubeconfigs manually.
+# insecure_contexts:
+#   - "dev-*"
+#   - "lab-*"
+#   - "*-poc-*"
 
 # Tmux integration (auto-detected when inside tmux)
 # When inside tmux, k8pk creates/switches tmux windows or sessions
@@ -292,5 +351,43 @@ mod tests {
     fn test_default_config_includes() {
         let config = K8pkConfig::default();
         assert!(config.configs.include.iter().any(|p| p.contains("config")));
+    }
+
+    #[test]
+    fn test_glob_match_star() {
+        assert!(glob_match("dev-*", "dev-cluster"));
+        assert!(glob_match("dev-*", "dev-"));
+        assert!(!glob_match("dev-*", "staging-cluster"));
+    }
+
+    #[test]
+    fn test_glob_match_question() {
+        assert!(glob_match("dev-?", "dev-a"));
+        assert!(!glob_match("dev-?", "dev-ab"));
+    }
+
+    #[test]
+    fn test_glob_match_middle_star() {
+        assert!(glob_match("*-poc-*", "alexv-poc-01"));
+        assert!(glob_match("*-poc-*", "team-poc-staging"));
+        assert!(!glob_match("*-poc-*", "production-cluster"));
+    }
+
+    #[test]
+    fn test_glob_match_exact() {
+        assert!(glob_match("my-cluster", "my-cluster"));
+        assert!(!glob_match("my-cluster", "my-cluster2"));
+    }
+
+    #[test]
+    fn test_glob_match_all() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*", ""));
+    }
+
+    #[test]
+    fn test_default_insecure_contexts_empty() {
+        let config = K8pkConfig::default();
+        assert!(config.insecure_contexts.is_empty());
     }
 }

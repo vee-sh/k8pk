@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 /// Check session liveness and re-login if expired.
 /// Returns the (possibly refreshed) kubeconfig path.
 /// This consolidates the duplicated check+relogin pattern from Pick and Ctx handlers.
+///
+/// When a TLS certificate error is detected interactively, the user is offered
+/// to retry with `insecure-skip-tls-verify: true` on the isolated kubeconfig.
 pub fn ensure_session_alive(
     kubeconfig: &std::path::Path,
     context: &str,
@@ -18,11 +21,46 @@ pub fn ensure_session_alive(
 ) -> Result<PathBuf> {
     use crate::commands::login;
 
-    if login::check_session_alive(kubeconfig, context, login::SESSION_CHECK_TIMEOUT_SECS).is_ok() {
-        return Ok(kubeconfig.to_path_buf());
+    match login::check_session_alive(kubeconfig, context, login::SESSION_CHECK_TIMEOUT_SECS) {
+        Ok(()) => return Ok(kubeconfig.to_path_buf()),
+        Err(K8pkError::TlsCertificateError { .. }) => {
+            // TLS error -- offer to retry with insecure if interactive
+            if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+                eprintln!("TLS certificate error for '{}'.", context);
+                let confirm =
+                    inquire::Confirm::new("Enable insecure-skip-tls-verify for this context?")
+                        .with_default(true)
+                        .prompt()
+                        .map_err(|_| K8pkError::Cancelled)?;
+
+                if confirm {
+                    apply_insecure_to_kubeconfig(kubeconfig)?;
+                    // Re-check with insecure now applied
+                    if login::check_session_alive(
+                        kubeconfig,
+                        context,
+                        login::SESSION_CHECK_TIMEOUT_SECS,
+                    )
+                    .is_ok()
+                    {
+                        eprintln!("Connected (insecure mode).");
+                        return Ok(kubeconfig.to_path_buf());
+                    }
+                    // Still failing after insecure -- fall through to re-login
+                }
+            } else {
+                return Err(K8pkError::TlsCertificateError {
+                    context: context.to_string(),
+                    hint: "Retry with: k8pk ctx <context> --insecure\n  Or add to config: insecure_contexts: [\"<pattern>\"]".to_string(),
+                });
+            }
+        }
+        Err(_) => {
+            // Other errors -- fall through to re-login
+        }
     }
 
-    // Session expired -- try to re-login if interactive
+    // Session expired or still failing -- try to re-login if interactive
     if std::io::stdin().is_terminal() {
         let written = login::try_relogin(context, namespace, paths)?;
         if let Some(ref p) = written {
@@ -205,11 +243,27 @@ pub fn ensure_isolated_kubeconfig_from(
         kubeconfig::set_context_namespace(&mut pruned, context, ns)?;
     }
 
+    // Apply insecure-skip-tls-verify if the context matches any insecure_contexts pattern
+    if crate::config::is_context_insecure(context) {
+        kubeconfig::set_cluster_insecure(&mut pruned);
+    }
+
     // Write to file with restrictive permissions
     let yaml = serde_yaml_ng::to_string(&pruned)?;
     kubeconfig::write_restricted(&out, &yaml)?;
 
     Ok(out)
+}
+
+/// Force insecure-skip-tls-verify on an existing isolated kubeconfig file.
+/// Returns the same path for convenience.
+pub fn apply_insecure_to_kubeconfig(path: &Path) -> Result<PathBuf> {
+    let content = fs::read_to_string(path)?;
+    let mut cfg: kubeconfig::KubeConfig = serde_yaml_ng::from_str(&content)?;
+    kubeconfig::set_cluster_insecure(&mut cfg);
+    let yaml = serde_yaml_ng::to_string(&cfg)?;
+    kubeconfig::write_restricted(path, &yaml)?;
+    Ok(path.to_path_buf())
 }
 
 /// Remove stale isolated kubeconfig files older than `max_age_days`.
