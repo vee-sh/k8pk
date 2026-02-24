@@ -2254,7 +2254,7 @@ pub fn try_relogin(
                                 if let Some(ref kc) = res.kubeconfig_path {
                                     if let Err(msg) = post_login_cluster_check(kc, context) {
                                         eprintln!("Warning: {}", msg);
-                                        eprintln!("  The shell will open, but the cluster may not be usable.");
+                                        eprintln!("  To remove this context: k8pk rm {}", context);
                                     }
                                 }
                                 return Ok(res.kubeconfig_path);
@@ -2371,9 +2371,7 @@ pub fn try_relogin(
                             if let Some(ref kc) = res.kubeconfig_path {
                                 if let Err(msg) = post_login_cluster_check(kc, context) {
                                     eprintln!("Warning: {}", msg);
-                                    eprintln!(
-                                        "  The shell will open, but the cluster may not be usable."
-                                    );
+                                    eprintln!("  To remove this context: k8pk rm {}", context);
                                 }
                             }
                             return Ok(res.kubeconfig_path);
@@ -2477,7 +2475,7 @@ pub fn try_relogin(
     if let Some(ref kc_path) = written_path {
         if let Err(msg) = post_login_cluster_check(kc_path, context) {
             eprintln!("Warning: {}", msg);
-            eprintln!("  The shell will open, but the cluster may not be usable.");
+            eprintln!("  To remove this context: k8pk rm {}", context);
         }
     }
 

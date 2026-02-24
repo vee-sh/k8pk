@@ -364,6 +364,141 @@ fn run() -> anyhow::Result<()> {
             }
         }
 
+        Command::Rm {
+            context,
+            dry_run,
+            json,
+        } => {
+            let ctx_paths = kubeconfig::list_contexts_with_paths(&paths)?;
+            if ctx_paths.is_empty() {
+                return Err(K8pkError::NoContexts.into());
+            }
+
+            let contexts_to_remove: Vec<String> = if let Some(ref c) = context {
+                // Resolve alias and find matching contexts
+                let resolved = config::resolve_alias(c);
+                let all: Vec<String> = ctx_paths.keys().cloned().collect();
+                let matches = commands::match_pattern(&resolved, &all);
+                if matches.is_empty() {
+                    let suggestions = crate::error::closest_matches(&resolved, &all, 3);
+                    if suggestions.is_empty() {
+                        return Err(K8pkError::ContextNotFound(resolved).into());
+                    } else {
+                        return Err(K8pkError::ContextNotFoundSuggestions {
+                            pattern: resolved,
+                            suggestions: suggestions
+                                .iter()
+                                .map(|s| format!("    - {}", s))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        }
+                        .into());
+                    }
+                }
+                if matches.len() == 1 {
+                    matches
+                } else if io::stdin().is_terminal() {
+                    eprintln!("'{}' matched {} contexts:", c, matches.len());
+                    let selected = inquire::MultiSelect::new("Select contexts to remove:", matches)
+                        .prompt()
+                        .map_err(|_| K8pkError::Cancelled)?;
+                    if selected.is_empty() {
+                        return Err(K8pkError::Cancelled.into());
+                    }
+                    selected
+                } else {
+                    return Err(K8pkError::InvalidArgument(format!(
+                        "'{}' matches multiple contexts: {}. Be more specific.",
+                        c,
+                        matches.join(", ")
+                    ))
+                    .into());
+                }
+            } else if io::stdin().is_terminal() {
+                // Interactive picker
+                let mut names: Vec<String> = ctx_paths.keys().cloned().collect();
+                names.sort();
+                let selected = inquire::MultiSelect::new("Select contexts to remove:", names)
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?;
+                if selected.is_empty() {
+                    return Err(K8pkError::Cancelled.into());
+                }
+                selected
+            } else {
+                return Err(K8pkError::InvalidArgument(
+                    "specify a context name, or run interactively".into(),
+                )
+                .into());
+            };
+
+            // Confirm before removing
+            if !dry_run && io::stdin().is_terminal() {
+                eprintln!("Will remove {} context(s):", contexts_to_remove.len());
+                for c in &contexts_to_remove {
+                    let file = ctx_paths
+                        .get(c)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
+                    eprintln!("  {} (from {})", c, file);
+                }
+                let confirm = inquire::Confirm::new("Proceed?")
+                    .with_default(false)
+                    .prompt()
+                    .map_err(|_| K8pkError::Cancelled)?;
+                if !confirm {
+                    return Err(K8pkError::Cancelled.into());
+                }
+            }
+
+            // Group by source file and remove
+            let mut by_file: std::collections::HashMap<PathBuf, Vec<String>> =
+                std::collections::HashMap::new();
+            for c in &contexts_to_remove {
+                if let Some(file) = ctx_paths.get(c) {
+                    by_file.entry(file.clone()).or_default().push(c.clone());
+                }
+            }
+
+            let mut total_removed = Vec::new();
+            for (file, ctxs) in &by_file {
+                for ctx_name in ctxs {
+                    let result = commands::remove_contexts_from_file(
+                        file,
+                        Some(ctx_name.as_str()),
+                        false,
+                        false,
+                        dry_run,
+                    )?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    } else {
+                        commands::print_remove_context_summary(&result);
+                    }
+                    total_removed.push(ctx_name.clone());
+                }
+            }
+
+            // Also clean up the isolated kubeconfig if it exists
+            if !dry_run {
+                let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
+                let base = home.join(".local/share/k8pk");
+                for c in &total_removed {
+                    let sanitized = kubeconfig::sanitize_filename(c);
+                    // Remove any isolated kubeconfig files matching this context
+                    if let Ok(entries) = fs::read_dir(&base) {
+                        for entry in entries.flatten() {
+                            let fname = entry.file_name();
+                            let name = fname.to_string_lossy();
+                            if name.starts_with(&sanitized) && name.ends_with(".yaml") {
+                                let _ = fs::remove_file(entry.path());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Command::RemoveContext {
             from_file,
             context,

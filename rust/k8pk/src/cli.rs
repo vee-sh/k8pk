@@ -169,7 +169,27 @@ pub enum Command {
         quiet: bool,
     },
 
-    /// Remove contexts from a kubeconfig file
+    /// Remove a context (auto-finds source file)
+    #[command(
+        visible_alias = "delete",
+        after_help = "Examples:\n  \
+        k8pk rm dead-cluster         # Remove by name (finds source file automatically)\n  \
+        k8pk rm                      # Interactive picker to select contexts to remove\n  \
+        k8pk rm dead-cluster --dry-run  # Preview without removing"
+    )]
+    Rm {
+        /// Context name to remove (interactive picker if omitted)
+        #[arg(value_name = "CONTEXT")]
+        context: Option<String>,
+        /// Preview changes without making them
+        #[arg(long, help = "Preview changes without making them")]
+        dry_run: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Remove contexts from a kubeconfig file (advanced)
     #[command(after_help = "Examples:\n  \
         k8pk remove-context --context old-cluster\n  \
         k8pk remove-context --interactive     # Pick contexts to remove\n  \
