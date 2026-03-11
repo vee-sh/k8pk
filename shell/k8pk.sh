@@ -31,125 +31,69 @@ _k8pk_args() {
   echo "$args"
 }
 
-# Interactive picker - evals exports in current shell
-kpick() {
+# Check k8pk binary is installed
+_k8pk_check() {
   if ! command -v k8pk >/dev/null 2>&1; then
     echo "k8pk not found. Install it first." >&2
     return 1
   fi
-  
-  # Check if we have a TTY (required for interactive picker)
+}
+
+# Run a k8pk command, eval its stdout in the current shell, forward stderr to terminal.
+# Usage: _k8pk_eval_cmd <k8pk subcommand and args...>
+_k8pk_eval_cmd() {
+  local tmpfile exit_code=0
+  tmpfile=$(mktemp) || { echo "k8pk: mktemp failed" >&2; return 1; }
+  if k8pk $(_k8pk_args) "$@" > "$tmpfile"; then
+    eval "$(cat "$tmpfile")"
+  else
+    exit_code=$?
+    cat "$tmpfile" >&2
+  fi
+  rm -f "$tmpfile"
+  return $exit_code
+}
+
+# Interactive picker - evals exports in current shell.
+# Accepts an optional filter: kpick prod  (pre-filters contexts matching "prod")
+kpick() {
+  _k8pk_check || return $?
   if [ ! -t 0 ] || [ ! -t 2 ]; then
     echo "Error: kpick requires an interactive terminal" >&2
     return 1
   fi
-  
-  local args=$(_k8pk_args)
-  # Run picker interactively:
-  # - UI goes to stderr (visible to user via inquire)
-  # - Exports go to stdout (captured for eval)
-  local tmpfile=$(mktemp)
-  # Capture stdout (exports) to temp file, leave stderr (UI) to terminal
-  if k8pk $args pick --output env > "$tmpfile"; then
-    # Evaluate the exports
-    eval "$(cat "$tmpfile")"
-    rm -f "$tmpfile"
-    # Only print confirmation if K8PK_VERBOSE is set
-    if [ -n "$K8PK_VERBOSE" ]; then
-      local display_ctx="${K8PK_CONTEXT_DISPLAY:-$K8PK_CONTEXT}"
-      echo "Switched to ${display_ctx}${K8PK_NAMESPACE:+ ($K8PK_NAMESPACE)}" >&2
-    fi
-  else
-    local exit_code=$?
-    rm -f "$tmpfile"
-    return $exit_code
+  _k8pk_eval_cmd pick --output env "$@" || return $?
+  if [ -n "$K8PK_VERBOSE" ]; then
+    local display_ctx="${K8PK_CONTEXT_DISPLAY:-$K8PK_CONTEXT}"
+    echo "Switched to ${display_ctx}${K8PK_NAMESPACE:+ ($K8PK_NAMESPACE)}" >&2
   fi
+}
+
+# Jump to previous context, like cd -
+kprev() {
+  _k8pk_check || return $?
+  _k8pk_eval_cmd ctx -
 }
 
 # Quick context switch (supports history with "-")
 kctx() {
-  if ! command -v k8pk >/dev/null 2>&1; then
-    echo "k8pk not found. Install it first." >&2
-    return 1
-  fi
-  
-  local args=$(_k8pk_args)
-  local ctx="${1:-}"
-  local ns="${2:-}"
-  
-  if [ -z "$ctx" ]; then
-    # Interactive selection
-    local tmpfile=$(mktemp)
-    if k8pk $args ctx > "$tmpfile"; then
-      eval "$(cat "$tmpfile")"
-      rm -f "$tmpfile"
-    else
-      local exit_code=$?
-      cat "$tmpfile" >&2
-      rm -f "$tmpfile"
-      return $exit_code
-    fi
+  _k8pk_check || return $?
+  if [ -n "${1:-}" ] && [ -n "${2:-}" ]; then
+    _k8pk_eval_cmd ctx "$1" --namespace "$2"
+  elif [ -n "${1:-}" ]; then
+    _k8pk_eval_cmd ctx "$1"
   else
-    # Explicit context (with optional namespace)
-    local tmpfile=$(mktemp)
-    if [ -n "$ns" ]; then
-      if k8pk $args ctx "$ctx" --namespace "$ns" > "$tmpfile"; then
-        eval "$(cat "$tmpfile")"
-        rm -f "$tmpfile"
-      else
-        local exit_code=$?
-        cat "$tmpfile" >&2
-        rm -f "$tmpfile"
-        return $exit_code
-      fi
-    else
-      if k8pk $args ctx "$ctx" > "$tmpfile"; then
-        eval "$(cat "$tmpfile")"
-        rm -f "$tmpfile"
-      else
-        local exit_code=$?
-        cat "$tmpfile" >&2
-        rm -f "$tmpfile"
-        return $exit_code
-      fi
-    fi
+    _k8pk_eval_cmd ctx
   fi
 }
 
 # Quick namespace switch (supports history with "-")
 kns() {
-  if ! command -v k8pk >/dev/null 2>&1; then
-    echo "k8pk not found. Install it first." >&2
-    return 1
-  fi
-  
-  local args=$(_k8pk_args)
-  local ns="${1:-}"
-  
-  if [ -z "$ns" ]; then
-    # Interactive selection
-    local tmpfile=$(mktemp)
-    if k8pk $args ns > "$tmpfile"; then
-      eval "$(cat "$tmpfile")"
-      rm -f "$tmpfile"
-    else
-      local exit_code=$?
-      cat "$tmpfile" >&2
-      rm -f "$tmpfile"
-      return $exit_code
-    fi
+  _k8pk_check || return $?
+  if [ -n "${1:-}" ]; then
+    _k8pk_eval_cmd ns "$1"
   else
-    # Explicit namespace
-    local tmpfile=$(mktemp)
-    if k8pk $args ns "$ns" > "$tmpfile"; then
-      eval "$(cat "$tmpfile")"
-      rm -f "$tmpfile"
-    else
-      local exit_code=$?
-      cat "$tmpfile" >&2
-      rm -f "$tmpfile"
-      return $exit_code
-    fi
+    _k8pk_eval_cmd ns
   fi
 }
 
@@ -175,16 +119,12 @@ kswitch() {
     echo "Usage: kswitch <context> [namespace]" >&2
     return 1
   fi
-  local ctx="$1"
-  local ns="${2:-}"
-  local args=$(_k8pk_args)
-  # Exports go to stdout (for eval)
-  if [ -n "$ns" ]; then
-    eval "$(k8pk $args env --context "$ctx" --namespace "$ns")"
+  _k8pk_check || return $?
+  if [ -n "${2:-}" ]; then
+    _k8pk_eval_cmd env --context "$1" --namespace "$2" || return $?
   else
-    eval "$(k8pk $args env --context "$ctx")"
+    _k8pk_eval_cmd env --context "$1" || return $?
   fi
-  # Only print confirmation if K8PK_VERBOSE is set
   if [ -n "$K8PK_VERBOSE" ]; then
     local display_ctx="${K8PK_CONTEXT_DISPLAY:-$K8PK_CONTEXT}"
     echo "Switched to ${display_ctx}${K8PK_NAMESPACE:+ ($K8PK_NAMESPACE)}" >&2
@@ -192,24 +132,14 @@ kswitch() {
 }
 
 # Clean up k8pk session (unset all k8pk environment variables)
-# This automatically executes the cleanup - no need for eval
 kclean() {
-  if ! command -v k8pk >/dev/null 2>&1; then
-    echo "k8pk not found. Install it first." >&2
-    return 1
-  fi
-  
-  local args=$(_k8pk_args)
-  # Execute the cleanup commands automatically
-  eval "$(k8pk $args clean)"
+  _k8pk_check || return $?
+  eval "$(k8pk $(_k8pk_args) clean)"
 }
 
 # List active k8pk sessions across terminals
 ksessions() {
-  if ! command -v k8pk >/dev/null 2>&1; then
-    echo "k8pk not found. Install it first." >&2
-    return 1
-  fi
+  _k8pk_check || return $?
   k8pk sessions "$@"
 }
 
@@ -230,22 +160,15 @@ _k8pk_guard_oc() {
     return $?
   fi
   if [ "$1" = "login" ]; then
-    echo "k8pk: 'oc login' rewrites KUBECONFIG and may corrupt your isolated session." >&2
-    echo "  Current context: $K8PK_CONTEXT" >&2
-    echo "  KUBECONFIG:      $KUBECONFIG" >&2
-    echo "" >&2
-    echo "  Recommended: k8pk login --type ocp <server>" >&2
-    echo "  To proceed anyway: command oc login ..." >&2
-    echo "" >&2
+    echo "k8pk guard: 'oc login' overwrites KUBECONFIG (context: $K8PK_CONTEXT). Use 'k8pk login --type ocp <server>' instead, or bypass with 'K8PK_NO_GUARDS=1 oc login ...'." >&2
     if [ -t 0 ]; then
-      printf "  Continue? [y/N] " >&2
+      printf "  Continue anyway? [y/N] " >&2
       read -r _reply
       case "$_reply" in
         [Yy]*) command oc "$@"; return $? ;;
         *) return 1 ;;
       esac
     else
-      echo "  (non-interactive -- blocked)" >&2
       return 1
     fi
   fi
@@ -257,25 +180,17 @@ _k8pk_guard_gcloud() {
     command gcloud "$@"
     return $?
   fi
-  # Detect "gcloud container clusters get-credentials"
   case "$*" in
     *container*clusters*get-credentials*)
-      echo "k8pk: 'gcloud container clusters get-credentials' writes to KUBECONFIG." >&2
-      echo "  This will add a new context to your isolated kubeconfig, which may confuse k8pk." >&2
-      echo "  Current context: $K8PK_CONTEXT" >&2
-      echo "" >&2
-      echo "  Recommended: k8pk login --type gke <server>" >&2
-      echo "  To proceed anyway: command gcloud container clusters get-credentials ..." >&2
-      echo "" >&2
+      echo "k8pk guard: 'gcloud ... get-credentials' overwrites KUBECONFIG (context: $K8PK_CONTEXT). Use 'k8pk login --type gke <server>' instead, or bypass with 'K8PK_NO_GUARDS=1 gcloud ...'." >&2
       if [ -t 0 ]; then
-        printf "  Continue? [y/N] " >&2
+        printf "  Continue anyway? [y/N] " >&2
         read -r _reply
         case "$_reply" in
           [Yy]*) command gcloud "$@"; return $? ;;
           *) return 1 ;;
         esac
       else
-        echo "  (non-interactive -- blocked)" >&2
         return 1
       fi
       ;;
@@ -288,25 +203,17 @@ _k8pk_guard_aws() {
     command aws "$@"
     return $?
   fi
-  # Detect "aws eks update-kubeconfig"
   case "$*" in
     *eks*update-kubeconfig*)
-      echo "k8pk: 'aws eks update-kubeconfig' writes to KUBECONFIG." >&2
-      echo "  This will modify your isolated kubeconfig, which may confuse k8pk." >&2
-      echo "  Current context: $K8PK_CONTEXT" >&2
-      echo "" >&2
-      echo "  Recommended: k8pk login --type k8s --exec-preset aws-eks --exec-cluster <name>" >&2
-      echo "  To proceed anyway: command aws eks update-kubeconfig ..." >&2
-      echo "" >&2
+      echo "k8pk guard: 'aws eks update-kubeconfig' overwrites KUBECONFIG (context: $K8PK_CONTEXT). Use 'k8pk login --type k8s --exec-preset aws-eks --exec-cluster <name>' instead, or bypass with 'K8PK_NO_GUARDS=1 aws ...'." >&2
       if [ -t 0 ]; then
-        printf "  Continue? [y/N] " >&2
+        printf "  Continue anyway? [y/N] " >&2
         read -r _reply
         case "$_reply" in
           [Yy]*) command aws "$@"; return $? ;;
           *) return 1 ;;
         esac
       else
-        echo "  (non-interactive -- blocked)" >&2
         return 1
       fi
       ;;

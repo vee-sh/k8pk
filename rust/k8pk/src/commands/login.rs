@@ -2192,7 +2192,8 @@ pub fn try_relogin(
     let mut login_type = context::get_context_type(context)?
         .as_ref()
         .and_then(|s| parse_stored_type(s))
-        .or_else(|| infer_login_type_from_context(context));
+        .or_else(|| infer_login_type_from_context(context))
+        .or_else(|| detect_login_type_from_url(&server));
 
     if login_type.is_none() {
         eprintln!(
@@ -2390,10 +2391,10 @@ pub fn try_relogin(
                 "Session expired for '{}'. Re-login (username and password).",
                 context
             );
-            let username = Text::new("Username:")
+            let mut username = Text::new("Username:")
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
-            let password = Password::new("Password:")
+            let mut password = Password::new("Password:")
                 .without_confirmation()
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
@@ -2403,7 +2404,41 @@ pub fn try_relogin(
                 .with_name(context)
                 .with_credentials(&username, &password)
                 .with_auth("userpass");
-            let res = login(&req)?;
+            let res = match login(&req) {
+                Ok(r) => r,
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    if err_msg.contains("401")
+                        || err_msg.contains("Unauthorized")
+                        || err_msg.contains("oc login failed")
+                    {
+                        eprintln!("Authentication failed. Check your username and password.");
+                        let retry = Confirm::new("Retry with different credentials?")
+                            .with_default(true)
+                            .prompt()
+                            .unwrap_or(false);
+                        if retry {
+                            username = Text::new("Username:")
+                                .prompt()
+                                .map_err(|_| K8pkError::Cancelled)?;
+                            password = Password::new("Password:")
+                                .without_confirmation()
+                                .prompt()
+                                .map_err(|_| K8pkError::Cancelled)?;
+                            let req2 = LoginRequest::new(&server)
+                                .with_type(LoginType::Ocp)
+                                .with_name(context)
+                                .with_credentials(&username, &password)
+                                .with_auth("userpass");
+                            login(&req2)?
+                        } else {
+                            return Err(e);
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
 
             // Save credentials to vault on successful interactive login.
             if let Ok(mut v) = Vault::new() {
@@ -2440,7 +2475,7 @@ pub fn try_relogin(
                 .prompt()
                 .map_err(|_| K8pkError::Cancelled)?;
             let res = if auth_choice == "token" {
-                let token = Password::new("Token:")
+                let mut token = Password::new("Token:")
                     .without_confirmation()
                     .prompt()
                     .map_err(|_| K8pkError::Cancelled)?;
@@ -2449,12 +2484,40 @@ pub fn try_relogin(
                     .with_name(context)
                     .with_token(&token)
                     .with_auth("token");
-                login(&req)?
+                match login(&req) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        if err_msg.contains("401") || err_msg.contains("Unauthorized") {
+                            eprintln!("Authentication failed. Check your token.");
+                            let retry = Confirm::new("Retry with a different token?")
+                                .with_default(true)
+                                .prompt()
+                                .unwrap_or(false);
+                            if retry {
+                                token = Password::new("Token:")
+                                    .without_confirmation()
+                                    .prompt()
+                                    .map_err(|_| K8pkError::Cancelled)?;
+                                let req2 = LoginRequest::new(&server)
+                                    .with_type(LoginType::K8s)
+                                    .with_name(context)
+                                    .with_token(&token)
+                                    .with_auth("token");
+                                login(&req2)?
+                            } else {
+                                return Err(e);
+                            }
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
             } else {
-                let username = Text::new("Username:")
+                let mut username = Text::new("Username:")
                     .prompt()
                     .map_err(|_| K8pkError::Cancelled)?;
-                let password = Password::new("Password:")
+                let mut password = Password::new("Password:")
                     .without_confirmation()
                     .prompt()
                     .map_err(|_| K8pkError::Cancelled)?;
@@ -2463,7 +2526,38 @@ pub fn try_relogin(
                     .with_name(context)
                     .with_credentials(&username, &password)
                     .with_auth("userpass");
-                login(&req)?
+                match login(&req) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        if err_msg.contains("401") || err_msg.contains("Unauthorized") {
+                            eprintln!("Authentication failed. Check your username and password.");
+                            let retry = Confirm::new("Retry with different credentials?")
+                                .with_default(true)
+                                .prompt()
+                                .unwrap_or(false);
+                            if retry {
+                                username = Text::new("Username:")
+                                    .prompt()
+                                    .map_err(|_| K8pkError::Cancelled)?;
+                                password = Password::new("Password:")
+                                    .without_confirmation()
+                                    .prompt()
+                                    .map_err(|_| K8pkError::Cancelled)?;
+                                let req2 = LoginRequest::new(&server)
+                                    .with_type(LoginType::K8s)
+                                    .with_name(context)
+                                    .with_credentials(&username, &password)
+                                    .with_auth("userpass");
+                                login(&req2)?
+                            } else {
+                                return Err(e);
+                            }
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
             };
             written_path = res.kubeconfig_path;
             context::save_context_type(context, "k8s")?;

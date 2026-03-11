@@ -182,11 +182,7 @@ pub struct SessionGroup {
 
 impl std::fmt::Display for SessionGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let ns_display = if self.namespace == "default" {
-            String::new()
-        } else {
-            format!(" ({})", self.namespace)
-        };
+        let ns_display = format!(" ({})", self.namespace);
         let count_display = if self.count > 1 {
             format!("  [{} shells]", self.count)
         } else {

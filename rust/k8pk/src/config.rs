@@ -202,6 +202,26 @@ fn glob_match_inner(pat: &[char], txt: &[char], mut pi: usize, mut ti: usize) ->
     ti == txt.len()
 }
 
+/// Append a context pattern to `insecure_contexts` in the config file and save it.
+/// Creates the config file if it does not exist yet. No-ops if the pattern is already present.
+pub fn add_to_insecure_contexts(context: &str) -> Result<()> {
+    let path = config_path()?;
+    let mut config = load_uncached()?;
+
+    let pattern = context.to_string();
+    if config.insecure_contexts.contains(&pattern) {
+        return Ok(()); // already there
+    }
+    config.insecure_contexts.push(pattern);
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let yaml = serde_yaml_ng::to_string(&config)?;
+    std::fs::write(&path, yaml)?;
+    Ok(())
+}
+
 /// Expand ~ to home directory in path strings
 pub fn expand_home(path: &str) -> PathBuf {
     if let Some(stripped) = path.strip_prefix("~/") {

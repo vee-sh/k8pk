@@ -44,6 +44,22 @@ pub fn ensure_session_alive(
                     .is_ok()
                     {
                         eprintln!("Connected (insecure mode).");
+                        // Offer to persist so this context always skips TLS (no prompt next time)
+                        let persist = inquire::Confirm::new(&format!(
+                            "Always skip TLS for '{}'? (saves to insecure_contexts in config)",
+                            context
+                        ))
+                        .with_default(true)
+                        .prompt()
+                        .unwrap_or(false);
+                        if persist {
+                            match crate::config::add_to_insecure_contexts(context) {
+                                Ok(()) => {
+                                    eprintln!("Saved '{}' to insecure_contexts in config.", context)
+                                }
+                                Err(e) => eprintln!("Warning: could not update config: {}", e),
+                            }
+                        }
                         return Ok(kubeconfig.to_path_buf());
                     }
                     // Still failing after insecure -- fall through to re-login
