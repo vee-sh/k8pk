@@ -154,6 +154,29 @@ pub fn get_server_for_context(cfg: &KubeConfig, context_name: &str) -> Option<St
     extract_server_url_from_cluster(&cluster.rest)
 }
 
+/// Check if the cluster for a context has `insecure-skip-tls-verify: true` set.
+pub fn get_cluster_insecure_for_context(cfg: &KubeConfig, context_name: &str) -> bool {
+    let Some(ctx) = cfg.find_context(context_name) else {
+        return false;
+    };
+    let Ok((cluster_name, _)) = extract_context_refs(&ctx.rest) else {
+        return false;
+    };
+    let Some(cluster) = cfg.find_cluster(&cluster_name) else {
+        return false;
+    };
+    let Yaml::Mapping(map) = &cluster.rest else {
+        return false;
+    };
+    let Some(Yaml::Mapping(cluster_map)) = map.get(Yaml::from("cluster")) else {
+        return false;
+    };
+    matches!(
+        cluster_map.get(Yaml::from("insecure-skip-tls-verify")),
+        Some(Yaml::Bool(true))
+    )
+}
+
 /// Set `insecure-skip-tls-verify: true` on all clusters in a kubeconfig.
 /// Also removes `certificate-authority` and `certificate-authority-data`
 /// since they conflict with insecure mode.

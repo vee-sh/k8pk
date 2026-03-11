@@ -615,7 +615,11 @@ pub enum Command {
         #[arg(long, value_name = "DIR")]
         output_dir: Option<PathBuf>,
         /// Skip TLS certificate verification
-        #[arg(long, help = "Skip TLS certificate verification (insecure)")]
+        #[arg(
+            long,
+            visible_alias = "insecure",
+            help = "Skip TLS certificate verification (insecure)"
+        )]
         insecure_skip_tls_verify: bool,
         /// Use vault to store/retrieve credentials (OCP only)
         #[arg(long, help = "Store/retrieve credentials from vault (OCP only)")]

@@ -41,11 +41,7 @@ pub fn detect_login_type_from_url(server: &str) -> Option<LoginType> {
     if lower.contains("rancher") || lower.contains("/k8s/clusters/") {
         return Some(LoginType::Rancher);
     }
-    if lower.contains(":6443")
-        || lower.contains("openshift")
-        || lower.contains("ocp")
-        || lower.contains("api.")
-    {
+    if lower.contains(":6443") || lower.contains("openshift") || lower.contains("ocp") {
         return Some(LoginType::Ocp);
     }
     None
@@ -245,6 +241,12 @@ impl LoginRequest {
     /// Set auth mode
     pub fn with_auth(mut self, auth: &str) -> Self {
         self.auth = auth.to_string();
+        self
+    }
+
+    /// Set insecure TLS flag
+    pub fn with_insecure(mut self, insecure: bool) -> Self {
+        self.insecure = insecure;
         self
     }
 
@@ -1041,10 +1043,7 @@ fn ocp_login(
     let mut final_password = password.map(String::from);
     let final_token = token.map(String::from);
 
-    // If token is provided, use it directly
-    if final_token.is_some() {
-        // Token auth - proceed
-    } else if final_username.is_some() || final_password.is_some() {
+    if final_token.is_none() && (final_username.is_some() || final_password.is_some()) {
         // Username/password provided - use them
         if final_username.is_none() {
             final_username = Some(
@@ -1116,10 +1115,6 @@ fn ocp_login(
     }
 
     // Build oc login command
-    let mut use_insecure = insecure;
-    if final_token.is_some() && !insecure {
-        use_insecure = true; // Auto-use insecure for token-based auth to avoid prompts
-    }
 
     let mut cmd = Command::new("oc");
     cmd.arg("login");
@@ -1139,7 +1134,7 @@ fn ocp_login(
         cmd.arg("--certificate-authority")
             .arg(ca.to_string_lossy().to_string());
     }
-    if use_insecure {
+    if insecure {
         cmd.arg("--insecure-skip-tls-verify");
     }
 
@@ -1155,16 +1150,12 @@ fn ocp_login(
     }
 
     if !output.status.success() {
-        let combined = format!("{}{}", stdout_str, stderr_str).to_lowercase();
-        if combined.contains("x509")
-            || combined.contains("certificate")
-            || combined.contains("tls:")
-            || combined.contains("ssl")
-        {
+        let combined = format!("{}{}", stdout_str, stderr_str);
+        if is_tls_error(&combined) {
             return Err(K8pkError::TlsCertificateError {
                 context: context_name.clone(),
                 hint: format!(
-                    "Re-login with: k8pk login --insecure --server {} --name {}",
+                    "Re-login with: k8pk login --insecure-skip-tls-verify --server {} --name {}",
                     server, context_name
                 ),
             });
@@ -2143,17 +2134,6 @@ fn infer_login_type_from_context(context_name: &str) -> Option<LoginType> {
     }
 }
 
-/// Parse stored type string ("ocp", "rancher", "gke", "k8s") to LoginType
-fn parse_stored_type(s: &str) -> Option<LoginType> {
-    match s.to_lowercase().as_str() {
-        "ocp" | "openshift" => Some(LoginType::Ocp),
-        "rancher" => Some(LoginType::Rancher),
-        "gke" | "gcp" => Some(LoginType::Gke),
-        "k8s" | "kube" | "kubernetes" => Some(LoginType::K8s),
-        _ => None,
-    }
-}
-
 /// Parse server URL (e.g. "https://api.example.com:6443") into (host, port).
 /// Returns (host, port) or None if unparseable.
 fn parse_server_host_port(server: &str) -> Option<(String, u16)> {
@@ -2207,6 +2187,7 @@ pub fn try_relogin(
     let merged = kubeconfig::load_merged(paths)?;
     let server = kubeconfig::get_server_for_context(&merged, context)
         .ok_or_else(|| K8pkError::LoginFailed("cannot determine server URL for re-login".into()))?;
+    let relogin_insecure = kubeconfig::get_cluster_insecure_for_context(&merged, context);
 
     // Fail fast if the cluster is not reachable so we don't prompt for credentials.
     const REACHABILITY_TIMEOUT_SECS: u64 = 2;
@@ -2214,7 +2195,7 @@ pub fn try_relogin(
 
     let mut login_type = context::get_context_type(context)?
         .as_ref()
-        .and_then(|s| parse_stored_type(s))
+        .and_then(|s| s.parse::<LoginType>().ok())
         .or_else(|| infer_login_type_from_context(context))
         .or_else(|| detect_login_type_from_url(&server));
 
@@ -2270,6 +2251,7 @@ pub fn try_relogin(
                             .with_name(context)
                             .with_credentials(&entry.username, &entry.password)
                             .with_auth("userpass")
+                            .with_insecure(relogin_insecure)
                             .with_rancher_cluster_server(&server);
                         match login(&req) {
                             Ok(res) => {
@@ -2319,6 +2301,7 @@ pub fn try_relogin(
                 .with_name(context)
                 .with_credentials(&username, &password)
                 .with_auth("userpass")
+                .with_insecure(relogin_insecure)
                 .with_rancher_cluster_server(&server);
 
             let res = match login(&req) {
@@ -2348,6 +2331,7 @@ pub fn try_relogin(
                                 .with_name(context)
                                 .with_credentials(&u2, &p2)
                                 .with_auth("userpass")
+                                .with_insecure(relogin_insecure)
                                 .with_rancher_cluster_server(&server);
                             login(&req2)?
                         } else {
@@ -2387,7 +2371,8 @@ pub fn try_relogin(
                         .with_type(LoginType::Ocp)
                         .with_name(context)
                         .with_credentials(&entry.username, &entry.password)
-                        .with_auth("userpass");
+                        .with_auth("userpass")
+                        .with_insecure(relogin_insecure);
                     match login(&req) {
                         Ok(res) => {
                             eprintln!("Re-authenticated successfully (vault).");
@@ -2426,7 +2411,8 @@ pub fn try_relogin(
                 .with_type(LoginType::Ocp)
                 .with_name(context)
                 .with_credentials(&username, &password)
-                .with_auth("userpass");
+                .with_auth("userpass")
+                .with_insecure(relogin_insecure);
             let res = match login(&req) {
                 Ok(r) => r,
                 Err(e) => {
@@ -2452,7 +2438,8 @@ pub fn try_relogin(
                                 .with_type(LoginType::Ocp)
                                 .with_name(context)
                                 .with_credentials(&username, &password)
-                                .with_auth("userpass");
+                                .with_auth("userpass")
+                                .with_insecure(relogin_insecure);
                             login(&req2)?
                         } else {
                             return Err(e);
@@ -2484,7 +2471,8 @@ pub fn try_relogin(
             );
             let req = LoginRequest::new(&server)
                 .with_type(LoginType::Gke)
-                .with_name(context);
+                .with_name(context)
+                .with_insecure(relogin_insecure);
             let res = login(&req)?;
             written_path = res.kubeconfig_path;
             context::save_context_type(context, "gke")?;
@@ -2506,7 +2494,8 @@ pub fn try_relogin(
                     .with_type(LoginType::K8s)
                     .with_name(context)
                     .with_token(&token)
-                    .with_auth("token");
+                    .with_auth("token")
+                    .with_insecure(relogin_insecure);
                 match login(&req) {
                     Ok(r) => r,
                     Err(e) => {
@@ -2526,7 +2515,8 @@ pub fn try_relogin(
                                     .with_type(LoginType::K8s)
                                     .with_name(context)
                                     .with_token(&token)
-                                    .with_auth("token");
+                                    .with_auth("token")
+                                    .with_insecure(relogin_insecure);
                                 login(&req2)?
                             } else {
                                 return Err(e);
@@ -2548,7 +2538,8 @@ pub fn try_relogin(
                     .with_type(LoginType::K8s)
                     .with_name(context)
                     .with_credentials(&username, &password)
-                    .with_auth("userpass");
+                    .with_auth("userpass")
+                    .with_insecure(relogin_insecure);
                 match login(&req) {
                     Ok(r) => r,
                     Err(e) => {
@@ -2571,7 +2562,8 @@ pub fn try_relogin(
                                     .with_type(LoginType::K8s)
                                     .with_name(context)
                                     .with_credentials(&username, &password)
-                                    .with_auth("userpass");
+                                    .with_auth("userpass")
+                                    .with_insecure(relogin_insecure);
                                 login(&req2)?
                             } else {
                                 return Err(e);
@@ -2763,12 +2755,11 @@ fn test_k8s_auth(kubeconfig_path: &Path, context_name: &str, timeout_secs: u64) 
     }
 }
 
-fn test_ocp_auth(kubeconfig_path: &Path, _timeout_secs: u64) -> Result<()> {
-    // oc whoami doesn't accept --request-timeout, but we can use OC_REQUEST_TIMEOUT env var
-    // or just rely on default timeout. For now, we'll just use the default.
+fn test_ocp_auth(kubeconfig_path: &Path, timeout_secs: u64) -> Result<()> {
     let status = Command::new("oc")
         .arg("whoami")
         .env("KUBECONFIG", kubeconfig_path)
+        .env("OC_REQUEST_TIMEOUT", format!("{}s", timeout_secs))
         .status()?;
     if !status.success() {
         return Err(K8pkError::CommandFailed("credential test failed".into()));
