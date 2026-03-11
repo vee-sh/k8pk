@@ -1143,9 +1143,32 @@ fn ocp_login(
         cmd.arg("--insecure-skip-tls-verify");
     }
 
-    let status = cmd.status()?;
+    let output = cmd.output()?;
 
-    if !status.success() {
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let stderr_str = String::from_utf8_lossy(&output.stderr);
+    if !stdout_str.is_empty() {
+        print!("{}", stdout_str);
+    }
+    if !stderr_str.is_empty() {
+        eprint!("{}", stderr_str);
+    }
+
+    if !output.status.success() {
+        let combined = format!("{}{}", stdout_str, stderr_str).to_lowercase();
+        if combined.contains("x509")
+            || combined.contains("certificate")
+            || combined.contains("tls:")
+            || combined.contains("ssl")
+        {
+            return Err(K8pkError::TlsCertificateError {
+                context: context_name.clone(),
+                hint: format!(
+                    "Re-login with: k8pk login --insecure --server {} --name {}",
+                    server, context_name
+                ),
+            });
+        }
         return Err(K8pkError::CommandFailed("oc login failed".into()));
     }
 
