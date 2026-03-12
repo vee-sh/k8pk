@@ -41,7 +41,7 @@ pub fn detect_login_type_from_url(server: &str) -> Option<LoginType> {
     if lower.contains("rancher") || lower.contains("/k8s/clusters/") {
         return Some(LoginType::Rancher);
     }
-    if lower.contains(":6443") || lower.contains("openshift") || lower.contains("ocp") {
+    if lower.contains("openshift") || lower.contains("ocp") {
         return Some(LoginType::Ocp);
     }
     None
@@ -2873,11 +2873,15 @@ mod tests {
     #[test]
     fn test_detect_ocp() {
         assert_eq!(
-            detect_login_type_from_url("https://api.cluster.example.com:6443"),
+            detect_login_type_from_url("https://api.openshift.example.com:6443"),
             Some(LoginType::Ocp)
         );
         assert_eq!(
             detect_login_type_from_url("https://openshift.internal:8443"),
+            Some(LoginType::Ocp)
+        );
+        assert_eq!(
+            detect_login_type_from_url("https://api.ocp.example.com:6443"),
             Some(LoginType::Ocp)
         );
     }
@@ -2885,6 +2889,15 @@ mod tests {
     #[test]
     fn test_detect_unknown() {
         assert_eq!(detect_login_type_from_url("https://10.0.0.1:8080"), None);
+        // Port 6443 alone is not sufficient to identify OCP — many cluster types use it
+        assert_eq!(
+            detect_login_type_from_url("https://api.cluster.example.com:6443"),
+            None
+        );
+        assert_eq!(
+            detect_login_type_from_url("https://10.120.119.137:6443"),
+            None
+        );
     }
 
     // --- LoginType::from_str ---
