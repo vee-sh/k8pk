@@ -2259,8 +2259,7 @@ pub fn try_relogin(
                                 context::save_context_type(context, "rancher")?;
                                 if let Some(ref kc) = res.kubeconfig_path {
                                     if let Err(msg) = post_login_cluster_check(kc, context) {
-                                        eprintln!("Warning: {}", msg);
-                                        eprintln!("  To remove this context: k8pk rm {}", context);
+                                        handle_post_login_check(kc, context, &msg);
                                     }
                                 }
                                 return Ok(res.kubeconfig_path);
@@ -2379,8 +2378,7 @@ pub fn try_relogin(
                             context::save_context_type(context, "ocp")?;
                             if let Some(ref kc) = res.kubeconfig_path {
                                 if let Err(msg) = post_login_cluster_check(kc, context) {
-                                    eprintln!("Warning: {}", msg);
-                                    eprintln!("  To remove this context: k8pk rm {}", context);
+                                    handle_post_login_check(kc, context, &msg);
                                 }
                             }
                             return Ok(res.kubeconfig_path);
@@ -2583,12 +2581,66 @@ pub fn try_relogin(
     // This catches cases like Rancher auth succeeding but the downstream cluster being dead.
     if let Some(ref kc_path) = written_path {
         if let Err(msg) = post_login_cluster_check(kc_path, context) {
-            eprintln!("Warning: {}", msg);
-            eprintln!("  To remove this context: k8pk rm {}", context);
+            handle_post_login_check(kc_path, context, &msg);
         }
     }
 
     Ok(written_path)
+}
+
+/// Apply `insecure-skip-tls-verify: true` to all clusters in a kubeconfig file.
+fn apply_insecure_to_kubeconfig_file(path: &Path) -> Result<()> {
+    let content = fs::read_to_string(path)?;
+    let mut cfg: KubeConfig = serde_yaml_ng::from_str(&content).map_err(|e| {
+        crate::error::K8pkError::Other(format!("failed to parse kubeconfig: {}", e))
+    })?;
+    kubeconfig::set_cluster_insecure(&mut cfg);
+    let yaml = serde_yaml_ng::to_string(&cfg).map_err(|e| {
+        crate::error::K8pkError::Other(format!("failed to serialize kubeconfig: {}", e))
+    })?;
+    kubeconfig::write_restricted(path, &yaml)?;
+    Ok(())
+}
+
+/// Handle the result of `post_login_cluster_check`.
+/// For TLS errors in interactive sessions, offers to enable insecure mode.
+/// For other errors, prints a warning.
+fn handle_post_login_check(kc_path: &Path, context: &str, msg: &str) {
+    if is_tls_error(msg) && std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        eprintln!("Warning: {}", msg);
+        let confirm = Confirm::new("Enable insecure-skip-tls-verify for this context?")
+            .with_default(true)
+            .prompt()
+            .unwrap_or(false);
+        if confirm {
+            match apply_insecure_to_kubeconfig_file(kc_path) {
+                Ok(()) => {
+                    eprintln!("Applied insecure-skip-tls-verify to kubeconfig.");
+                    let persist = Confirm::new(&format!(
+                        "Always skip TLS for '{}'? (saves to insecure_contexts in config)",
+                        context
+                    ))
+                    .with_default(true)
+                    .prompt()
+                    .unwrap_or(false);
+                    if persist {
+                        match crate::config::add_to_insecure_contexts(context) {
+                            Ok(()) => {
+                                eprintln!("Saved '{}' to insecure_contexts in config.", context)
+                            }
+                            Err(e) => eprintln!("Warning: could not update config: {}", e),
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Warning: could not apply insecure mode: {}", e),
+            }
+        } else {
+            eprintln!("  To remove this context: k8pk rm {}", context);
+        }
+    } else {
+        eprintln!("Warning: {}", msg);
+        eprintln!("  To remove this context: k8pk rm {}", context);
+    }
 }
 
 /// Quick post-login check to verify the cluster API is actually responding.
