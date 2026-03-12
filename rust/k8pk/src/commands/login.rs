@@ -1416,7 +1416,7 @@ fn rancher_login(
     quiet: bool,
     cluster_server_override: Option<&str>,
 ) -> Result<LoginResult> {
-    let cluster_server = cluster_server_override.unwrap_or(server);
+    let cluster_server_initial = cluster_server_override.unwrap_or(server).to_string();
 
     let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
     let out_dir = output_dir
@@ -1426,8 +1426,9 @@ fn rancher_login(
     fs::create_dir_all(&out_dir)?;
 
     // Generate context name from cluster server URL (or name if provided)
+    // Use the initial (direct) cluster server URL for context name stability across re-logins.
     let context_name = name.map(String::from).unwrap_or_else(|| {
-        let sanitized = cluster_server
+        let sanitized = cluster_server_initial
             .trim_start_matches("https://")
             .trim_start_matches("http://")
             .replace(['/', ':'], "-");
@@ -1491,7 +1492,10 @@ fn rancher_login(
         if let Some(ref v) = vault {
             if let Some(entry) = v.get(&vault_key) {
                 if !quiet {
-                    println!("Using credentials from vault for {}", cluster_server);
+                    println!(
+                        "Using credentials from vault for {}",
+                        cluster_server_initial
+                    );
                 }
                 final_username = Some(entry.username.clone());
                 final_password = Some(entry.password.clone());
@@ -1555,6 +1559,36 @@ fn rancher_login(
         }
     }
 
+    // When the stored cluster URL is a direct k8s API server (not a Rancher proxy URL),
+    // Rancher-issued tokens won't work against it directly. Resolve the proper Rancher
+    // proxy URL by looking up the cluster in Rancher's v3 API.
+    let cluster_server = {
+        let (_, is_proxy) = rancher_server_base_url(&cluster_server_initial);
+        if !is_proxy && cluster_server_override.is_some() {
+            if let Some(ref tok) = final_token {
+                match rancher_find_cluster_proxy_url(server, &cluster_server_initial, tok, insecure)
+                {
+                    Some(proxy_url) => {
+                        if !quiet {
+                            println!("Resolved Rancher proxy URL: {}", proxy_url);
+                        }
+                        proxy_url
+                    }
+                    None => {
+                        if !quiet {
+                            eprintln!("Warning: could not resolve Rancher proxy URL for {}; kubeconfig may not work", cluster_server_initial);
+                        }
+                        cluster_server_initial.clone()
+                    }
+                }
+            } else {
+                cluster_server_initial.clone()
+            }
+        } else {
+            cluster_server_initial.clone()
+        }
+    };
+
     if !quiet {
         println!("Creating Rancher kubeconfig for {}...", cluster_server);
     }
@@ -1571,7 +1605,7 @@ fn rancher_login(
     let mut cfg = KubeConfig::default();
     cfg.ensure_defaults(Some(&context_name));
 
-    // Create cluster entry (use cluster_server so re-login keeps original cluster URL)
+    // Create cluster entry using the resolved cluster_server (Rancher proxy URL when available)
     let cluster_name = format!("{}-cluster", context_name);
     let mut cluster_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
     if let serde_yaml_ng::Value::Mapping(ref mut map) = cluster_rest {
@@ -1674,6 +1708,50 @@ fn rancher_server_base_url(server: &str) -> (String, bool) {
     } else {
         (server.trim_end_matches('/').to_string(), false)
     }
+}
+
+/// Query Rancher v3 API to find the proxy URL for a cluster given its direct kube-apiserver URL.
+/// Rancher tokens are only valid when used via the Rancher proxy endpoint
+/// (`<rancher>/k8s/clusters/<cluster-id>`), not against the cluster's API server directly.
+fn rancher_find_cluster_proxy_url(
+    rancher_server: &str,
+    api_server: &str,
+    token: &str,
+    insecure: bool,
+) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(insecure)
+        .build()
+        .ok()?;
+    let url = format!("{}/v3/clusters", rancher_server.trim_end_matches('/'));
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/json")
+        .send()
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let json: serde_json::Value = response.json().ok()?;
+    let clusters = json.get("data")?.as_array()?;
+    let api_server_clean = api_server.trim_end_matches('/');
+    for cluster in clusters {
+        let endpoint = cluster
+            .get("status")
+            .and_then(|s| s.get("apiEndpoint"))
+            .and_then(|e| e.as_str())
+            .unwrap_or("");
+        if endpoint.trim_end_matches('/') == api_server_clean {
+            let id = cluster.get("id")?.as_str()?;
+            return Some(format!(
+                "{}/k8s/clusters/{}",
+                rancher_server.trim_end_matches('/'),
+                id
+            ));
+        }
+    }
+    None
 }
 
 /// Authenticate with Rancher API and get bearer token.
