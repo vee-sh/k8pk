@@ -1723,33 +1723,40 @@ fn rancher_find_cluster_proxy_url(
         .danger_accept_invalid_certs(insecure)
         .build()
         .ok()?;
-    let url = format!("{}/v3/clusters", rancher_server.trim_end_matches('/'));
-    let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Accept", "application/json")
-        .send()
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let json: serde_json::Value = response.json().ok()?;
-    let clusters = json.get("data")?.as_array()?;
     let api_server_clean = api_server.trim_end_matches('/');
-    for cluster in clusters {
-        let endpoint = cluster
-            .get("status")
-            .and_then(|s| s.get("apiEndpoint"))
-            .and_then(|e| e.as_str())
-            .unwrap_or("");
-        if endpoint.trim_end_matches('/') == api_server_clean {
-            let id = cluster.get("id")?.as_str()?;
-            return Some(format!(
-                "{}/k8s/clusters/{}",
-                rancher_server.trim_end_matches('/'),
-                id
-            ));
+    let rancher_base = rancher_server.trim_end_matches('/');
+    // Use a large page size to reduce round trips; follow pagination links until found.
+    let mut next_url = Some(format!("{}/v3/clusters?limit=500", rancher_base));
+    while let Some(url) = next_url.take() {
+        let response = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/json")
+            .send()
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
         }
+        let json: serde_json::Value = response.json().ok()?;
+        let clusters = json.get("data")?.as_array()?;
+        for cluster in clusters {
+            let endpoint = cluster
+                .get("status")
+                .and_then(|s| s.get("apiEndpoint"))
+                .and_then(|e| e.as_str())
+                .unwrap_or("");
+            if endpoint.trim_end_matches('/') == api_server_clean {
+                let id = cluster.get("id")?.as_str()?;
+                return Some(format!("{}/k8s/clusters/{}", rancher_base, id));
+            }
+        }
+        // Follow Rancher v3 pagination: pagination.next contains the full URL for the next page.
+        next_url = json
+            .get("pagination")
+            .and_then(|p| p.get("next"))
+            .and_then(|n| n.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
     }
     None
 }
