@@ -9,8 +9,8 @@
 ## Quick Tests
 
 ```bash
-# Run all tests
-./test.sh
+# Run all tests (from tests/ directory)
+cd tests && ./test.sh
 
 # Rust unit tests
 cd ../rust/k8pk && cargo test
@@ -82,6 +82,13 @@ k8pk login <server> --token $TOKEN  # Safe OCP login
 - [ ] Shell functions (`kpick`, `kswitch`) work
 - [ ] WezTerm plugin loads and works
 - [ ] Generated kubeconfigs work with both kubectl and oc
+
+## Rust unit tests (`cargo test`)
+
+- **Rancher HTTP** (v3-public login, `/v3/clusters`, pagination) is covered with **in-process TCP mocks** in `rust/k8pk/src/test_http.rs` (no extra crates). RKE1/RKE2 clusters are exercised **via the Rancher API** in those tests — there is no separate RKE wire protocol in k8pk.
+- **OpenShift login** uses the **`oc` binary** (`oc login`), not HTTP inside k8pk, so it is **not** mocked the same way. Options for automated OCP tests: run against a real `oc`, set **`K8PK_OC`**, use **`k8pk --oc /path/to/fake-oc …`**, or put a fake `oc` earlier on `PATH` (integration / CI only). A minimal stub lives at **`tests/fixtures/fake-oc.sh`** (make it executable; point **`K8PK_OC`** at its absolute path). Use **`k8pk info oc`** to confirm resolution.
+- **Man pages**: optional build with `K8PK_MAN_DIR=…` (see [CONTRIBUTING.md](../CONTRIBUTING.md)); release archives include man pages when built that way.
+- **GKE** uses **`gcloud`** for login; **kubectl namespace listing** uses **`kubectl`/`oc`** subprocesses — same story as OCP for pure HTTP mocks.
 
 ## Troubleshooting
 

@@ -534,8 +534,66 @@ pub fn join_paths_for_env(paths: &[PathBuf]) -> Option<String> {
     )
 }
 
-/// Find the kubernetes CLI (prefers oc over kubectl)
+/// OpenShift CLI binary for subprocess calls.
+/// Override with **`K8PK_OC`** (absolute path or `oc`) for CI, fake `oc` scripts, or non-standard installs.
+pub fn oc_cli_path() -> PathBuf {
+    std::env::var_os("K8PK_OC")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("oc"))
+}
+
+/// True if the real `oc` is on PATH, or **`K8PK_OC`** is set (non-empty).
+pub fn oc_available() -> bool {
+    if std::env::var_os("K8PK_OC").is_some_and(|s| !s.is_empty()) {
+        return true;
+    }
+    which::which("oc").is_ok()
+}
+
+/// How k8pk resolved the OpenShift CLI path (for `k8pk info oc`, doctor, JSON).
+#[derive(Debug, Clone)]
+pub struct OcCliInfo {
+    pub path: PathBuf,
+    /// `K8PK_OC`, `PATH`, or `fallback` when `oc` is not on PATH and env is unset.
+    pub resolved_via: &'static str,
+}
+
+/// Resolved `oc` binary and whether **`K8PK_OC`**, **`which oc`**, or the default name was used.
+pub fn oc_cli_info() -> OcCliInfo {
+    if std::env::var_os("K8PK_OC").is_some_and(|s| !s.is_empty()) {
+        return OcCliInfo {
+            path: oc_cli_path(),
+            resolved_via: "K8PK_OC",
+        };
+    }
+    match which::which("oc") {
+        Ok(p) => OcCliInfo {
+            path: p,
+            resolved_via: "PATH",
+        },
+        Err(_) => OcCliInfo {
+            path: PathBuf::from("oc"),
+            resolved_via: "fallback",
+        },
+    }
+}
+
+/// JSON for `k8pk info all` / scripting.
+pub fn oc_cli_info_json() -> serde_json::Value {
+    let info = oc_cli_info();
+    serde_json::json!({
+        "path": info.path.to_string_lossy(),
+        "resolved_via": info.resolved_via,
+        "available": oc_available(),
+    })
+}
+
+/// Find the kubernetes CLI (prefers `oc` over `kubectl`; honors **`K8PK_OC`** like [`oc_cli_path`])
 pub fn find_k8s_cli() -> Result<String> {
+    if std::env::var_os("K8PK_OC").is_some_and(|s| !s.is_empty()) {
+        return Ok(oc_cli_path().to_string_lossy().into_owned());
+    }
     if which::which("oc").is_ok() {
         Ok("oc".to_string())
     } else if which::which("kubectl").is_ok() {
@@ -572,7 +630,7 @@ pub fn list_namespaces(context: &str, kubeconfig_env: Option<&str>) -> Result<Ve
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
-                .unwrap(),
+                .unwrap_or_else(|_| ProgressStyle::default_spinner()),
         );
         pb.set_message(format!("Fetching namespaces from {}...", context));
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
@@ -628,6 +686,7 @@ pub fn sanitize_filename(s: &str) -> String {
 
 /// Detect cluster type from context name or server URL
 pub fn detect_cluster_type(context_name: &str, server_url: Option<&str>) -> &'static str {
+    let ctx_lower = context_name.to_lowercase();
     // Check context name patterns
     if context_name.starts_with("arn:aws:eks:") {
         return "eks";
@@ -635,15 +694,22 @@ pub fn detect_cluster_type(context_name: &str, server_url: Option<&str>) -> &'st
     if context_name.starts_with("gke_") {
         return "gke";
     }
-    if context_name.contains("/api.") && context_name.contains(":6443") {
-        return "ocp";
-    }
     if context_name.starts_with("aks-") || context_name.contains("azure") {
         return "aks";
+    }
+    if ctx_lower.contains("rancher") {
+        return "rancher";
+    }
+    if context_name.contains("/api.") && context_name.contains(":6443") {
+        return "ocp";
     }
 
     // Check server URL if available
     if let Some(url) = server_url {
+        let url_lower = url.to_lowercase();
+        if url_lower.contains("/k8s/clusters/") || url_lower.contains("rancher") {
+            return "rancher";
+        }
         if url.contains(".eks.amazonaws.com") {
             return "eks";
         }
@@ -812,6 +878,77 @@ pub fn friendly_context_name(context_name: &str, cluster_type: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static OC_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn oc_cli_path_default_without_k8pk_oc() {
+        let _guard = OC_ENV_LOCK.lock().unwrap();
+        let saved = std::env::var_os("K8PK_OC");
+        std::env::remove_var("K8PK_OC");
+        assert_eq!(oc_cli_path(), PathBuf::from("oc"));
+        if let Some(v) = saved {
+            std::env::set_var("K8PK_OC", v);
+        }
+    }
+
+    #[test]
+    fn oc_cli_path_uses_k8pk_oc_when_set() {
+        let _guard = OC_ENV_LOCK.lock().unwrap();
+        let saved = std::env::var_os("K8PK_OC");
+        std::env::set_var("K8PK_OC", "/tmp/k8pk-test-fake-oc");
+        assert_eq!(oc_cli_path(), PathBuf::from("/tmp/k8pk-test-fake-oc"));
+        let info = oc_cli_info();
+        assert_eq!(info.path, PathBuf::from("/tmp/k8pk-test-fake-oc"));
+        assert_eq!(info.resolved_via, "K8PK_OC");
+        if let Some(v) = saved {
+            std::env::set_var("K8PK_OC", v);
+        } else {
+            std::env::remove_var("K8PK_OC");
+        }
+    }
+
+    #[test]
+    fn oc_cli_info_json_shape() {
+        let _guard = OC_ENV_LOCK.lock().unwrap();
+        let saved = std::env::var_os("K8PK_OC");
+        std::env::remove_var("K8PK_OC");
+        let j = oc_cli_info_json();
+        assert!(j.get("path").is_some());
+        assert!(j.get("resolved_via").is_some());
+        assert_eq!(j["available"], serde_json::json!(oc_available()));
+        if let Some(v) = saved {
+            std::env::set_var("K8PK_OC", v);
+        }
+    }
+
+    #[test]
+    fn fake_oc_fixture_resolves() {
+        let _guard = OC_ENV_LOCK.lock().unwrap();
+        let saved = std::env::var_os("K8PK_OC");
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-oc.sh");
+        assert!(fixture.exists(), "tests/fixtures/fake-oc.sh must exist");
+        std::env::set_var("K8PK_OC", &fixture);
+        assert!(oc_available());
+        let info = oc_cli_info();
+        assert_eq!(info.resolved_via, "K8PK_OC");
+        assert_eq!(info.path, fixture);
+        let out = std::process::Command::new(oc_cli_path())
+            .arg("version")
+            .arg("--client")
+            .output()
+            .expect("fake-oc should execute");
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("fake-oc"));
+        if let Some(v) = saved {
+            std::env::set_var("K8PK_OC", v);
+        } else {
+            std::env::remove_var("K8PK_OC");
+        }
+    }
 
     #[test]
     fn test_sanitize_filename() {
@@ -837,6 +974,7 @@ mod tests {
         );
         assert_eq!(detect_cluster_type("aks-dev-cluster", None), "aks");
         assert_eq!(detect_cluster_type("minikube", None), "k8s");
+        assert_eq!(detect_cluster_type("rancher-prod-cluster", None), "rancher");
     }
 
     #[test]
@@ -855,6 +993,20 @@ mod tests {
         assert_eq!(
             detect_cluster_type("my-cluster", Some("https://api.cluster.example.com:6443")),
             "ocp"
+        );
+        assert_eq!(
+            detect_cluster_type(
+                "ctx-name",
+                Some("https://rancher.corp.internal/k8s/clusters/c-xyz")
+            ),
+            "rancher"
+        );
+        assert_eq!(
+            detect_cluster_type(
+                "my-cluster",
+                Some("https://rancher.example.com/k8s/clusters/c-m-abc")
+            ),
+            "rancher"
         );
     }
 
@@ -1220,5 +1372,260 @@ current-context: dev
         assert_eq!(parsed.current_context, cfg.current_context);
         assert_eq!(parsed.clusters.len(), cfg.clusters.len());
         assert_eq!(parsed.users.len(), cfg.users.len());
+    }
+
+    #[test]
+    fn test_join_paths_for_env_empty() {
+        assert_eq!(join_paths_for_env(&[]), None);
+    }
+
+    #[test]
+    fn test_join_paths_for_env_single() {
+        let paths = vec![PathBuf::from("/a/b")];
+        assert_eq!(join_paths_for_env(&paths), Some("/a/b".to_string()));
+    }
+
+    #[test]
+    fn test_join_paths_for_env_multiple() {
+        let paths = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        let result = join_paths_for_env(&paths).unwrap();
+        assert!(result.contains("/a"));
+        assert!(result.contains("/b"));
+        assert!(result.contains(':') || result.contains(';'));
+    }
+
+    #[test]
+    fn test_set_cluster_insecure() {
+        let mut cfg = sample_kubeconfig();
+        set_cluster_insecure(&mut cfg);
+        for cluster in &cfg.clusters {
+            if let Yaml::Mapping(ref map) = cluster.rest {
+                if let Some(Yaml::Mapping(ref inner)) = map.get(Yaml::from("cluster")) {
+                    assert_eq!(
+                        inner.get(Yaml::from("insecure-skip-tls-verify")),
+                        Some(&Yaml::Bool(true))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_cluster_insecure_for_context_default_false() {
+        let cfg = sample_kubeconfig();
+        assert!(!get_cluster_insecure_for_context(&cfg, "dev"));
+    }
+
+    #[test]
+    fn test_get_cluster_insecure_for_context_after_set() {
+        let mut cfg = sample_kubeconfig();
+        set_cluster_insecure(&mut cfg);
+        assert!(get_cluster_insecure_for_context(&cfg, "dev"));
+    }
+
+    #[test]
+    fn test_scan_directory_collects_yaml_and_config() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("cluster.yaml"), "apiVersion: v1").unwrap();
+        fs::write(dir.path().join("other.yml"), "apiVersion: v1").unwrap();
+        fs::write(dir.path().join("config"), "apiVersion: v1").unwrap();
+        fs::write(dir.path().join("notes.txt"), "not a config").unwrap();
+        fs::write(dir.path().join("binary.dat"), "not a config").unwrap();
+
+        let results = scan_directory(dir.path()).unwrap();
+        let names: Vec<String> = results
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+            .collect();
+        assert!(names.contains(&"cluster.yaml".to_string()));
+        assert!(names.contains(&"other.yml".to_string()));
+        assert!(names.contains(&"config".to_string()));
+        assert!(!names.contains(&"notes.txt".to_string()));
+        assert!(!names.contains(&"binary.dat".to_string()));
+    }
+
+    #[test]
+    fn test_scan_directory_nonexistent_returns_empty() {
+        let result = scan_directory(Path::new("/nonexistent/path/for/test")).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_match_globs_matches_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("cluster.yaml");
+        fs::write(&file, "").unwrap();
+
+        assert!(match_globs(&file, &["*.yaml".to_string()]).unwrap());
+        assert!(!match_globs(&file, &["*.json".to_string()]).unwrap());
+    }
+
+    #[test]
+    fn test_match_globs_empty_patterns() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.yaml");
+        fs::write(&file, "").unwrap();
+
+        assert!(!match_globs(&file, &[]).unwrap());
+    }
+
+    #[test]
+    fn test_resolve_paths_override_returns_only_that() {
+        let dir = tempfile::tempdir().unwrap();
+        let override_file = dir.path().join("override.yaml");
+        fs::write(&override_file, "apiVersion: v1").unwrap();
+
+        let cfg = K8pkConfig::default();
+        let result = resolve_paths(Some(&override_file), &[], &cfg).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], override_file);
+    }
+
+    #[test]
+    fn test_resolve_paths_deduplicates_kubeconfig_env() {
+        let _guard = OC_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kube.yaml");
+        fs::write(&file, "apiVersion: v1").unwrap();
+
+        let saved_kc = std::env::var_os("KUBECONFIG");
+        let saved_home = std::env::var_os("HOME");
+
+        let val = format!("{}:{}", file.display(), file.display());
+        std::env::set_var("KUBECONFIG", &val);
+        std::env::set_var("HOME", dir.path());
+
+        let cfg = K8pkConfig::default();
+        let result = resolve_paths(None, &[], &cfg).unwrap();
+        let matching: Vec<_> = result.iter().filter(|p| *p == &file).collect();
+        assert_eq!(matching.len(), 1, "duplicates should be removed");
+
+        if let Some(v) = saved_kc {
+            std::env::set_var("KUBECONFIG", v);
+        } else {
+            std::env::remove_var("KUBECONFIG");
+        }
+        if let Some(v) = saved_home {
+            std::env::set_var("HOME", v);
+        }
+    }
+
+    #[test]
+    fn test_resolve_paths_scans_cli_directories() {
+        let _guard = OC_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("configs");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("c1.yaml"), "apiVersion: v1").unwrap();
+        fs::write(sub.join("c2.yml"), "apiVersion: v1").unwrap();
+
+        let saved_kc = std::env::var_os("KUBECONFIG");
+        let saved_home = std::env::var_os("HOME");
+        std::env::remove_var("KUBECONFIG");
+        std::env::set_var("HOME", dir.path());
+
+        let cfg = K8pkConfig::default();
+        let result = resolve_paths(None, std::slice::from_ref(&sub), &cfg).unwrap();
+        let names: Vec<String> = result
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+            .collect();
+        assert!(names.contains(&"c1.yaml".to_string()));
+        assert!(names.contains(&"c2.yml".to_string()));
+
+        if let Some(v) = saved_kc {
+            std::env::set_var("KUBECONFIG", v);
+        }
+        if let Some(v) = saved_home {
+            std::env::set_var("HOME", v);
+        }
+    }
+
+    #[test]
+    fn test_find_from_config_include_and_exclude() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("kube");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("dev.yaml"), "apiVersion: v1").unwrap();
+        fs::write(sub.join("staging.yaml"), "apiVersion: v1").unwrap();
+        fs::write(sub.join("secrets.yaml"), "apiVersion: v1").unwrap();
+
+        let include = format!("{}/*.yaml", sub.display());
+        let exclude = format!("{}/secrets.yaml", sub.display());
+        let cfg = K8pkConfig {
+            configs: crate::config::ConfigsSection {
+                include: vec![include],
+                exclude: vec![exclude],
+            },
+            ..Default::default()
+        };
+        let result = find_from_config(&cfg).unwrap();
+        let names: Vec<String> = result
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+            .collect();
+        assert!(names.contains(&"dev.yaml".to_string()));
+        assert!(names.contains(&"staging.yaml".to_string()));
+        assert!(!names.contains(&"secrets.yaml".to_string()));
+    }
+
+    #[test]
+    fn test_find_from_config_direct_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("my-config.yaml");
+        fs::write(&file, "apiVersion: v1").unwrap();
+
+        let cfg = K8pkConfig {
+            configs: crate::config::ConfigsSection {
+                include: vec![file.to_string_lossy().to_string()],
+                exclude: vec![],
+            },
+            ..Default::default()
+        };
+        let result = find_from_config(&cfg).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], file);
+    }
+
+    #[test]
+    fn test_extract_base_cluster_name_ocp() {
+        let name = "myproject/api-cluster.example.com:6443/admin";
+        let base = extract_base_cluster_name(name, Some("https://api-cluster.example.com:6443"));
+        assert_eq!(base, "myproject/api-cluster.example.com:6443");
+    }
+
+    #[test]
+    fn test_extract_base_cluster_name_eks() {
+        let name = "arn:aws:eks:us-east-1:123456:cluster/my-cluster";
+        let base = extract_base_cluster_name(name, None);
+        assert_eq!(base, "my-cluster");
+    }
+
+    #[test]
+    fn test_extract_base_cluster_name_eks_with_namespace() {
+        let name = "my-eks-cluster/kube-system";
+        let base = extract_base_cluster_name(name, Some("https://eks.us-east-1.amazonaws.com"));
+        assert_eq!(base, "my-eks-cluster");
+    }
+
+    #[test]
+    fn test_extract_base_cluster_name_gke() {
+        let name = "gke_my-project_us-central1-a_my-cluster";
+        let base = extract_base_cluster_name(name, None);
+        assert_eq!(base, "gke_my-project_us-central1-a_my-cluster");
+    }
+
+    #[test]
+    fn test_extract_base_cluster_name_gke_with_extra() {
+        let name = "gke_my-project_us-central1-a_my-cluster_extra";
+        let base = extract_base_cluster_name(name, None);
+        assert_eq!(base, "gke_my-project_us-central1-a_my-cluster");
+    }
+
+    #[test]
+    fn test_extract_base_cluster_name_generic_slash() {
+        let name = "my-cluster/my-namespace";
+        let base = extract_base_cluster_name(name, Some("https://k8s.example.com"));
+        assert_eq!(base, "my-cluster");
     }
 }

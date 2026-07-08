@@ -93,21 +93,29 @@ pub fn organize_by_cluster_type(
         let mut type_cfg = KubeConfig::default();
 
         for ctx in contexts {
-            // Add context
-            type_cfg.contexts.push((*ctx).clone());
-
-            // Add referenced cluster and user
             if let Ok((cluster_name, user_name)) = kubeconfig::extract_context_refs(&ctx.rest) {
-                if let Some(cluster) = cfg.clusters.iter().find(|c| c.name == cluster_name) {
-                    if !type_cfg.clusters.iter().any(|c| c.name == cluster_name) {
+                let has_cluster = cfg.clusters.iter().any(|c| c.name == cluster_name);
+                let has_user = cfg.users.iter().any(|u| u.name == user_name);
+                if !has_cluster || !has_user {
+                    tracing::warn!(
+                        context = ctx.name,
+                        "skipping context with missing cluster/user refs"
+                    );
+                    continue;
+                }
+                type_cfg.contexts.push((*ctx).clone());
+                if !type_cfg.clusters.iter().any(|c| c.name == cluster_name) {
+                    if let Some(cluster) = cfg.clusters.iter().find(|c| c.name == cluster_name) {
                         type_cfg.clusters.push(cluster.clone());
                     }
                 }
-                if let Some(user) = cfg.users.iter().find(|u| u.name == user_name) {
-                    if !type_cfg.users.iter().any(|u| u.name == user_name) {
+                if !type_cfg.users.iter().any(|u| u.name == user_name) {
+                    if let Some(user) = cfg.users.iter().find(|u| u.name == user_name) {
                         type_cfg.users.push(user.clone());
                     }
                 }
+            } else {
+                tracing::warn!(context = ctx.name, "skipping context with invalid refs");
             }
         }
 
@@ -367,5 +375,65 @@ users:
             .filter(|e| e.file_name().to_string_lossy().contains(".bak."))
             .collect();
         assert!(!backups.is_empty(), "backup file should exist");
+    }
+
+    /// Two contexts share cluster type `k8s`; one has refs to missing cluster/user and must be omitted from written output.
+    const BROKEN_REFS_KUBECONFIG: &str = r#"
+apiVersion: v1
+kind: Config
+clusters:
+  - name: good-cl
+    cluster:
+      server: https://127.0.0.1:443
+contexts:
+  - name: good-ctx
+    context:
+      cluster: good-cl
+      user: good-user
+  - name: bad-ctx
+    context:
+      cluster: ghost-cl
+      user: ghost-user
+users:
+  - name: good-user
+    user:
+      token: good-token
+"#;
+
+    #[test]
+    fn test_organize_skips_broken_context_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("config");
+        fs::write(&source, BROKEN_REFS_KUBECONFIG).unwrap();
+
+        let out_dir = dir.path().join("organized");
+        let result = organize_by_cluster_type(
+            Some(source.as_path()),
+            Some(out_dir.as_path()),
+            false,
+            false,
+        )
+        .unwrap();
+
+        let k8s_path = out_dir.join("k8s.yaml");
+        assert!(
+            k8s_path.exists(),
+            "expected k8s.yaml for generic cluster type"
+        );
+        let content = fs::read_to_string(&k8s_path).unwrap();
+        let cfg: KubeConfig = serde_yaml_ng::from_str(&content).unwrap();
+
+        let names: Vec<&str> = cfg.contexts.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["good-ctx"]);
+        assert!(
+            cfg.clusters.iter().any(|c| c.name == "good-cl"),
+            "valid cluster should be copied"
+        );
+        assert!(
+            cfg.users.iter().any(|u| u.name == "good-user"),
+            "valid user should be copied"
+        );
+
+        assert_eq!(result.groups.len(), 1);
     }
 }

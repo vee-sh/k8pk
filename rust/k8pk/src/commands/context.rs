@@ -2,10 +2,12 @@
 
 use crate::error::{K8pkError, Result};
 use crate::kubeconfig;
+use crate::state::CurrentState;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
 
 /// Check session liveness and re-login if expired.
 /// Returns the (possibly refreshed) kubeconfig path.
@@ -349,6 +351,100 @@ pub fn detect_shell() -> &'static str {
     "bash"
 }
 
+/// Per-context kubectl/oc cache directory (matches `print_env_exports` layout).
+pub fn isolated_cache_dir(kubeconfig: &Path, context: &str) -> PathBuf {
+    kubeconfig
+        .parent()
+        .unwrap_or_else(|| Path::new("/tmp"))
+        .join("cache")
+        .join(kubeconfig::sanitize_filename(context))
+}
+
+/// Run a hook with extra environment (`K8PK_CONTEXT`, `K8PK_HOOK_PHASE`, etc.).
+pub fn run_hook_command_with_env(command: &str, extra: &[(&str, &str)]) -> Result<()> {
+    let (shell, flag) = if detect_shell() == "fish" {
+        ("fish", "-c")
+    } else {
+        ("sh", "-c")
+    };
+    let mut cmd = StdCommand::new(shell);
+    cmd.arg(flag).arg(command);
+    for (k, v) in extra {
+        cmd.env(k, v);
+    }
+    cmd.env("K8PK_HOOK", "1");
+    let status = cmd.status()?;
+    if !status.success() {
+        tracing::warn!(command = %command, "hook command failed");
+    }
+    Ok(())
+}
+
+/// Hooks for eval-based context switching: `stop_ctx` when leaving a context, then `start_ctx`.
+/// Skipped if the Kubernetes context name is unchanged (namespace-only changes do not run hooks).
+pub fn run_eval_hooks(
+    prior: &CurrentState,
+    new_context: &str,
+    new_namespace: Option<&str>,
+) -> Result<()> {
+    let hooks = match crate::config::load().ok().and_then(|c| c.hooks.clone()) {
+        None => return Ok(()),
+        Some(h) => h,
+    };
+
+    if prior.context.as_deref() == Some(new_context) {
+        return Ok(());
+    }
+
+    if let Some(ref old_ctx) = prior.context {
+        if let Some(ref stop) = hooks.stop_ctx {
+            run_hook_command_with_env(
+                stop,
+                &[
+                    ("K8PK_HOOK_PHASE", "stop"),
+                    ("K8PK_CONTEXT", old_ctx.as_str()),
+                    ("K8PK_NAMESPACE", prior.namespace.as_deref().unwrap_or("")),
+                ],
+            )?;
+        }
+    }
+
+    if let Some(ref start) = hooks.start_ctx {
+        run_hook_command_with_env(
+            start,
+            &[
+                ("K8PK_HOOK_PHASE", "start"),
+                ("K8PK_CONTEXT", new_context),
+                ("K8PK_NAMESPACE", new_namespace.unwrap_or("")),
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Run `stop_ctx` before `k8pk clean` clears the environment.
+pub fn run_stop_hook_before_clean(prior: &CurrentState) -> Result<()> {
+    let hooks = match crate::config::load().ok().and_then(|c| c.hooks.clone()) {
+        None => return Ok(()),
+        Some(h) => h,
+    };
+    let Some(ref stop) = hooks.stop_ctx else {
+        return Ok(());
+    };
+    let Some(ref ctx) = prior.context else {
+        return Ok(());
+    };
+    run_hook_command_with_env(
+        stop,
+        &[
+            ("K8PK_HOOK_PHASE", "stop"),
+            ("K8PK_CONTEXT", ctx.as_str()),
+            ("K8PK_NAMESPACE", prior.namespace.as_deref().unwrap_or("")),
+        ],
+    )
+}
+
 /// Print environment exports for a context
 ///
 /// For non-recursive switching: always reset to depth=1 (fresh k8pk session).
@@ -362,6 +458,9 @@ pub fn print_env_exports(
     verbose: bool,
     from_picker: bool,
 ) -> Result<()> {
+    let prior = CurrentState::from_env();
+    run_eval_hooks(&prior, context, namespace)?;
+
     // Always reset to depth 1 for non-recursive context/namespace switching
     // This prevents depth from accumulating when switching contexts
     let new_depth = 1;
@@ -380,11 +479,7 @@ pub fn print_env_exports(
     };
 
     // Isolate cache per context to avoid stale API discovery (fixes oc/kubectl cache conflicts)
-    let cache_dir = kubeconfig
-        .parent()
-        .unwrap_or(Path::new("/tmp"))
-        .join("cache")
-        .join(crate::kubeconfig::sanitize_filename(context));
+    let cache_dir = isolated_cache_dir(kubeconfig, context);
 
     let exports = match shell {
         "fish" => {
@@ -463,9 +558,8 @@ pub fn print_env_exports(
 
 /// Print commands to exit/cleanup k8pk session
 pub fn print_exit_commands(output: Option<&str>) -> Result<()> {
-    use crate::state::CurrentState;
-
     let state = CurrentState::from_env();
+    run_stop_hook_before_clean(&state)?;
 
     match output {
         Some("json") => {
@@ -656,10 +750,22 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_shell_default() {
-        // With no FISH_VERSION set, should return "bash"
+    fn test_isolated_cache_dir_layout() {
+        let kc = std::path::PathBuf::from("/home/u/.local/share/k8pk/myctx_default.yaml");
+        let c = isolated_cache_dir(&kc, "myctx");
+        assert!(c.to_string_lossy().contains("cache"));
+        assert!(c.to_string_lossy().contains("myctx"));
+    }
+
+    #[test]
+    fn test_detect_shell_default_no_fish() {
+        let _guard = SHELL_ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var_os("FISH_VERSION");
         std::env::remove_var("FISH_VERSION");
         assert_eq!(detect_shell(), "bash");
+        if let Some(v) = saved {
+            std::env::set_var("FISH_VERSION", v);
+        }
     }
 
     #[test]
@@ -711,6 +817,90 @@ mod tests {
         assert_eq!(history.context_history.len(), 10);
         assert_eq!(history.context_history[0], "ctx-10");
         assert_eq!(history.context_history[9], "ctx-19");
+    }
+
+    static SHELL_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn test_detect_shell_fish_via_fish_version() {
+        let _guard = SHELL_ENV_MUTEX.lock().unwrap();
+        let saved_fv = std::env::var_os("FISH_VERSION");
+        let saved_shell = std::env::var_os("SHELL");
+        std::env::set_var("FISH_VERSION", "3.6.0");
+        assert_eq!(detect_shell(), "fish");
+        if let Some(v) = saved_fv {
+            std::env::set_var("FISH_VERSION", v);
+        } else {
+            std::env::remove_var("FISH_VERSION");
+        }
+        if let Some(v) = saved_shell {
+            std::env::set_var("SHELL", v);
+        } else {
+            std::env::remove_var("SHELL");
+        }
+    }
+
+    #[test]
+    fn test_detect_shell_fish_via_shell_env() {
+        let _guard = SHELL_ENV_MUTEX.lock().unwrap();
+        let saved_fv = std::env::var_os("FISH_VERSION");
+        let saved_shell = std::env::var_os("SHELL");
+        std::env::remove_var("FISH_VERSION");
+        std::env::set_var("SHELL", "/usr/local/bin/fish");
+        assert_eq!(detect_shell(), "fish");
+        if let Some(v) = saved_fv {
+            std::env::set_var("FISH_VERSION", v);
+        } else {
+            std::env::remove_var("FISH_VERSION");
+        }
+        if let Some(v) = saved_shell {
+            std::env::set_var("SHELL", v);
+        } else {
+            std::env::remove_var("SHELL");
+        }
+    }
+
+    #[test]
+    fn test_detect_shell_defaults_to_bash() {
+        let _guard = SHELL_ENV_MUTEX.lock().unwrap();
+        let saved_fv = std::env::var_os("FISH_VERSION");
+        let saved_shell = std::env::var_os("SHELL");
+        std::env::remove_var("FISH_VERSION");
+        std::env::set_var("SHELL", "/bin/bash");
+        assert_eq!(detect_shell(), "bash");
+        if let Some(v) = saved_fv {
+            std::env::set_var("FISH_VERSION", v);
+        } else {
+            std::env::remove_var("FISH_VERSION");
+        }
+        if let Some(v) = saved_shell {
+            std::env::set_var("SHELL", v);
+        } else {
+            std::env::remove_var("SHELL");
+        }
+    }
+
+    #[test]
+    fn test_context_type_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", dir.path());
+
+        save_context_type("my-ctx", "ocp").unwrap();
+        let ct = get_context_type("my-ctx").unwrap();
+        assert_eq!(ct, Some("ocp".to_string()));
+
+        let ct_missing = get_context_type("other-ctx").unwrap();
+        assert!(ct_missing.is_none());
+
+        // Overwrite
+        save_context_type("my-ctx", "gke").unwrap();
+        let ct2 = get_context_type("my-ctx").unwrap();
+        assert_eq!(ct2, Some("gke".to_string()));
+
+        if let Some(v) = saved_home {
+            std::env::set_var("HOME", v);
+        }
     }
 
     #[test]

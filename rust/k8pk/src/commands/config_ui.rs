@@ -41,7 +41,7 @@ pub fn edit_config() -> Result<()> {
     }
 
     // Initialize config if it doesn't exist
-    let path = config::init_config()?;
+    let (path, _) = config::init_config()?;
 
     // Load current config
     let mut config = config::load_uncached()?;
@@ -588,7 +588,7 @@ fn edit_hooks(config: &mut K8pkConfig, changes: &mut ChangeTracker) -> Result<()
 fn get_available_contexts() -> Vec<String> {
     // Try to load contexts from kubeconfig files
     if let Ok(k8pk_config) = config::load() {
-        if let Ok(paths) = kubeconfig::resolve_paths(None, &[], k8pk_config) {
+        if let Ok(paths) = kubeconfig::resolve_paths(None, &[], &k8pk_config) {
             if let Ok(merged) = kubeconfig::load_merged(&paths) {
                 let mut contexts = merged.context_names();
                 contexts.sort();

@@ -15,8 +15,7 @@ pub fn pick_context_namespace(
     // Check if clusters_only mode is enabled
     let clusters_only = config::load()
         .ok()
-        .and_then(|c| c.pick.as_ref())
-        .map(|p| p.clusters_only)
+        .and_then(|c| c.pick.map(|p| p.clusters_only))
         .unwrap_or(false);
 
     if clusters_only {

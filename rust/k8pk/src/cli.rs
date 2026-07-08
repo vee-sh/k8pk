@@ -7,16 +7,23 @@ use std::path::PathBuf;
 #[command(
     name = "k8pk",
     version,
-    about = "Kubernetes context picker - cross-terminal k8s context/namespace switcher",
-    long_about = "k8pk manages Kubernetes contexts with isolated kubeconfigs per terminal session.\n\n\
-                  Run 'k8pk' with no arguments to start the interactive picker.\n\n\
+    about = "Kubernetes context switcher — run k8pk, pick a cluster, get a shell",
+    long_about = "Typical use: run `k8pk` with no arguments (or `kpick` after sourcing k8pk.sh). \
+You choose a context, then k8pk opens a shell already wired to kubectl/oc — that is the main flow.\n\n\
+                  Everything else is optional: switch context in place (`k8pk ctx`), add a cluster (`k8pk login`), fix setup (`k8pk doctor`). Full list: `k8pk guide`.\n\n\
+                  Common:\n  \
+                  k8pk / kpick            # Pick context, then shell\n  \
+                  k8pk ctx NAME           # Switch context here\n  \
+                  k8pk rm NAME            # Drop a stale context\n  \
+                  k8pk login …            # New cluster\n  \
+                  k8pk --oc /path/to/oc … # OpenShift CLI for this run (same as $K8PK_OC)\n\n\
                   Examples:\n  \
-                  k8pk                    # Interactive picker\n  \
-                  k8pk ctx dev            # Switch to 'dev' context\n  \
-                  k8pk ctx -              # Switch to previous context\n  \
-                  k8pk ns production      # Switch namespace\n  \
-                  k8pk contexts           # List all contexts\n  \
-                  k8pk which              # Show cluster types"
+                  k8pk                    # Default: pick → shell\n  \
+                  k8pk ctx dev            # Jump to context\n  \
+                  k8pk ctx -\n  \
+                  k8pk ns production\n  \
+                  k8pk contexts\n  \
+                  k8pk which"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -29,6 +36,10 @@ pub struct Cli {
     /// Additional directories to scan for kubeconfig files (kubie-style)
     #[arg(long, action = clap::ArgAction::Append, value_name = "DIR")]
     pub kubeconfig_dir: Vec<PathBuf>,
+
+    /// OpenShift CLI (`oc`) for this process (same as `export K8PK_OC=...`). Used for OCP login, doctor, and when choosing oc vs kubectl.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub oc: Option<PathBuf>,
 
     /// Enable verbose output (can be repeated: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
@@ -102,7 +113,7 @@ pub enum Command {
         detail: bool,
     },
 
-    /// Interactive picker for context and namespace
+    /// Pick context (and namespace if configured), then open a shell — same as running `k8pk` with no subcommand
     Pick {
         /// Output format: env, json, spawn (default: env)
         #[arg(
@@ -175,6 +186,7 @@ pub enum Command {
         after_help = "Examples:\n  \
         k8pk rm dead-cluster         # Remove by name (finds source file automatically)\n  \
         k8pk rm                      # Interactive picker to select contexts to remove\n  \
+        k8pk rm dead-cluster --yes   # Skip confirmation\n  \
         k8pk rm dead-cluster --dry-run  # Preview without removing"
     )]
     Rm {
@@ -184,16 +196,22 @@ pub enum Command {
         /// Preview changes without making them
         #[arg(long, help = "Preview changes without making them")]
         dry_run: bool,
+        /// Skip the confirmation prompt (use with care)
+        #[arg(short = 'y', long, help = "Skip confirmation prompt")]
+        yes: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
     },
 
-    /// Remove contexts from a kubeconfig file (advanced)
-    #[command(after_help = "Examples:\n  \
+    /// Remove contexts from a kubeconfig file (advanced; most users should use `k8pk rm`)
+    #[command(
+        after_help = "Prefer `k8pk rm` — it finds the source file automatically.\n\n\
+        Examples:\n  \
         k8pk remove-context --context old-cluster\n  \
         k8pk remove-context --interactive     # Pick contexts to remove\n  \
-        k8pk remove-context --remove-orphaned # Clean up broken refs")]
+        k8pk remove-context --remove-orphaned # Clean up broken refs"
+    )]
     RemoveContext {
         /// Kubeconfig file to modify (default: ~/.kube/config)
         #[arg(long, value_name = "PATH")]
@@ -307,10 +325,15 @@ pub enum Command {
     },
 
     /// Execute a command in a specific context/namespace
-    #[command(after_help = "Examples:\n  \
+    #[command(
+        after_help = "Runs the same session check as k8pk ctx (re-login when needed).\n  \
+        Use --no-session-check to skip (fail immediately if credentials are expired).\n\n\
+        Examples:\n  \
         k8pk exec prod -- kubectl get pods           # Uses context's default namespace\n  \
         k8pk exec prod default -- kubectl get pods   # Explicit namespace\n  \
-        k8pk exec dev api -- kubectl logs -f deployment/api")]
+        k8pk exec dev api -- kubectl logs -f deployment/api\n  \
+        k8pk exec prod --no-session-check -- kubectl get ns"
+    )]
     Exec {
         /// Context to use (supports glob patterns)
         #[arg(value_name = "CONTEXT")]
@@ -330,15 +353,19 @@ pub enum Command {
         /// Output results as JSON (wraps stdout/stderr per context)
         #[arg(long)]
         json: bool,
+        /// Skip session check and credential refresh (fail fast if expired)
+        #[arg(long, help = "Skip session liveness check and re-login (for scripts)")]
+        no_session_check: bool,
     },
 
     /// Get information about current context/namespace
     #[command(
         visible_alias = "status",
-        after_help = "What to show: ctx, ns, depth, config, all (default)\n\n\
+        after_help = "What to show: ctx, ns, depth, config, oc, all (default)\n\n\
         Examples:\n  \
         k8pk info ctx --display\n  \
         k8pk info depth\n  \
+        k8pk info oc             # OpenShift CLI path (K8PK_OC / PATH)\n  \
         k8pk status              # Same as 'k8pk info all'\n  \
         k8pk info all"
     )]
@@ -531,7 +558,12 @@ pub enum Command {
     },
 
     /// Login to cluster (OCP, K8s, GKE, or Rancher)
-    #[command(after_help = "Examples:\n  \
+    #[command(
+        after_help = "OpenShift (OCP) uses the `oc` binary. If it is not on your PATH, run:\n  \
+        export K8PK_OC=/path/to/oc\n  \
+        # or, for one command:\n  \
+        k8pk --oc /path/to/oc login --type ocp --server https://api.cluster.example.com:6443\n\n\
+        Examples:\n  \
         k8pk login --type ocp --server https://api.cluster.example.com:6443 -u admin\n  \
         k8pk login --type k8s --server https://k8s.example.com:6443 --token abc123\n  \
         k8pk login --type gke --server https://gke.example.com:443\n  \
@@ -543,7 +575,8 @@ pub enum Command {
         k8pk login --type k8s https://k8s.example.com:6443 --auth exec --exec-command aws --exec-arg eks --exec-arg get-token\n  \
         k8pk login --type k8s https://k8s.example.com:6443 --test\n  \
         k8pk login --wizard\n  \
-        k8pk login --auth-help")]
+        k8pk login --auth-help"
+    )]
     Login {
         /// Cluster type: 'ocp', 'k8s', 'gke', or 'rancher' (default: auto-detect from server URL)
         #[arg(long = "type", value_name = "TYPE", default_value = "auto")]
@@ -574,7 +607,7 @@ pub enum Command {
         password: Option<String>,
         /// Read credentials from pass (password-store) entry.
         /// Entry format: first line is password/token, additional lines are key:value pairs.
-        /// Supported keys: token, username (or user), password.
+        /// Supported keys: token, username (or user), password; for Rancher also rancher_auth_provider (or rancher_provider).
         /// Example: 'pass show k8pk/dev' returns:
         ///   sha256~abc123...
         ///   token: sha256~abc123...
@@ -621,8 +654,11 @@ pub enum Command {
             help = "Skip TLS certificate verification (insecure)"
         )]
         insecure_skip_tls_verify: bool,
-        /// Use vault to store/retrieve credentials (OCP only)
-        #[arg(long, help = "Store/retrieve credentials from vault (OCP only)")]
+        /// Use vault to store/retrieve credentials (OpenShift and Rancher userpass)
+        #[arg(
+            long,
+            help = "Store/retrieve credentials from vault (OCP and Rancher userpass)"
+        )]
         use_vault: bool,
         /// Certificate authority file
         #[arg(long, value_name = "PATH")]
@@ -642,7 +678,7 @@ pub enum Command {
         /// Timeout for credential test (seconds)
         #[arg(long, default_value = "10", value_name = "SECS")]
         test_timeout: u64,
-        /// Rancher auth provider (rancher only): local | activedirectory | openldap (default: local; use activedirectory for AD-backed Rancher/RKE2)
+        /// Rancher auth provider (rancher only): local, activedirectory, openldap, freeipa, azuread, github, auto, or v3-public path (e.g. activeDirectoryProviders/my-ad). Default local; auto tries common providers. RKE1/RKE2 use the same Rancher login API.
         #[arg(long, value_name = "PROVIDER", default_value = "local")]
         rancher_auth_provider: String,
         /// Suppress non-essential output
@@ -653,12 +689,26 @@ pub enum Command {
         json: bool,
     },
 
+    /// Rancher (Prime) operations
+    #[command(after_help = "Examples:\n  \
+        k8pk rancher pull https://rancher.example.com -u admin -p secret\n  \
+        k8pk rancher pull https://rancher.example.com --token token-xxxxx\n  \
+        k8pk rancher pull https://rancher.example.com --use-vault\n  \
+        k8pk rancher pull https://rancher.example.com --pattern 'prod-*'\n  \
+        k8pk rancher pull https://rancher.example.com -u admin -p secret --json")]
+    Rancher {
+        #[command(subcommand)]
+        command: RancherCommand,
+    },
+
     /// Organize a messy kubeconfig into separate files by cluster type
-    #[command(after_help = "Cluster types: eks, gke, aks, ocp, k8s (generic)\n\n\
+    #[command(
+        after_help = "Cluster types: eks, gke, aks, ocp, rancher, k8s (generic)\n\n\
         Examples:\n  \
         k8pk organize --dry-run                    # Preview organization\n  \
         k8pk organize --output-dir ~/.kube/by-type # Organize to directory\n  \
-        k8pk organize --remove-from-source         # Also clean source file")]
+        k8pk organize --remove-from-source         # Also clean source file"
+    )]
     Organize {
         /// Source kubeconfig file (default: ~/.kube/config)
         #[arg(long, value_name = "PATH")]
@@ -756,6 +806,13 @@ pub enum Command {
         context: Option<String>,
     },
 
+    /// Workflows, command map, and k8pk vs kubie (read this once)
+    #[command(
+        visible_alias = "topics",
+        after_help = "Shows common tasks, when to use ctx vs pick vs rm, and scripting tips."
+    )]
+    Guide,
+
     /// Diagnose common k8pk and kubectl issues
     #[command(after_help = "Examples:\n  \
         k8pk doctor               # Run all checks\n  \
@@ -816,5 +873,62 @@ pub enum VaultCommand {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RancherCommand {
+    /// Pull kubeconfigs for all clusters from a Rancher (Prime) server
+    #[command(
+        after_help = "Authenticates once to the Rancher server, then writes a kubeconfig \
+        for every downstream cluster you can access into ~/.kube/rancher/ (or --output-dir).\n\n\
+        Examples:\n  \
+        k8pk rancher pull https://rancher.example.com -u admin -p secret\n  \
+        k8pk rancher pull https://rancher.example.com --token token-xxxxx\n  \
+        k8pk rancher pull https://rancher.example.com --use-vault\n  \
+        k8pk rancher pull https://rancher.example.com --pattern 'prod-*'\n  \
+        k8pk rancher pull --rancher-auth-provider activedirectory https://rancher.example.com -u user -p pass"
+    )]
+    Pull {
+        /// Rancher server URL
+        #[arg(long, value_name = "SERVER")]
+        server: Option<String>,
+        /// Rancher server URL (positional argument, alternative to --server)
+        #[arg(value_name = "SERVER_URL")]
+        server_pos: Option<String>,
+        /// Rancher bearer token (skips username/password auth)
+        #[arg(long, value_name = "TOKEN")]
+        token: Option<String>,
+        /// Username for Rancher login
+        #[arg(short = 'u', long, value_name = "USER")]
+        username: Option<String>,
+        /// Password for Rancher login
+        #[arg(short = 'p', long, value_name = "PASS")]
+        password: Option<String>,
+        /// Rancher auth provider: local, activedirectory, openldap, freeipa, azuread, github, auto
+        #[arg(long, value_name = "PROVIDER", default_value = "local")]
+        rancher_auth_provider: String,
+        /// Only pull clusters whose name matches this pattern (exact, glob, or substring)
+        #[arg(long, value_name = "PATTERN")]
+        pattern: Option<String>,
+        /// Directory to save kubeconfigs (default: ~/.kube/rancher)
+        #[arg(long, value_name = "DIR")]
+        output_dir: Option<PathBuf>,
+        /// Skip TLS certificate verification
+        #[arg(
+            long,
+            visible_alias = "insecure",
+            help = "Skip TLS certificate verification (insecure)"
+        )]
+        insecure_skip_tls_verify: bool,
+        /// Store/retrieve credentials from vault
+        #[arg(long)]
+        use_vault: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Suppress non-essential output
+        #[arg(long)]
+        quiet: bool,
     },
 }

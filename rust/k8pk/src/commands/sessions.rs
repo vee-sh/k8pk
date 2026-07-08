@@ -36,12 +36,25 @@ fn registry_path() -> Result<PathBuf> {
     Ok(dir.join("sessions.json"))
 }
 
-/// Read all entries from the registry file (best-effort; returns empty on any error).
-fn read_registry(path: &Path) -> Vec<SessionEntry> {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+/// Read all entries from the registry file.
+/// Returns `Ok(entries)` on success, or `Err` if the file exists but is corrupt.
+/// Missing file returns `Ok(vec![])`.
+fn read_registry(path: &Path) -> Result<Vec<SessionEntry>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(path)?;
+    if content.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<SessionEntry> = serde_json::from_str(&content).map_err(|e| {
+        K8pkError::Other(format!(
+            "corrupt session registry at {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
+    Ok(entries)
 }
 
 /// Atomically write entries to the registry file with restricted permissions.
@@ -103,7 +116,7 @@ pub fn register(
     pid_override: Option<u32>,
 ) -> Result<()> {
     let path = registry_path()?;
-    let mut entries = read_registry(&path);
+    let mut entries = read_registry(&path)?;
 
     let pid = pid_override.unwrap_or_else(parent_pid);
 
@@ -131,7 +144,7 @@ pub fn register(
 /// Remove a session from the registry by PID.
 pub fn deregister(pid: u32) -> Result<()> {
     let path = registry_path()?;
-    let mut entries = read_registry(&path);
+    let mut entries = read_registry(&path)?;
     let before = entries.len();
     entries.retain(|e| e.pid != pid);
     if entries.len() < before {
@@ -148,7 +161,7 @@ pub fn deregister_current() -> Result<()> {
 /// List all active sessions, pruning dead PIDs.
 pub fn list_active() -> Result<Vec<SessionEntry>> {
     let path = registry_path()?;
-    let entries = read_registry(&path);
+    let entries = read_registry(&path).unwrap_or_default();
 
     let alive: Vec<SessionEntry> = entries
         .into_iter()
@@ -354,5 +367,183 @@ mod tests {
     fn test_is_pid_alive_bogus() {
         // PID 0 is the kernel on Unix; a random high PID is unlikely to exist.
         assert!(!is_pid_alive(999_999_999));
+    }
+
+    #[test]
+    fn test_deduplicated_sessions_merges_same_context() {
+        let entries = vec![
+            SessionEntry {
+                pid: 100,
+                context: "dev".to_string(),
+                namespace: "default".to_string(),
+                kubeconfig: "/tmp/kc1.yaml".to_string(),
+                started_at: 1000,
+                terminal: "tty:/dev/ttys001".to_string(),
+            },
+            SessionEntry {
+                pid: 200,
+                context: "dev".to_string(),
+                namespace: "default".to_string(),
+                kubeconfig: "/tmp/kc2.yaml".to_string(),
+                started_at: 2000,
+                terminal: "tty:/dev/ttys002".to_string(),
+            },
+            SessionEntry {
+                pid: 300,
+                context: "prod".to_string(),
+                namespace: "kube-system".to_string(),
+                kubeconfig: "/tmp/kc3.yaml".to_string(),
+                started_at: 1500,
+                terminal: "tmux".to_string(),
+            },
+        ];
+
+        let groups = deduplicated_sessions(&entries, &[]);
+        assert_eq!(groups.len(), 2);
+
+        let dev_group = groups.iter().find(|g| g.context == "dev").unwrap();
+        assert_eq!(dev_group.count, 2);
+        assert_eq!(dev_group.newest_at, 2000);
+        assert_eq!(dev_group.kubeconfig, "/tmp/kc2.yaml");
+
+        let prod_group = groups.iter().find(|g| g.context == "prod").unwrap();
+        assert_eq!(prod_group.count, 1);
+    }
+
+    #[test]
+    fn test_deduplicated_sessions_sorts_by_newest() {
+        let entries = vec![
+            SessionEntry {
+                pid: 100,
+                context: "old-ctx".to_string(),
+                namespace: "default".to_string(),
+                kubeconfig: "/tmp/kc1.yaml".to_string(),
+                started_at: 100,
+                terminal: "unknown".to_string(),
+            },
+            SessionEntry {
+                pid: 200,
+                context: "new-ctx".to_string(),
+                namespace: "default".to_string(),
+                kubeconfig: "/tmp/kc2.yaml".to_string(),
+                started_at: 9000,
+                terminal: "unknown".to_string(),
+            },
+        ];
+
+        let groups = deduplicated_sessions(&entries, &[]);
+        assert_eq!(groups[0].context, "new-ctx");
+        assert_eq!(groups[1].context, "old-ctx");
+    }
+
+    #[test]
+    fn test_deduplicated_sessions_tmux_default_namespace() {
+        let tmux_sessions = vec![super::super::tmux::TmuxSession {
+            context: "tmux-ctx".to_string(),
+            namespace: "(default)".to_string(),
+            window_index: "1".to_string(),
+            window_name: "k8pk".to_string(),
+            active: false,
+        }];
+
+        let groups = deduplicated_sessions(&[], &tmux_sessions);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].namespace, "default");
+        assert!(groups[0].terminal.starts_with("tmux:"));
+    }
+
+    #[test]
+    fn test_read_registry_missing_file_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        let result = read_registry(&path).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_read_registry_corrupt_file_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        fs::write(&path, "{{not json!").unwrap();
+        let result = read_registry(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_registry_empty_file_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        fs::write(&path, "").unwrap();
+        let result = read_registry(&path).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_read_registry_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        let entries = vec![SessionEntry {
+            pid: 42,
+            context: "test".to_string(),
+            namespace: "default".to_string(),
+            kubeconfig: "/tmp/kc.yaml".to_string(),
+            started_at: 1000,
+            terminal: "unknown".to_string(),
+        }];
+        let json = serde_json::to_string(&entries).unwrap();
+        fs::write(&path, json).unwrap();
+        let result = read_registry(&path).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].pid, 42);
+    }
+
+    #[test]
+    fn test_write_registry_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        let entries = vec![
+            SessionEntry {
+                pid: 1,
+                context: "ctx1".to_string(),
+                namespace: "ns1".to_string(),
+                kubeconfig: "/a".to_string(),
+                started_at: 100,
+                terminal: "tty:x".to_string(),
+            },
+            SessionEntry {
+                pid: 2,
+                context: "ctx2".to_string(),
+                namespace: "ns2".to_string(),
+                kubeconfig: "/b".to_string(),
+                started_at: 200,
+                terminal: "tmux".to_string(),
+            },
+        ];
+        write_registry(&path, &entries).unwrap();
+        let loaded = read_registry(&path).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].context, "ctx1");
+        assert_eq!(loaded[1].context, "ctx2");
+    }
+
+    #[test]
+    fn test_session_group_display() {
+        let group = SessionGroup {
+            context: "dev-cluster".to_string(),
+            namespace: "default".to_string(),
+            kubeconfig: "/tmp/kc.yaml".to_string(),
+            count: 3,
+            newest_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            terminal: "tmux".to_string(),
+            is_current: true,
+        };
+        let display = format!("{}", group);
+        assert!(display.contains("dev-cluster"));
+        assert!(display.contains("(default)"));
+        assert!(display.contains("[3 shells]"));
+        assert!(display.contains(" *"));
     }
 }

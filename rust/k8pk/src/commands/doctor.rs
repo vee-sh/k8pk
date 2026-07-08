@@ -6,6 +6,7 @@ use crate::kubeconfig::{self, KubeConfig};
 use colored::Colorize;
 use std::collections::HashSet;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -54,6 +55,11 @@ impl DiagnosticResult {
 }
 
 pub fn run(fix: bool, json: bool) -> Result<()> {
+    // Respect NO_COLOR and non-TTY stdout (accessibility, CI, dumb terminals).
+    if std::env::var_os("NO_COLOR").is_some() || !std::io::stdout().is_terminal() {
+        colored::control::set_override(false);
+    }
+
     let mut results = vec![
         // Check kubectl installation
         check_kubectl(),
@@ -88,6 +94,11 @@ pub fn run(fix: bool, json: bool) -> Result<()> {
     // Check kubeconfig file permissions (Unix only)
     #[cfg(unix)]
     results.extend(check_kubeconfig_permissions());
+
+    #[cfg(unix)]
+    if let Some(r) = check_vault_file_permissions() {
+        results.push(r);
+    }
 
     if fix {
         let fixed = apply_fixes(&mut results);
@@ -131,7 +142,11 @@ fn check_kubectl() -> DiagnosticResult {
 }
 
 fn check_oc() -> DiagnosticResult {
-    match Command::new("oc").arg("version").arg("--client").output() {
+    match Command::new(kubeconfig::oc_cli_path())
+        .arg("version")
+        .arg("--client")
+        .output()
+    {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout);
             let version_str = version
@@ -139,12 +154,23 @@ fn check_oc() -> DiagnosticResult {
                 .find(|l| l.contains("Client Version"))
                 .unwrap_or("unknown")
                 .trim();
-            DiagnosticResult::ok("oc (OpenShift CLI)", &format!("Found: {}", version_str))
+            let oc_info = kubeconfig::oc_cli_info();
+            DiagnosticResult::ok(
+                "oc (OpenShift CLI)",
+                &format!(
+                    "{} | {} | via {}",
+                    version_str,
+                    oc_info.path.display(),
+                    oc_info.resolved_via
+                ),
+            )
         }
         _ => DiagnosticResult::warning(
             "oc (OpenShift CLI)",
             "Not installed (optional, needed for OCP login)",
-            Some("Install oc: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/"),
+            Some(
+                "Install oc: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/ — or set K8PK_OC to your oc binary path",
+            ),
         ),
     }
 }
@@ -222,7 +248,7 @@ fn check_k8pk_config() -> DiagnosticResult {
 fn check_kubeconfig_files() -> Vec<DiagnosticResult> {
     let mut results = Vec::new();
 
-    let k8pk_config = config::load().ok().cloned().unwrap_or_default();
+    let k8pk_config = config::load().unwrap_or_default();
     match kubeconfig::resolve_paths(None, &[], &k8pk_config) {
         Ok(paths) => {
             let valid_count = paths
@@ -235,11 +261,20 @@ fn check_kubeconfig_files() -> Vec<DiagnosticResult> {
                 })
                 .count();
 
-            if valid_count == 0 && paths.is_empty() {
+            if paths.is_empty() {
                 results.push(DiagnosticResult::warning(
                     "kubeconfig files",
                     "No kubeconfig files found",
                     Some("Create ~/.kube/config or run k8pk login"),
+                ));
+            } else if valid_count == 0 {
+                results.push(DiagnosticResult::warning(
+                    "kubeconfig files",
+                    &format!(
+                        "Found {} file(s) but none are valid YAML kubeconfigs",
+                        paths.len()
+                    ),
+                    Some("Run 'k8pk lint' to check for issues"),
                 ));
             } else {
                 results.push(DiagnosticResult::ok(
@@ -261,7 +296,7 @@ fn check_kubeconfig_files() -> Vec<DiagnosticResult> {
 }
 
 fn check_duplicate_contexts() -> DiagnosticResult {
-    let k8pk_config = config::load().ok().cloned().unwrap_or_default();
+    let k8pk_config = config::load().unwrap_or_default();
     match kubeconfig::resolve_paths(None, &[], &k8pk_config) {
         Ok(paths) => {
             let mut all_contexts: Vec<(String, PathBuf)> = Vec::new();
@@ -306,7 +341,7 @@ fn check_duplicate_contexts() -> DiagnosticResult {
 }
 
 fn check_orphaned_contexts() -> DiagnosticResult {
-    let k8pk_config = config::load().ok().cloned().unwrap_or_default();
+    let k8pk_config = config::load().unwrap_or_default();
     match kubeconfig::resolve_paths(None, &[], &k8pk_config) {
         Ok(paths) => {
             let mut orphaned_count = 0;
@@ -574,6 +609,39 @@ fn check_kubeconfig_permissions() -> Vec<DiagnosticResult> {
         }
     }
     results
+}
+
+/// Credential vault file (~/.kube/k8pk-vault.json) permissions.
+#[cfg(unix)]
+fn check_vault_file_permissions() -> Option<DiagnosticResult> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = dirs_next::home_dir()?;
+    let path = home.join(".kube/k8pk-vault.json");
+    if !path.exists() {
+        return Some(DiagnosticResult::ok(
+            "vault file",
+            "no ~/.kube/k8pk-vault.json (not using k8pk vault)",
+        ));
+    }
+    if let Ok(meta) = fs::metadata(&path) {
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Some(DiagnosticResult::warning(
+                &format!("file permissions: {}", path.display()),
+                &format!("vault file is accessible by others (mode {:04o})", mode),
+                Some(&format!(
+                    "Run: chmod 600 {} (or use k8pk doctor --fix)",
+                    path.display()
+                )),
+            ));
+        }
+        return Some(DiagnosticResult::ok(
+            "vault file",
+            &format!("restricted (mode {:04o})", mode),
+        ));
+    }
+    None
 }
 
 /// Apply automatic fixes for issues that can be safely corrected.

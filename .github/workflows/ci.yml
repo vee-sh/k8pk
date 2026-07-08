@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   # ============================================
-  # Lint and Test (runs on all pushes and PRs)
+  # Lint and Test (runs on tags and manual dispatch)
   # ============================================
   check:
     name: Check
@@ -85,6 +85,16 @@ jobs:
       - name: Run tests
         working-directory: rust/k8pk
         run: cargo test --locked
+
+      - name: Generate man pages (smoke)
+        working-directory: rust/k8pk
+        shell: bash
+        run: |
+          mkdir -p ../../man-ci
+          rm -f ../../man-ci/k8pk.1
+          touch build.rs
+          K8PK_MAN_DIR="$(pwd)/../../man-ci" cargo build --locked
+          test -f ../../man-ci/k8pk.1
 
   # ============================================
   # Create Release (runs first, before parallel builds)
@@ -153,9 +163,13 @@ jobs:
             rust/k8pk/target
           key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('rust/k8pk/Cargo.lock') }}
 
-      - name: Build
+      - name: Build (with man pages)
         working-directory: rust/k8pk
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          mkdir -p man
+          export K8PK_MAN_DIR="$PWD/man"
+          cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -183,6 +197,11 @@ jobs:
           cp install.sh "${PKG_DIR}/" && chmod +x "${PKG_DIR}/install.sh" || true
           cp shell/k8pk.sh "${PKG_DIR}/shell/" || true
           cp shell/k8pk.fish "${PKG_DIR}/shell/" || true
+          
+          if [ -d rust/k8pk/man ]; then
+            mkdir -p "${PKG_DIR}/share/man/man1"
+            cp rust/k8pk/man/*.1 "${PKG_DIR}/share/man/man1/"
+          fi
           
           # Create archive
           ARCHIVE="${PKG_DIR}.tar.gz"

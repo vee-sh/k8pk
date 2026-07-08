@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- **`k8pk rancher pull`**: Rancher (Prime) bulk import — authenticate once to a Rancher server, then write a kubeconfig for every downstream cluster you can access into `~/.kube/rancher/` (or `--output-dir`). Supports token, username/password (with `--rancher-auth-provider`), and `--use-vault`; `--pattern` filters clusters by name; `--json` for scripting. Pulled contexts are tagged as `rancher` for silent re-login.
+- **`k8pk info oc`**: prints resolved OpenShift CLI path and how it was chosen (`K8PK_OC`, `PATH`, or fallback); included in `k8pk info all` JSON as `oc`.
+- **Release tarballs**: Unix packages include `share/man/man1/*.1` when built with `K8PK_MAN_DIR` (CI release job sets this automatically).
+- **Docs**: [CONTRIBUTING.md](CONTRIBUTING.md), [docs/packaging.md](docs/packaging.md), [flake.nix](flake.nix), [packaging/aur/PKGBUILD.example](packaging/aur/PKGBUILD.example); [tests/fixtures/fake-oc.sh](tests/fixtures/fake-oc.sh) for OCP stub testing.
+- **Global `--oc PATH`**: same as `K8PK_OC` for one command (OCP login, doctor, oc/kubectl discovery).
+- **`K8PK_OC`**: override path to the OpenShift CLI (`oc`) for OCP login, token refresh, `k8pk doctor`, and kubeconfig helpers (supports CI fake `oc` scripts and non-standard installs).
+- **Rancher auth**: `--rancher-auth-provider` supports `local`, `activedirectory`, `openldap`, `freeipa`, `azuread`, `github`, `auto`, and custom v3-public paths (e.g. `activeDirectoryProviders/my-ad`).
+- **`auto` provider**: tries common providers in order on 401.
+- **Vault**: optional `rancher_auth_provider` on entries; primary key `rancher:<cluster server URL>`; legacy `{base}:{context}` still read for login and silent relogin.
+- **pass (password-store)**: optional `rancher_auth_provider:` or `rancher_provider:` lines for Rancher logins.
+- **`detect_cluster_type`**: **rancher** for Rancher contexts/URLs; **`k8pk organize`** emits `rancher.yaml` for those contexts.
+
+### Changed
+
+- **`--use-vault`** help text: applies to **Rancher** userpass as well as OCP.
+
+### Documentation
+
+- README, **`k8pk guide`**, and **MULTI_CLUSTER.md**: Rancher (RKE1/RKE2), OIDC/token note, vault migration hint, organize output.
+
+### Improved
+
+- **`k8pk doctor` (oc)**: shows `via K8PK_OC` / `PATH` / `fallback` alongside the binary path.
+- **NoContexts** error: reminds users to run `k8pk` again once kubeconfigs exist.
+- **OCP login failures**: `tracing::debug!` logs oc stdout/stderr when `oc login` fails (use `-vv` / `RUST_LOG=debug`).
+- **CI**: man page generation smoke test alongside `cargo test` (`.github/workflows/checks.yml` and release `ci.yml`).
+- **CLI / README**: default story is “run `k8pk` → pick → shell”; lighter login wizard prompts; OCP pre-login is one status line.
+- **OCP login / wizard**: optional path prompt when `oc` is missing; **`k8pk doctor`** shows which `oc` binary was used.
+- **Re-login**: clearer hints when vault has no matching entry or Rancher silent re-login cannot run; stale vault failures print the underlying error.
+- **`k8pk doctor`**: checks **vault file** permissions (`~/.kube/k8pk-vault.json`) on Unix; **`k8pk doctor --fix`** can correct them like other kubeconfig files.
+- **Tests**: `parse_pass_store_output` unit tests; shared **`test_http`** mock servers (`spawn_one_shot`, pagination, local→AD fallback) for Rancher `reqwest` paths; documented limits for OCP/GKE (`oc`/`gcloud` subprocesses) in `tests/TESTING.md`.
+
 ## [0.12.2] - 2026-02-01
 
 ### Fixed
@@ -195,14 +231,6 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 * release-please config to use root path ([4c3c938](https://github.com/vee-sh/k8pk/commit/4c3c938de725f94d6e9469488eefd1916396e07e))
 * remove trailing whitespace in context.rs ([f46c364](https://github.com/vee-sh/k8pk/commit/f46c3640af8ea78bc39c38b37002d6fb1e868705))
 * resolve merge conflict, update version refs ([1221d2b](https://github.com/vee-sh/k8pk/commit/1221d2bf6377efa835042a19b565491f534b2109))
-
-## [Unreleased]
-### Added
-- `k8pk login` - Safe OpenShift login that saves to separate files (not ~/.kube/config)
-- `k8pk organize` - Split messy kubeconfig into separate files by cluster type (EKS/GKE/OCP/AKS/K8S)
-- `k8pk which` - Show cluster type, source file, and server URL for contexts
-- Auto-detection of cluster types from context names and server URLs
-- New documentation: MULTI_CLUSTER.md guide for managing mixed environments
 
 ## [0.5.0] - 2025-11-05
 ### Added

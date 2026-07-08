@@ -1,6 +1,6 @@
 # Multi-Cluster Workflow Guide
 
-Managing multiple Kubernetes clusters (EKS, GKE, OCP, AKS) with different CLIs (kubectl, oc) can be chaotic. This guide shows how k8pk helps you stay organized.
+Managing multiple Kubernetes clusters (EKS, GKE, OCP, AKS, Rancher) with different CLIs (kubectl, oc) can be chaotic. This guide shows how k8pk helps you stay organized.
 
 ## The Problem
 
@@ -31,7 +31,22 @@ k8pk login https://api.prod.example.com:6443 --name prod-ocp --token $TOKEN
 # The config is saved to ~/.kube/ocp/prod-ocp.yaml
 ```
 
-### 2. Organize Existing Mess
+### 2. Safe Rancher login (RKE1 / RKE2)
+
+Rancher uses the same API whether the downstream cluster is RKE1 or RKE2. Log in to the **Rancher URL** (not the node kube-apiserver) with a token or with username/password against the configured auth provider:
+
+```bash
+k8pk login --type rancher --auth token https://rancher.example.com --token $RANCHER_TOKEN
+
+k8pk login --type rancher --auth userpass https://rancher.example.com -u $USER -p $PASS \
+  --rancher-auth-provider activedirectory
+
+# Kubeconfig is written under ~/.kube/rancher/ (see README for --rancher-auth-provider, auto, vault)
+```
+
+Use **token** auth if your organization only uses OIDC/SAML with the Rancher UI (no password login to v3-public). Use **`k8pk organize`** to split mixed configs; contexts whose server URL contains `/k8s/clusters/` or `rancher` are grouped into `rancher.yaml`.
+
+### 3. Organize Existing Mess
 
 If your `~/.kube/config` is already a mess, organize it:
 
@@ -50,11 +65,12 @@ k8pk organize
 #     my-gke-cluster.yaml
 #   ocp/
 #     cluster.example.com.yaml
+#   rancher.yaml          # all Rancher-detected contexts in one file
 #   k8s/
 #     minikube.yaml
 ```
 
-### 3. See Where Contexts Come From
+### 4. See Where Contexts Come From
 
 ```bash
 # Show all contexts with type and source file
@@ -90,6 +106,8 @@ k8pk which --json
   ocp/                # OpenShift clusters
     prod.yaml
     dev.yaml
+  rancher/            # Rancher-managed kubeconfigs (from k8pk login --type rancher)
+    rancher-prod.yaml
   aks/                # Azure AKS clusters
     azure-prod.yaml
 ```
@@ -105,6 +123,7 @@ configs:
     - ~/.kube/eks/*.yaml
     - ~/.kube/gke/*.yaml
     - ~/.kube/ocp/*.yaml
+    - ~/.kube/rancher/*.yaml
     - ~/.kube/aks/*.yaml
     - ~/.kube/organized/**/*.yaml
   exclude:
@@ -218,5 +237,6 @@ k8pk automatically detects cluster types from context names and server URLs:
 | GKE | `gke_` prefix or `.container.googleapis.com` |
 | OCP | `:6443` port or `openshift` in URL |
 | AKS | `.azmk8s.io` or `azure` in name |
+| Rancher | `rancher` in context name, or `/k8s/clusters/` / `rancher` in server URL |
 | K8S | Generic (minikube, kind, etc.) |
 

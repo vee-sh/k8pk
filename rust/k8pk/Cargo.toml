@@ -27,8 +27,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indicatif = "0.17"  # Progress spinners
 shell-words = "1.1"
-colored = "2.1"  # Terminal colors for TUI
-# keyring = "2.3"  # OS keychain credential storage (optional, can be enabled later)
+colored = "2.1"  # ANSI colors for prompts and status output
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

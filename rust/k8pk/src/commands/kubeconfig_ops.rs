@@ -361,6 +361,10 @@ pub fn cleanup_generated(
             continue;
         }
 
+        if filename == "history.yaml" || filename == "history.yml" {
+            continue;
+        }
+
         let base_name = filename.trim_end_matches(".yaml").trim_end_matches(".yml");
         let ctx_part = base_name.split('_').next().unwrap_or(base_name);
 
@@ -1044,5 +1048,131 @@ current-context: ctx-b
         let content = fs::read_to_string(&path).unwrap();
         let cfg: kubeconfig::KubeConfig = serde_yaml_ng::from_str(&content).unwrap();
         assert!(cfg.find_context("ctx-a").is_none());
+    }
+
+    #[test]
+    fn test_lint_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nonexistent.yaml");
+        let result = lint(Some(&missing), &[], false).unwrap();
+        assert_eq!(result.errors, 1);
+        assert!(result.failed);
+        assert!(result.issues[0].message.contains("not found"));
+    }
+
+    #[test]
+    fn test_lint_bad_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_kubeconfig(dir.path(), "bad.yaml", "{{not: valid yaml!!");
+        let result = lint(Some(&path), &[], false).unwrap();
+        assert_eq!(result.errors, 1);
+        assert!(result.failed);
+        assert!(result.issues[0].message.contains("parse error"));
+    }
+
+    #[test]
+    fn test_lint_valid_config_no_issues() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_kubeconfig(dir.path(), "good.yaml", KUBECONFIG_A);
+        let result = lint(Some(&path), &[], false).unwrap();
+        assert_eq!(result.errors, 0);
+        assert_eq!(result.warnings, 0);
+        assert!(!result.failed);
+    }
+
+    #[test]
+    fn test_lint_orphaned_cluster_user() {
+        let orphaned_yaml = r#"
+apiVersion: v1
+kind: Config
+clusters:
+  - name: used-cluster
+    cluster:
+      server: https://a.example.com
+  - name: orphan-cluster
+    cluster:
+      server: https://orphan.example.com
+contexts:
+  - name: ctx-a
+    context:
+      cluster: used-cluster
+      user: used-user
+users:
+  - name: used-user
+    user:
+      token: tok
+  - name: orphan-user
+    user:
+      token: tok2
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_kubeconfig(dir.path(), "orphan.yaml", orphaned_yaml);
+        let result = lint(Some(&path), &[], false).unwrap();
+        assert_eq!(result.warnings, 2);
+        let messages: Vec<&str> = result.issues.iter().map(|i| i.message.as_str()).collect();
+        assert!(messages
+            .iter()
+            .any(|m| m.contains("orphaned cluster: orphan-cluster")));
+        assert!(messages
+            .iter()
+            .any(|m| m.contains("orphaned user: orphan-user")));
+    }
+
+    #[test]
+    fn test_lint_invalid_current_context() {
+        let invalid_ctx_yaml = r#"
+apiVersion: v1
+kind: Config
+clusters:
+  - name: cluster-a
+    cluster:
+      server: https://a.example.com
+contexts:
+  - name: ctx-a
+    context:
+      cluster: cluster-a
+      user: user-a
+users:
+  - name: user-a
+    user:
+      token: tok
+current-context: nonexistent-ctx
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_kubeconfig(dir.path(), "badctx.yaml", invalid_ctx_yaml);
+        let result = lint(Some(&path), &[], false).unwrap();
+        assert_eq!(result.errors, 1);
+        assert!(result
+            .issues
+            .iter()
+            .any(|i| i.message.contains("current-context not found")));
+    }
+
+    #[test]
+    fn test_lint_strict_fails_on_warnings() {
+        let empty_contexts_yaml = r#"
+apiVersion: v1
+kind: Config
+clusters: []
+contexts: []
+users: []
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_kubeconfig(dir.path(), "empty.yaml", empty_contexts_yaml);
+        let result = lint(Some(&path), &[], true).unwrap();
+        assert!(result.warnings > 0);
+        assert!(result.failed, "strict mode should fail on warnings");
+    }
+
+    #[test]
+    fn test_lint_all_paths_when_no_file_specified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = write_kubeconfig(dir.path(), "a.yaml", KUBECONFIG_A);
+        let path_b = write_kubeconfig(dir.path(), "b.yaml", KUBECONFIG_B);
+        let all_paths = vec![path_a, path_b];
+        let result = lint(None, &all_paths, false).unwrap();
+        assert_eq!(result.errors, 0);
+        assert_eq!(result.warnings, 0);
+        assert!(!result.failed);
     }
 }

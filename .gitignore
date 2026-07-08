@@ -21,3 +21,12 @@ luac.out
 coverage/
 *.lcov
 
+# Generated man pages (local / CI smoke)
+man-out/
+man-ci/
+rust/k8pk/man/
+
+# Nix build output
+result
+result-*
+

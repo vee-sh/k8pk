@@ -86,3 +86,129 @@ impl CurrentState {
         serde_json::Value::Object(map)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_state_depth_zero() {
+        let s = CurrentState::default();
+        assert_eq!(s.depth, 0);
+        assert!(s.context.is_none());
+        assert!(s.namespace.is_none());
+        assert!(s.config_path.is_none());
+    }
+
+    #[test]
+    fn next_depth_increments() {
+        let s = CurrentState {
+            depth: 3,
+            ..Default::default()
+        };
+        assert_eq!(s.next_depth(), 4);
+    }
+
+    #[test]
+    fn to_json_includes_set_fields() {
+        let s = CurrentState {
+            context: Some("dev".into()),
+            namespace: Some("prod".into()),
+            depth: 1,
+            ..Default::default()
+        };
+        let j = s.to_json();
+        assert_eq!(j["context"], "dev");
+        assert_eq!(j["namespace"], "prod");
+        assert_eq!(j["depth"], 1);
+        assert!(j.get("config").is_none());
+    }
+
+    #[test]
+    fn to_json_omits_none_fields() {
+        let s = CurrentState::default();
+        let j = s.to_json();
+        assert!(j.get("context").is_none());
+        assert!(j.get("namespace").is_none());
+        assert_eq!(j["depth"], 0);
+    }
+
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn from_env_parses_k8pk_vars() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let saved_ctx = env::var_os("K8PK_CONTEXT");
+        let saved_disp = env::var_os("K8PK_CONTEXT_DISPLAY");
+        let saved_ns = env::var_os("K8PK_NAMESPACE");
+        let saved_depth = env::var_os("K8PK_DEPTH");
+        let saved_kc = env::var_os("KUBECONFIG");
+
+        let dir = tempfile::tempdir().unwrap();
+        let kc_path = dir.path().join("config");
+        std::fs::write(&kc_path, "apiVersion: v1").unwrap();
+
+        env::set_var("K8PK_CONTEXT", "test-ctx");
+        env::set_var("K8PK_CONTEXT_DISPLAY", "TestCtx");
+        env::set_var("K8PK_NAMESPACE", "test-ns");
+        env::set_var("K8PK_DEPTH", "2");
+        env::set_var("KUBECONFIG", kc_path.to_str().unwrap());
+
+        let state = CurrentState::from_env();
+        assert_eq!(state.context, Some("test-ctx".to_string()));
+        assert_eq!(state.context_display, Some("TestCtx".to_string()));
+        assert_eq!(state.namespace, Some("test-ns".to_string()));
+        assert_eq!(state.depth, 2);
+        assert_eq!(state.config_path, Some(kc_path));
+
+        // Restore
+        for (key, val) in [
+            ("K8PK_CONTEXT", saved_ctx),
+            ("K8PK_CONTEXT_DISPLAY", saved_disp),
+            ("K8PK_NAMESPACE", saved_ns),
+            ("K8PK_DEPTH", saved_depth),
+            ("KUBECONFIG", saved_kc),
+        ] {
+            if let Some(v) = val {
+                env::set_var(key, v);
+            } else {
+                env::remove_var(key);
+            }
+        }
+    }
+
+    #[test]
+    fn from_env_depth_defaults_to_zero_on_bad_value() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let saved = env::var_os("K8PK_DEPTH");
+        env::set_var("K8PK_DEPTH", "notanumber");
+
+        let state = CurrentState::from_env();
+        assert_eq!(state.depth, 0);
+
+        if let Some(v) = saved {
+            env::set_var("K8PK_DEPTH", v);
+        } else {
+            env::remove_var("K8PK_DEPTH");
+        }
+    }
+
+    #[test]
+    fn from_env_config_path_none_when_file_missing() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let saved = env::var_os("KUBECONFIG");
+        env::set_var("KUBECONFIG", "/nonexistent/path/for/test/config");
+
+        let state = CurrentState::from_env();
+        assert!(state.config_path.is_none());
+
+        if let Some(v) = saved {
+            env::set_var("KUBECONFIG", v);
+        } else {
+            env::remove_var("KUBECONFIG");
+        }
+    }
+}

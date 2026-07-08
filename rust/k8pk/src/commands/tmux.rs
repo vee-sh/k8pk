@@ -28,7 +28,7 @@ pub fn is_tmux() -> bool {
 pub fn tmux_mode() -> String {
     config::load()
         .ok()
-        .and_then(|c| c.tmux.as_ref().map(|t| t.mode.clone()))
+        .and_then(|c| c.tmux.map(|t| t.mode))
         .unwrap_or_else(|| "windows".to_string())
 }
 
@@ -36,7 +36,7 @@ pub fn tmux_mode() -> String {
 fn format_name(context: &str) -> String {
     let template = config::load()
         .ok()
-        .and_then(|c| c.tmux.as_ref().and_then(|t| t.name_template.clone()))
+        .and_then(|c| c.tmux.and_then(|t| t.name_template))
         .unwrap_or_else(|| "{context}".to_string());
     template.replace("{context}", context)
 }
@@ -387,8 +387,12 @@ mod tests {
 
     #[test]
     fn test_is_tmux_when_unset() {
+        let saved = std::env::var_os("TMUX");
         std::env::remove_var("TMUX");
         assert!(!is_tmux());
+        if let Some(v) = saved {
+            std::env::set_var("TMUX", v);
+        }
     }
 
     #[test]

@@ -27,10 +27,7 @@ fn get_shell_config_path(shell: &str) -> Option<PathBuf> {
 }
 
 fn detect_shell() -> String {
-    std::env::var("SHELL")
-        .ok()
-        .and_then(|s| s.rsplit('/').next().map(|s| s.to_string()))
-        .unwrap_or_else(|| "bash".to_string())
+    super::context::detect_shell().to_string()
 }
 
 fn get_aliases_block(shell: &str) -> String {

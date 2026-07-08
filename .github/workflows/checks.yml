@@ -76,3 +76,13 @@ jobs:
         working-directory: rust/k8pk
         run: cargo test --locked
 
+      - name: Generate man pages (smoke)
+        working-directory: rust/k8pk
+        shell: bash
+        run: |
+          mkdir -p ../../man-ci
+          rm -f ../../man-ci/k8pk.1
+          touch build.rs
+          K8PK_MAN_DIR="$(pwd)/../../man-ci" cargo build --locked
+          test -f ../../man-ci/k8pk.1
+

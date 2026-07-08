@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
-/// Global cached config (stores Result to handle load errors)
-static CONFIG_CACHE: OnceLock<std::result::Result<K8pkConfig, String>> = OnceLock::new();
+/// Global cached config (stores Result, can be invalidated after writes)
+static CONFIG_CACHE: Mutex<Option<std::result::Result<K8pkConfig, String>>> = Mutex::new(None);
 
 /// K8pk configuration structure
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
@@ -124,11 +124,22 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(xdg_path)
 }
 
-/// Load k8pk configuration (cached after first load)
-pub fn load() -> Result<&'static K8pkConfig> {
-    let cached = CONFIG_CACHE.get_or_init(|| load_uncached().map_err(|e| e.to_string()));
+/// Load k8pk configuration (cached; invalidated by `invalidate_cache`).
+pub fn load() -> Result<K8pkConfig> {
+    let mut guard = CONFIG_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ref cached) = *guard {
+        return cached.clone().map_err(K8pkError::Other);
+    }
+    let result = load_uncached().map_err(|e| e.to_string());
+    let ret = result.clone().map_err(K8pkError::Other);
+    *guard = Some(result);
+    ret
+}
 
-    cached.as_ref().map_err(|e| K8pkError::Other(e.clone()))
+/// Invalidate the cached config so the next `load()` re-reads from disk.
+pub fn invalidate_cache() {
+    let mut guard = CONFIG_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
 }
 
 /// Load k8pk configuration without caching (for tests or force reload)
@@ -218,7 +229,8 @@ pub fn add_to_insecure_contexts(context: &str) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let yaml = serde_yaml_ng::to_string(&config)?;
-    std::fs::write(&path, yaml)?;
+    kubeconfig::write_restricted(&path, &yaml)?;
+    invalidate_cache();
     Ok(())
 }
 
@@ -255,15 +267,14 @@ configs:
     - "~/.kube/k8pk.yaml"
 
 # Shell hooks (commands to run when entering/leaving contexts)
-# Uncomment and customize as needed
+# Eval-based switching (k8pk ctx / k8pk / kpick): stop runs when the *context name*
+# changes, then start runs for the new context. Namespace-only changes do not run hooks.
+# Subshell spawn: only start_ctx runs (with K8PK_* set for the new context).
+# k8pk clean: stop_ctx runs if you had an active context.
+# Available in hook subprocess: K8PK_HOOK_PHASE=start|stop, K8PK_CONTEXT, K8PK_NAMESPACE
 # hooks:
-#   # Command to run when switching to a context
-#   # Example: "notify-send 'Switched to {}'"
-#   start_ctx: ""
-#   
-#   # Command to run when leaving a context
-#   # Example: "echo 'Leaving context'"
-#   stop_ctx: ""
+#   start_ctx: 'notify-send "k8pk: $K8PK_CONTEXT"'
+#   stop_ctx: 'true'
 
 # Context aliases (short names for long context names)
 # Uncomment and add your aliases:
@@ -299,12 +310,13 @@ configs:
     .to_string()
 }
 
-/// Initialize config file if it doesn't exist
-pub fn init_config() -> Result<PathBuf> {
+/// Initialize config file if it doesn't exist.
+/// Returns `(path, created)` where `created` is true only when a new file was written.
+pub fn init_config() -> Result<(PathBuf, bool)> {
     let path = config_path()?;
 
     if path.exists() {
-        return Ok(path);
+        return Ok((path, false));
     }
 
     // Create parent directory if needed
@@ -316,12 +328,16 @@ pub fn init_config() -> Result<PathBuf> {
     let template = generate_template();
     kubeconfig::write_restricted(&path, &template)?;
 
-    Ok(path)
+    Ok((path, true))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate process-wide environment variables.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_default_config() {
@@ -346,7 +362,8 @@ mod tests {
 
     #[test]
     fn test_config_path_xdg() {
-        // When XDG_CONFIG_HOME is set and the file exists there, it should be used
+        let _lock = ENV_MUTEX.lock().unwrap();
+
         let dir = tempfile::tempdir().unwrap();
         let xdg_dir = dir.path().join("k8pk");
         std::fs::create_dir_all(&xdg_dir).unwrap();
@@ -409,5 +426,214 @@ mod tests {
     fn test_default_insecure_contexts_empty() {
         let config = K8pkConfig::default();
         assert!(config.insecure_contexts.is_empty());
+    }
+
+    #[test]
+    fn test_generate_template_contains_key_sections() {
+        let tpl = generate_template();
+        assert!(tpl.contains("configs:"));
+        assert!(tpl.contains("include:"));
+        assert!(tpl.contains("exclude:"));
+        assert!(tpl.contains("insecure_contexts:"));
+        assert!(tpl.contains("hooks:"));
+        assert!(tpl.contains("tmux:"));
+    }
+
+    #[test]
+    fn test_load_uncached_with_yaml() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let xdg_dir = dir.path().join("k8pk");
+        std::fs::create_dir_all(&xdg_dir).unwrap();
+        let cfg_path = xdg_dir.join("config.yaml");
+        std::fs::write(
+            &cfg_path,
+            "aliases:\n  dev: my-long-dev-context\n  prod: my-prod-cluster\ninsecure_contexts:\n  - \"ocp-*\"\n",
+        )
+        .unwrap();
+
+        let saved_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        let config = load_uncached().unwrap();
+        if let Some(v) = saved_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", v);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+
+        let aliases = config.aliases.unwrap();
+        assert_eq!(
+            aliases.get("dev").map(|s| s.as_str()),
+            Some("my-long-dev-context")
+        );
+        assert_eq!(
+            aliases.get("prod").map(|s| s.as_str()),
+            Some("my-prod-cluster")
+        );
+        assert_eq!(config.insecure_contexts, vec!["ocp-*"]);
+    }
+
+    #[test]
+    fn test_is_context_insecure_pattern() {
+        let config = K8pkConfig {
+            insecure_contexts: vec!["ocp-*".into(), "dev-cluster".into()],
+            ..Default::default()
+        };
+        assert!(config
+            .insecure_contexts
+            .iter()
+            .any(|p| glob_match(p, "ocp-prod")));
+        assert!(config
+            .insecure_contexts
+            .iter()
+            .any(|p| glob_match(p, "dev-cluster")));
+        assert!(!config
+            .insecure_contexts
+            .iter()
+            .any(|p| glob_match(p, "gke-us")));
+    }
+
+    #[test]
+    fn test_init_config_and_insecure_roundtrip() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let fake_home = dir.path().join("home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+
+        let saved_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let saved_home = std::env::var_os("HOME");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        std::env::set_var("HOME", &fake_home);
+
+        // -- init_config creates and is idempotent --
+        let (path, created) = init_config().unwrap();
+        assert!(created);
+        assert!(path.exists());
+
+        let (_, created2) = init_config().unwrap();
+        assert!(!created2);
+
+        // -- add_to_insecure_contexts roundtrip --
+        add_to_insecure_contexts("ocp-dev").unwrap();
+        let config = load_uncached().unwrap();
+        assert!(config.insecure_contexts.contains(&"ocp-dev".to_string()));
+
+        add_to_insecure_contexts("ocp-dev").unwrap();
+        let config2 = load_uncached().unwrap();
+        assert_eq!(
+            config2
+                .insecure_contexts
+                .iter()
+                .filter(|s| *s == "ocp-dev")
+                .count(),
+            1,
+            "should not duplicate"
+        );
+
+        if let Some(v) = saved_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", v);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        if let Some(v) = saved_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn test_invalidate_cache_allows_reload() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let fake_home = dir.path().join("home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let xdg_dir = dir.path().join("k8pk");
+        std::fs::create_dir_all(&xdg_dir).unwrap();
+        let cfg_path = xdg_dir.join("config.yaml");
+
+        let saved_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let saved_home = std::env::var_os("HOME");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        std::env::set_var("HOME", &fake_home);
+
+        std::fs::write(&cfg_path, "insecure_contexts:\n  - \"before\"\n").unwrap();
+
+        let first = load_uncached().unwrap();
+        assert_eq!(first.insecure_contexts, vec!["before".to_string()]);
+
+        assert_eq!(
+            load().unwrap().insecure_contexts,
+            vec!["before".to_string()]
+        );
+
+        std::fs::write(&cfg_path, "insecure_contexts:\n  - \"after\"\n").unwrap();
+
+        assert_eq!(
+            load().unwrap().insecure_contexts,
+            vec!["before".to_string()],
+            "load() should return cached config until invalidate_cache()"
+        );
+
+        invalidate_cache();
+
+        let second = load_uncached().unwrap();
+        assert_eq!(second.insecure_contexts, vec!["after".to_string()]);
+        assert_eq!(load().unwrap().insecure_contexts, vec!["after".to_string()]);
+
+        if let Some(v) = saved_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", v);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        if let Some(v) = saved_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
+
+        invalidate_cache();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_add_to_insecure_contexts_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = ENV_MUTEX.lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let fake_home = dir.path().join("home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let xdg_dir = dir.path().join("k8pk");
+        std::fs::create_dir_all(&xdg_dir).unwrap();
+        let cfg_path = xdg_dir.join("config.yaml");
+        std::fs::write(&cfg_path, "configs:\n  include: ['~/.kube/config']\n").unwrap();
+
+        let saved_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let saved_home = std::env::var_os("HOME");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        std::env::set_var("HOME", &fake_home);
+
+        add_to_insecure_contexts("perm-test-ctx").unwrap();
+
+        let mode = std::fs::metadata(&cfg_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "config file should be owner read/write only");
+
+        if let Some(v) = saved_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", v);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        if let Some(v) = saved_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
+
+        invalidate_cache();
     }
 }

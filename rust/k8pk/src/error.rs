@@ -21,7 +21,20 @@ pub enum K8pkError {
     #[error("user '{0}' not found in kubeconfig\n\n  The context may reference a deleted user. Run 'k8pk lint' to check")]
     UserNotFound(String),
 
-    #[error("no contexts found\n\n  Get started:\n    k8pk login --server https://your-cluster:6443\n    k8pk login --wizard\n\n  Or check your kubeconfig:\n    kubectl config get-contexts\n    k8pk --kubeconfig /path/to/config contexts")]
+    #[error(
+        "no contexts found\n\n\
+          Once kubeconfigs exist, run `k8pk` to pick a cluster and open a shell.\n\n\
+          Get started:\n\
+            k8pk login --server https://your-cluster:6443\n\
+            k8pk login --wizard\n\n\
+          Diagnose setup:\n\
+            k8pk doctor\n\n\
+          Command map:\n\
+            k8pk guide\n\n\
+          Or check your kubeconfig:\n\
+            kubectl config get-contexts\n\
+            k8pk --kubeconfig /path/to/config contexts"
+    )]
     NoContexts,
 
     #[error("no namespaces found for context '{0}'\n\n  The cluster may be unreachable or you may lack permissions.\n  Try: kubectl --context {0} get namespaces")]
@@ -98,11 +111,13 @@ pub enum K8pkError {
     Other(String),
 }
 
-/// Compute edit distance between two strings (Levenshtein).
+/// Compute edit distance between two strings (Levenshtein) over Unicode chars.
 /// Used for "did you mean?" suggestions.
 pub fn edit_distance(a: &str, b: &str) -> usize {
-    let a_len = a.len();
-    let b_len = b.len();
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let a_len = a_chars.len();
+    let b_len = b_chars.len();
     let mut dp = vec![vec![0usize; b_len + 1]; a_len + 1];
     for (i, row) in dp.iter_mut().enumerate().take(a_len + 1) {
         row[0] = i;
@@ -110,8 +125,8 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
     for (j, val) in dp[0].iter_mut().enumerate().take(b_len + 1) {
         *val = j;
     }
-    for (i, ac) in a.chars().enumerate() {
-        for (j, bc) in b.chars().enumerate() {
+    for (i, ac) in a_chars.iter().enumerate() {
+        for (j, bc) in b_chars.iter().enumerate() {
             let cost = if ac == bc { 0 } else { 1 };
             dp[i + 1][j + 1] = (dp[i][j + 1] + 1)
                 .min(dp[i + 1][j] + 1)
@@ -178,6 +193,35 @@ mod tests {
     }
 
     #[test]
+    fn test_edit_distance_multibyte_utf8() {
+        assert_eq!(edit_distance("cafe", "caf\u{00e9}"), 1);
+        assert_eq!(edit_distance("caf\u{00e9}", "cafe"), 1);
+        assert_eq!(edit_distance("\u{00e9}", "e"), 1);
+        assert_eq!(edit_distance("日本", "日本"), 0);
+        assert_eq!(edit_distance("日本", "日本国"), 1);
+        assert_eq!(edit_distance("你好", "您好"), 1);
+    }
+
+    #[test]
+    fn test_edit_distance_emoji() {
+        assert_eq!(edit_distance("\u{1f600}", "\u{1f600}"), 0);
+        assert_eq!(edit_distance("\u{1f600}", "\u{1f601}"), 1);
+        assert_eq!(edit_distance("a\u{1f600}b", "ab"), 1);
+    }
+
+    #[test]
+    fn test_closest_matches_case_insensitive() {
+        let candidates = vec!["prod-cluster".to_string()];
+        let suggestions = closest_matches("PROD-CLUSTER", &candidates, 3);
+        assert!(!suggestions.is_empty());
+        assert_eq!(suggestions[0], "prod-cluster");
+
+        let prod_only = vec!["prod".to_string()];
+        let suggestions = closest_matches("PROD", &prod_only, 3);
+        assert_eq!(suggestions.first().copied(), Some("prod"));
+    }
+
+    #[test]
     fn test_closest_matches_finds_typo() {
         let candidates = vec![
             "prod-cluster".to_string(),
@@ -241,6 +285,9 @@ mod tests {
         let err = K8pkError::NoContexts;
         let msg = format!("{}", err);
         assert!(msg.contains("k8pk login"));
+        assert!(msg.contains("k8pk doctor"));
+        assert!(msg.contains("k8pk guide"));
+        assert!(msg.contains("pick a cluster"));
     }
 
     #[test]
@@ -272,5 +319,122 @@ mod tests {
         let msg = format!("{}", err);
         assert!(msg.contains("HTTP"));
         assert!(msg.contains("connection refused"));
+    }
+
+    #[test]
+    fn test_error_display_context_not_found() {
+        let err = K8pkError::ContextNotFound("my-ctx".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("my-ctx"));
+        assert!(msg.contains("k8pk contexts"));
+    }
+
+    #[test]
+    fn test_error_display_cluster_not_found() {
+        let err = K8pkError::ClusterNotFound("my-cluster".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("my-cluster"));
+        assert!(msg.contains("k8pk lint"));
+    }
+
+    #[test]
+    fn test_error_display_user_not_found() {
+        let err = K8pkError::UserNotFound("admin".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("admin"));
+        assert!(msg.contains("k8pk lint"));
+    }
+
+    #[test]
+    fn test_error_display_no_namespaces() {
+        let err = K8pkError::NoNamespaces("prod".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("prod"));
+        assert!(msg.contains("get namespaces"));
+    }
+
+    #[test]
+    fn test_error_display_kubeconfig_not_found() {
+        let err = K8pkError::KubeconfigNotFound("/tmp/missing".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("/tmp/missing"));
+        assert!(msg.contains("KUBECONFIG"));
+    }
+
+    #[test]
+    fn test_error_display_not_in_context() {
+        let msg = format!("{}", K8pkError::NotInContext);
+        assert!(msg.contains("not in a k8pk context"));
+        assert!(msg.contains("k8pk ctx"));
+    }
+
+    #[test]
+    fn test_error_display_no_previous_context() {
+        let msg = format!("{}", K8pkError::NoPreviousContext);
+        assert!(msg.contains("no previous context"));
+    }
+
+    #[test]
+    fn test_error_display_no_previous_namespace() {
+        let msg = format!("{}", K8pkError::NoPreviousNamespace);
+        assert!(msg.contains("no previous namespace"));
+    }
+
+    #[test]
+    fn test_error_display_session_expired() {
+        let err = K8pkError::SessionExpired("ocp-dev".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("ocp-dev"));
+        assert!(msg.contains("k8pk login"));
+    }
+
+    #[test]
+    fn test_error_display_tls_certificate() {
+        let err = K8pkError::TlsCertificateError {
+            context: "prod".into(),
+            hint: "use --insecure".into(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("prod"));
+        assert!(msg.contains("use --insecure"));
+    }
+
+    #[test]
+    fn test_error_display_cancelled() {
+        let msg = format!("{}", K8pkError::Cancelled);
+        assert!(msg.contains("cancelled"));
+    }
+
+    #[test]
+    fn test_error_display_no_home_dir() {
+        let msg = format!("{}", K8pkError::NoHomeDir);
+        assert!(msg.contains("home directory"));
+    }
+
+    #[test]
+    fn test_error_display_command_failed() {
+        let err = K8pkError::CommandFailed("oc login failed".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("oc login failed"));
+    }
+
+    #[test]
+    fn test_error_display_no_tty() {
+        let msg = format!("{}", K8pkError::NoTty);
+        assert!(msg.contains("TTY"));
+    }
+
+    #[test]
+    fn test_error_display_no_k8s_cli() {
+        let msg = format!("{}", K8pkError::NoK8sCli);
+        assert!(msg.contains("kubectl"));
+    }
+
+    #[test]
+    fn test_error_display_invalid_kubeconfig() {
+        let err = K8pkError::InvalidKubeconfig("missing apiVersion".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("missing apiVersion"));
+        assert!(msg.contains("k8pk lint"));
     }
 }
