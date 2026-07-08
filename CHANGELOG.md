@@ -25,6 +25,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - **Nested shells are now opt-in**: outside tmux, switching context inside an existing k8pk shell stays flat (no endless stacked subshells). Enable kubie-style recursion with `shell.nested: true` in config. For zero new shells, use `kctx`/`kpick` (switch in place) or tmux (windows/sessions).
 - **`--use-vault`** help text: applies to **Rancher** userpass as well as OCP.
 
+### Fixed
+
+- **Windows release build**: man-page generation now runs on a large-stack thread, fixing a `STATUS_STACK_OVERFLOW` in `build.rs` (`clap_mangen`) on the `x86_64-pc-windows-msvc` release job caused by the deeper subcommand/help tree.
+
 ### Documentation
 
 - README, **`k8pk guide`**, and **MULTI_CLUSTER.md**: Rancher (RKE1/RKE2), OIDC/token note, vault migration hint, organize output.
