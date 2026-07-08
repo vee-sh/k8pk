@@ -22,6 +22,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- **Nested shells are now opt-in**: outside tmux, switching context inside an existing k8pk shell stays flat (no endless stacked subshells). Enable kubie-style recursion with `shell.nested: true` in config. For zero new shells, use `kctx`/`kpick` (switch in place) or tmux (windows/sessions).
 - **`--use-vault`** help text: applies to **Rancher** userpass as well as OCP.
 
 ### Documentation

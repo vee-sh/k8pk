@@ -47,11 +47,6 @@ impl CurrentState {
         }
     }
 
-    /// Get the next depth level for recursive shells
-    pub fn next_depth(&self) -> u32 {
-        self.depth + 1
-    }
-
     /// Convert to JSON for `info all` command
     pub fn to_json(&self) -> serde_json::Value {
         let mut map = serde_json::Map::new();
@@ -98,15 +93,6 @@ mod tests {
         assert!(s.context.is_none());
         assert!(s.namespace.is_none());
         assert!(s.config_path.is_none());
-    }
-
-    #[test]
-    fn next_depth_increments() {
-        let s = CurrentState {
-            depth: 3,
-            ..Default::default()
-        };
-        assert_eq!(s.next_depth(), 4);
     }
 
     #[test]

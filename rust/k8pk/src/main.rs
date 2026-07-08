@@ -1764,7 +1764,6 @@ mod tests {
         let j = state.to_json();
         assert!(j.is_object());
         assert!(j.get("depth").is_some());
-        assert_eq!(state.next_depth(), state.depth + 1);
     }
 
     // --- CLI parsing tests ---

@@ -50,6 +50,25 @@ pub fn spawn_cleaned_shell() -> Result<()> {
 
 const MAX_SHELL_DEPTH: u32 = 10;
 
+/// Depth for the next spawned shell.
+/// Nested on: depth accumulates (kubie-style recursion).
+/// Nested off (default): switching inside an existing k8pk shell stays flat at
+/// depth 1 so repeated switches don't stack endless shells.
+fn spawn_depth(current: u32, nested: bool) -> u32 {
+    if nested {
+        current + 1
+    } else {
+        1
+    }
+}
+
+fn nested_shells_enabled() -> bool {
+    config::load()
+        .ok()
+        .and_then(|c| c.shell.map(|s| s.nested))
+        .unwrap_or(false)
+}
+
 /// Spawn a new shell with context/namespace set (tmux-aware)
 pub fn spawn_shell(context: &str, namespace: Option<&str>, kubeconfig: &Path) -> Result<()> {
     spawn_shell_inner(context, namespace, kubeconfig, false)
@@ -79,16 +98,17 @@ fn spawn_shell_inner(
     }
 
     let state = CurrentState::from_env();
-    let new_depth = state.next_depth();
+    let nested = nested_shells_enabled();
+    let new_depth = spawn_depth(state.depth, nested);
 
-    if new_depth > 1 {
+    if nested && new_depth > 1 {
         eprintln!(
             "Note: entering nested k8pk shell (depth {}). Use 'exit' to return to the parent shell.",
             new_depth
         );
     }
 
-    if new_depth > MAX_SHELL_DEPTH {
+    if nested && new_depth > MAX_SHELL_DEPTH {
         return Err(K8pkError::InvalidArgument(format!(
             "maximum shell nesting depth ({}) reached. Use 'exit' to leave nested shells, \
              or use eval-based switching: eval $(k8pk ctx ...)",
@@ -356,5 +376,21 @@ mod tests {
     fn generate_completions_unsupported_shell() {
         let err = generate_completions("tcsh").unwrap_err();
         assert!(err.to_string().contains("tcsh"));
+    }
+
+    #[test]
+    fn spawn_depth_flat_when_not_nested() {
+        // Default (no nesting): any current depth collapses to a flat 1,
+        // so repeated switches never stack endless shells.
+        assert_eq!(spawn_depth(0, false), 1);
+        assert_eq!(spawn_depth(1, false), 1);
+        assert_eq!(spawn_depth(5, false), 1);
+    }
+
+    #[test]
+    fn spawn_depth_accumulates_when_nested() {
+        assert_eq!(spawn_depth(0, true), 1);
+        assert_eq!(spawn_depth(1, true), 2);
+        assert_eq!(spawn_depth(5, true), 6);
     }
 }

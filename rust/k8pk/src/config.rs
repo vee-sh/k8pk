@@ -24,6 +24,8 @@ pub struct K8pkConfig {
     pub pick: Option<PickSection>,
     #[serde(default)]
     pub tmux: Option<TmuxSection>,
+    #[serde(default)]
+    pub shell: Option<ShellSection>,
     /// Context name patterns that should always use insecure-skip-tls-verify.
     /// Supports simple glob patterns (* matches any sequence, ? matches single char).
     #[serde(default)]
@@ -60,6 +62,16 @@ pub struct TmuxSection {
 
 fn default_tmux_mode() -> String {
     "windows".to_string()
+}
+
+/// Shell spawning configuration (non-tmux nested subshells).
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct ShellSection {
+    /// Allow recursive nested subshells when switching context outside tmux.
+    /// Default false: switching inside an existing k8pk shell stays flat
+    /// instead of stacking endless shells. Opt in for kubie-style nesting.
+    #[serde(default)]
+    pub nested: bool,
 }
 
 /// Configs section for kubeconfig file discovery
@@ -306,6 +318,13 @@ configs:
 # tmux:
 #   mode: windows           # "windows" (default) or "sessions"
 #   name_template: "{context}"  # naming for tmux windows/sessions
+
+# Shell spawning (outside tmux)
+# By default, switching context inside a k8pk shell stays flat (no endless
+# nested subshells). For zero new shells, use the kctx/kpick functions (they
+# switch in place) or tmux. Enable nested to opt into kubie-style recursion.
+# shell:
+#   nested: false           # true = allow recursive nested subshells
 "#
     .to_string()
 }
@@ -437,6 +456,7 @@ mod tests {
         assert!(tpl.contains("insecure_contexts:"));
         assert!(tpl.contains("hooks:"));
         assert!(tpl.contains("tmux:"));
+        assert!(tpl.contains("shell:"));
     }
 
     #[test]
