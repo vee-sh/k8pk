@@ -4,34 +4,21 @@ use crate::error::{K8pkError, Result};
 use crate::kubeconfig::{self, KubeConfig};
 use inquire::Password;
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{is_tls_error, AuthMode, LoginResult, Vault, VaultEntry};
+use super::{
+    is_tls_error, prepare_login_output, prompt_save_vault, resolve_vault_userpass, AuthMode,
+    LoginRequest, LoginResult,
+};
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn ocp_login(
-    server: &str,
-    token: Option<&str>,
-    username: Option<&str>,
-    password: Option<&str>,
-    name: Option<&str>,
-    output_dir: Option<&Path>,
-    insecure: bool,
-    use_vault: bool,
-    certificate_authority: Option<&Path>,
-    auth_mode: AuthMode,
-    dry_run: bool,
-    test: bool,
-    test_timeout: u64,
-    quiet: bool,
-) -> Result<LoginResult> {
+pub(super) fn ocp_login(req: &LoginRequest) -> Result<LoginResult> {
+    let auth_mode = req.auth.parse::<AuthMode>()?;
     if auth_mode == AuthMode::Exec || auth_mode == AuthMode::ClientCert {
         return Err(K8pkError::InvalidArgument(
             "exec or client-cert auth is not supported for --type ocp".into(),
         ));
     }
-    if dry_run {
+    if req.dry_run {
         return Err(K8pkError::InvalidArgument(
             "--dry-run is not supported for --type ocp".into(),
         ));
@@ -45,34 +32,20 @@ pub(super) fn ocp_login(
         ));
     }
 
-    let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
-    let out_dir = output_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".kube/ocp"));
+    let (context_name, kubeconfig_path) = prepare_login_output(
+        "ocp",
+        &req.server,
+        req.name.as_deref(),
+        req.output_dir.as_deref(),
+    )?;
 
-    fs::create_dir_all(&out_dir)?;
-
-    let context_name = name.map(String::from).unwrap_or_else(|| {
-        let sanitized = server
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .replace(['/', ':'], "-");
-        format!("ocp-{}", sanitized)
-    });
-
-    let kubeconfig_path = out_dir.join(format!(
-        "{}.yaml",
-        kubeconfig::sanitize_filename(&context_name)
-    ));
-
-    let mut final_username = username.map(String::from);
-    let mut final_password = password.map(String::from);
-    let final_token = token.map(String::from);
+    let mut final_username = req.username.clone();
+    let mut final_password = req.password.clone();
+    let final_token = req.token.clone();
 
     if final_token.is_some() {
         // Token auth -- skip username/password entirely
     } else if final_username.is_some() || final_password.is_some() {
-        // Partial user/pass provided -- prompt for missing half
         if final_username.is_none() {
             final_username = Some(
                 inquire::Text::new("Username:")
@@ -89,67 +62,32 @@ pub(super) fn ocp_login(
             );
         }
     } else {
-        // No credentials at all -- try vault, then prompt
-        let vault_key = format!("ocp:{}", server);
-        let mut vault = if use_vault { Vault::new().ok() } else { None };
-
-        if let Some(ref v) = vault {
-            if let Some(entry) = v.get(&vault_key) {
-                if !quiet {
-                    eprintln!("Using credentials from vault for {}", server);
-                }
-                final_username = Some(entry.username);
-                final_password = Some(entry.password);
-            }
-        }
-
-        if final_username.is_none() {
-            final_username = Some(
-                inquire::Text::new("Username:")
-                    .prompt()
-                    .map_err(|_| K8pkError::Cancelled)?,
-            );
-        }
-        if final_password.is_none() {
-            final_password = Some(
-                Password::new("Password:")
-                    .without_confirmation()
-                    .prompt()
-                    .map_err(|_| K8pkError::Cancelled)?,
-            );
-        }
-
-        if use_vault {
-            if let Some(ref mut v) = vault {
-                let save = inquire::Confirm::new("Save credentials to vault?")
-                    .with_default(true)
-                    .prompt()
-                    .unwrap_or(false);
-                if save {
-                    v.set(
-                        vault_key,
-                        VaultEntry {
-                            username: final_username.clone().unwrap_or_default(),
-                            password: final_password.clone().unwrap_or_default(),
-                            rancher_auth_provider: None,
-                        },
-                    )?;
-                }
-            }
+        let vault_key = format!("ocp:{}", req.server);
+        let (u, p, _, from_vault) = resolve_vault_userpass(
+            &[&vault_key],
+            req.use_vault,
+            req.quiet,
+            "Username:",
+            "Password:",
+        )?;
+        final_username = Some(u.clone());
+        final_password = Some(p.clone());
+        if req.use_vault && !from_vault {
+            prompt_save_vault(&vault_key, &u, &p, None)?;
         }
     }
 
-    if !quiet {
+    if !req.quiet {
         eprintln!(
             "oc login -> {} (writing {})",
-            server,
+            req.server,
             kubeconfig_path.display()
         );
     }
 
     let mut cmd = Command::new(kubeconfig::oc_cli_path());
     cmd.arg("login");
-    cmd.arg(server);
+    cmd.arg(&req.server);
     cmd.env("KUBECONFIG", &kubeconfig_path);
 
     if let Some(ref t) = final_token {
@@ -161,11 +99,11 @@ pub(super) fn ocp_login(
     if let Some(ref p) = final_password {
         cmd.arg("--password").arg(p);
     }
-    if let Some(ca) = certificate_authority {
+    if let Some(ref ca) = req.certificate_authority {
         cmd.arg("--certificate-authority")
             .arg(ca.to_string_lossy().to_string());
     }
-    if insecure {
+    if req.insecure {
         cmd.arg("--insecure-skip-tls-verify");
     }
 
@@ -187,16 +125,10 @@ pub(super) fn ocp_login(
                 context: context_name.clone(),
                 hint: format!(
                     "Re-login with: k8pk login --insecure-skip-tls-verify --server {} --name {}",
-                    server, context_name
+                    req.server, context_name
                 ),
             });
         }
-        tracing::debug!(
-            oc_stdout = %stdout_str,
-            oc_stderr = %stderr_str,
-            oc_binary = %kubeconfig::oc_cli_path().display(),
-            "oc login failed"
-        );
         return Err(K8pkError::CommandFailed(format!(
             "oc login failed (binary: {}). \
              If `oc` is not on PATH, use: export K8PK_OC=/path/to/oc  or  k8pk --oc /path/to/oc login ...",
@@ -238,8 +170,8 @@ pub(super) fn ocp_login(
 
     refresh_ocp_token(&kubeconfig_path, &context_name)?;
 
-    if test {
-        test_ocp_auth(&kubeconfig_path, test_timeout)?;
+    if req.test {
+        test_ocp_auth(&kubeconfig_path, req.test_timeout)?;
     }
 
     Ok(LoginResult {
@@ -249,7 +181,7 @@ pub(super) fn ocp_login(
     })
 }
 
-pub(super) fn test_ocp_auth(kubeconfig_path: &Path, timeout_secs: u64) -> Result<()> {
+pub(super) fn test_ocp_auth(kubeconfig_path: &std::path::Path, timeout_secs: u64) -> Result<()> {
     let status = Command::new(kubeconfig::oc_cli_path())
         .arg("whoami")
         .env("KUBECONFIG", kubeconfig_path)
@@ -261,7 +193,10 @@ pub(super) fn test_ocp_auth(kubeconfig_path: &Path, timeout_secs: u64) -> Result
     Ok(())
 }
 
-pub(super) fn refresh_ocp_token(kubeconfig_path: &Path, context_name: &str) -> Result<()> {
+pub(super) fn refresh_ocp_token(
+    kubeconfig_path: &std::path::Path,
+    context_name: &str,
+) -> Result<()> {
     let mut cmd = std::process::Command::new(kubeconfig::oc_cli_path());
     cmd.arg("whoami");
     cmd.arg("-t");

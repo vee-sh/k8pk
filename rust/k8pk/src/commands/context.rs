@@ -2,29 +2,92 @@
 
 use crate::error::{K8pkError, Result};
 use crate::kubeconfig;
+use crate::shell;
 use crate::state::CurrentState;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{IsTerminal, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
+/// Apply the chosen output mode (env/json/spawn/default) for a context switch.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_context_output(
+    output: Option<&str>,
+    context: &str,
+    namespace: Option<&str>,
+    kubeconfig: &Path,
+    no_tmux: bool,
+    shell_name: &str,
+    detail: bool,
+    print_env: bool,
+) -> Result<()> {
+    let do_spawn = |ctx: &str, ns: Option<&str>, kc: &Path| -> Result<()> {
+        if no_tmux {
+            shell::spawn_shell_no_tmux(ctx, ns, kc)
+        } else {
+            shell::spawn_shell(ctx, ns, kc)
+        }
+    };
+    match output {
+        Some("env") => {
+            print_env_exports(
+                context, namespace, kubeconfig, shell_name, detail, print_env,
+            )?;
+        }
+        Some("json") => {
+            let j = serde_json::json!({
+                "context": context,
+                "namespace": namespace,
+                "kubeconfig": kubeconfig.to_string_lossy(),
+            });
+            println!("{}", serde_json::to_string_pretty(&j)?);
+        }
+        Some("spawn") => {
+            do_spawn(context, namespace, kubeconfig)?;
+        }
+        None => {
+            if io::stdout().is_terminal() {
+                do_spawn(context, namespace, kubeconfig)?;
+            } else {
+                print_env_exports(
+                    context, namespace, kubeconfig, shell_name, detail, print_env,
+                )?;
+            }
+        }
+        Some(other) => {
+            return Err(K8pkError::UnknownOutputFormat(other.to_string()));
+        }
+    }
+    Ok(())
+}
+
 /// Check session liveness and re-login if expired.
 /// Returns the (possibly refreshed) kubeconfig path.
-/// This consolidates the duplicated check+relogin pattern from Pick and Ctx handlers.
 ///
-/// When a TLS certificate error is detected interactively, the user is offered
-/// to retry with `insecure-skip-tls-verify: true` on the isolated kubeconfig.
+/// Skips the API probe when `no_session_check` is set, `K8PK_NO_SESSION_CHECK` is
+/// set, or a successful check for this context is still within the TTL
+/// (`pick.session_check_ttl`, default 300s; override with `K8PK_SESSION_CHECK_TTL`).
 pub fn ensure_session_alive(
     kubeconfig: &std::path::Path,
     context: &str,
     namespace: Option<&str>,
     paths: &[PathBuf],
+    no_session_check: bool,
+    // When set, skip re-loading config for the session-check TTL.
+    session_check_ttl: Option<u64>,
 ) -> Result<PathBuf> {
     use crate::commands::login;
 
-    match login::check_session_alive(kubeconfig, context, login::SESSION_CHECK_TIMEOUT_SECS) {
-        Ok(()) => return Ok(kubeconfig.to_path_buf()),
+    if should_skip_session_check(no_session_check, context, session_check_ttl) {
+        return Ok(kubeconfig.to_path_buf());
+    }
+
+    match login::test_k8s_auth(kubeconfig, context, login::SESSION_CHECK_TIMEOUT_SECS) {
+        Ok(()) => {
+            mark_session_ok(context);
+            return Ok(kubeconfig.to_path_buf());
+        }
         Err(K8pkError::TlsCertificateError { .. }) => {
             // TLS error -- offer to retry with insecure if interactive
             if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
@@ -38,14 +101,11 @@ pub fn ensure_session_alive(
                 if confirm {
                     apply_insecure_to_kubeconfig(kubeconfig)?;
                     // Re-check with insecure now applied
-                    if login::check_session_alive(
-                        kubeconfig,
-                        context,
-                        login::SESSION_CHECK_TIMEOUT_SECS,
-                    )
-                    .is_ok()
+                    if login::test_k8s_auth(kubeconfig, context, login::SESSION_CHECK_TIMEOUT_SECS)
+                        .is_ok()
                     {
                         eprintln!("Connected (insecure mode).");
+                        mark_session_ok(context);
                         // Offer to persist so this context always skips TLS (no prompt next time)
                         let persist = inquire::Confirm::new(&format!(
                             "Always skip TLS for '{}'? (saves to insecure_contexts in config)",
@@ -82,12 +142,99 @@ pub fn ensure_session_alive(
     if std::io::stdin().is_terminal() {
         let written = login::try_relogin(context, namespace, paths)?;
         if let Some(ref p) = written {
+            mark_session_ok(context);
             Ok(p.clone())
         } else {
             ensure_isolated_kubeconfig(context, namespace, paths)
         }
     } else {
         Err(K8pkError::SessionExpired(context.to_string()))
+    }
+}
+
+fn session_check_ttl_secs(override_ttl: Option<u64>) -> u64 {
+    if let Ok(v) = std::env::var("K8PK_SESSION_CHECK_TTL") {
+        if let Ok(n) = v.parse::<u64>() {
+            return n;
+        }
+    }
+    if let Some(n) = override_ttl {
+        return n;
+    }
+    crate::config::load()
+        .ok()
+        .and_then(|c| c.pick)
+        .map(|p| p.session_check_ttl)
+        .unwrap_or(300)
+}
+
+fn should_skip_session_check(
+    explicit: bool,
+    context: &str,
+    session_check_ttl: Option<u64>,
+) -> bool {
+    if explicit {
+        return true;
+    }
+    if std::env::var_os("K8PK_NO_SESSION_CHECK").is_some_and(|v| v != "0" && !v.is_empty()) {
+        return true;
+    }
+    recent_session_ok(context, session_check_ttl_secs(session_check_ttl))
+}
+
+fn session_ok_path() -> Option<PathBuf> {
+    let home = dirs_next::home_dir()?;
+    Some(home.join(".local/share/k8pk/session_ok.json"))
+}
+
+fn recent_session_ok(context: &str, ttl: u64) -> bool {
+    if ttl == 0 {
+        return false;
+    }
+    let Some(path) = session_ok_path() else {
+        return false;
+    };
+    let Ok(data) = fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, u64>>(&data) else {
+        return false;
+    };
+    let Some(&ts) = map.get(context) else {
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    now.saturating_sub(ts) < ttl
+}
+
+fn mark_session_ok(context: &str) {
+    let Some(path) = session_ok_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut map: std::collections::HashMap<String, u64> = fs::read_to_string(&path)
+        .ok()
+        .and_then(|d| serde_json::from_str(&d).ok())
+        .unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    map.insert(context.to_string(), now);
+    // Keep map bounded
+    if map.len() > 64 {
+        let mut entries: Vec<_> = map.into_iter().collect();
+        entries.sort_by_key(|(_, ts)| std::cmp::Reverse(*ts));
+        entries.truncate(64);
+        map = entries.into_iter().collect();
+    }
+    if let Ok(json) = serde_json::to_string(&map) {
+        let _ = kubeconfig::write_restricted(&path, &json);
     }
 }
 
@@ -223,23 +370,24 @@ pub fn ensure_isolated_kubeconfig(
     kubeconfig_paths: &[PathBuf],
 ) -> Result<PathBuf> {
     let merged = kubeconfig::load_merged(kubeconfig_paths)?;
-    ensure_isolated_kubeconfig_from(&merged, context, namespace)
+    ensure_isolated_kubeconfig_from(&merged, context, namespace, None)
 }
 
 /// Like ensure_isolated_kubeconfig but accepts an already-loaded KubeConfig,
 /// avoiding redundant disk I/O when the caller already has the merged config.
+/// Pass `config` on hot paths to avoid a second config disk read for insecure_contexts.
 pub fn ensure_isolated_kubeconfig_from(
     merged: &kubeconfig::KubeConfig,
     context: &str,
     namespace: Option<&str>,
+    config: Option<&crate::config::K8pkConfig>,
 ) -> Result<PathBuf> {
     let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
     let base = home.join(".local/share/k8pk");
     fs::create_dir_all(&base)?;
 
-    // Opportunistic garbage collection: prune stale kubeconfig files (> 7 days)
-    // Run in background-like fashion: ignore errors, don't block
-    let _ = prune_stale_kubeconfigs(&base, 7);
+    // ponytail: prune at most once per day
+    maybe_prune_stale(&base);
 
     let ctx_sanitized = kubeconfig::sanitize_filename(context);
     let ns_sanitized = namespace
@@ -253,24 +401,48 @@ pub fn ensure_isolated_kubeconfig_from(
 
     let out = base.join(&filename);
 
-    // Prune to just this context
     let mut pruned = kubeconfig::prune_to_context(merged, context)?;
 
-    // Set namespace if provided
     if let Some(ns) = namespace {
         kubeconfig::set_context_namespace(&mut pruned, context, ns)?;
     }
 
-    // Apply insecure-skip-tls-verify if the context matches any insecure_contexts pattern
-    if crate::config::is_context_insecure(context) {
+    let insecure = match config {
+        Some(c) => crate::config::is_context_insecure_with(c, context),
+        None => crate::config::is_context_insecure(context),
+    };
+    if insecure {
         kubeconfig::set_cluster_insecure(&mut pruned);
     }
 
-    // Write to file with restrictive permissions
     let yaml = serde_yaml_ng::to_string(&pruned)?;
+    // Skip rewrite when unchanged
+    if out.exists() {
+        if let Ok(existing) = fs::read_to_string(&out) {
+            if existing == yaml {
+                return Ok(out);
+            }
+        }
+    }
     kubeconfig::write_restricted(&out, &yaml)?;
 
     Ok(out)
+}
+
+fn maybe_prune_stale(base: &Path) {
+    let stamp = base.join(".prune_stamp");
+    let day = std::time::Duration::from_secs(86400);
+    let fresh = stamp
+        .metadata()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+        .is_some_and(|age| age < day);
+    if fresh {
+        return;
+    }
+    let _ = prune_stale_kubeconfigs(base, 7);
+    let _ = fs::write(&stamp, b"");
 }
 
 /// Force insecure-skip-tls-verify on an existing isolated kubeconfig file.
@@ -293,8 +465,7 @@ fn prune_stale_kubeconfigs(dir: &Path, max_age_days: u64) -> Result<()> {
 
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
-        Err(e) => {
-            tracing::debug!(dir = %dir.display(), error = %e, "cannot read dir for pruning");
+        Err(_e) => {
             return Ok(());
         }
     };
@@ -314,22 +485,12 @@ fn prune_stale_kubeconfigs(dir: &Path, max_age_days: u64) -> Result<()> {
                 if let Ok(age) = now.duration_since(modified) {
                     if age > max_age {
                         if let Err(e) = fs::remove_file(&path) {
-                            tracing::warn!(
-                                path = %path.display(),
-                                error = %e,
-                                "failed to prune stale kubeconfig"
-                            );
+                            eprintln!("warning: failed to prune {}: {}", path.display(), e);
                         }
                     }
                 }
             }
-            Err(e) => {
-                tracing::debug!(
-                    path = %path.display(),
-                    error = %e,
-                    "cannot read metadata for pruning"
-                );
-            }
+            Err(_e) => {}
         }
     }
     Ok(())
@@ -375,7 +536,7 @@ pub fn run_hook_command_with_env(command: &str, extra: &[(&str, &str)]) -> Resul
     cmd.env("K8PK_HOOK", "1");
     let status = cmd.status()?;
     if !status.success() {
-        tracing::warn!(command = %command, "hook command failed");
+        eprintln!("warning: hook command failed: {}", command);
     }
     Ok(())
 }
@@ -465,17 +626,20 @@ pub fn print_env_exports(
     // This prevents depth from accumulating when switching contexts
     let new_depth = 1;
 
-    // Always normalize context name for display (automatic normalization)
+    // Isolated kubeconfig is already in hand — use server URL for accurate labels.
     let display_context = {
-        // Load the kubeconfig to get server URL for better detection
-        let content = std::fs::read_to_string(kubeconfig)?;
-        let cfg: crate::kubeconfig::KubeConfig = serde_yaml_ng::from_str(&content)?;
-        let server_url = cfg
-            .clusters
-            .first()
-            .and_then(|c| crate::kubeconfig::extract_server_url_from_cluster(&c.rest));
-        let cluster_type = crate::kubeconfig::detect_cluster_type(context, server_url.as_deref());
-        crate::kubeconfig::friendly_context_name(context, cluster_type)
+        let server_url = fs::read_to_string(kubeconfig)
+            .ok()
+            .and_then(|c| serde_yaml_ng::from_str::<kubeconfig::KubeConfig>(&c).ok())
+            .and_then(|cfg| {
+                cfg.clusters
+                    .first()
+                    .and_then(|c| kubeconfig::extract_server_url_from_cluster(&c.rest))
+            });
+        kubeconfig::friendly_context_name(
+            context,
+            kubeconfig::detect_cluster_type(context, server_url.as_deref()),
+        )
     };
 
     // Isolate cache per context to avoid stale API discovery (fixes oc/kubectl cache conflicts)
@@ -528,14 +692,19 @@ pub fn print_env_exports(
         }
     };
 
-    // Append session registration so eval-based switches are tracked.
-    let exports_with_reg = match shell {
-        "fish" => format!("{}k8pk sessions register 2>/dev/null; or true;\n", exports),
-        _ => format!("{}k8pk sessions register 2>/dev/null || true;\n", exports),
-    };
+    // Register only when exports are actually consumed (pipe/tempfile eval).
+    // TTY stdout means the user is just viewing exports — don't leave a ghost session.
+    if !std::io::stdout().is_terminal() {
+        let _ = crate::commands::sessions::register(
+            context,
+            namespace,
+            &kubeconfig.display().to_string(),
+            None,
+        );
+    }
 
     if verbose {
-        eprintln!("{}", exports_with_reg);
+        eprintln!("{}", exports);
     }
 
     // If stdout is a terminal, the user is probably running this directly
@@ -552,7 +721,7 @@ pub fn print_env_exports(
         }
     }
 
-    print!("{}", exports_with_reg);
+    print!("{}", exports);
     Ok(())
 }
 

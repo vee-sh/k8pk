@@ -103,17 +103,12 @@ local function get_k8pk_env(context, namespace)
   return env
 end
 
--- Pretty label for contexts (use k8pk's pretty labels if available, otherwise simplify)
+-- Pretty label for contexts.
+-- ponytail: full labels via Rust friendly_context_name; Lua keeps EKS ARN only
 local function pretty_label(ctx)
-  -- EKS ARN: arn:aws:eks:region:acct:cluster/name -> aws:region/name
   local region, name = string.match(ctx, '^arn:aws:eks:([^:]+):[^:]+:cluster/(.+)$')
   if region and name then
     return 'aws:' .. region .. '/' .. name
-  end
-  -- OpenShift: project/api-host:port/user -> project@host
-  local proj, host = string.match(ctx, '^([^/]+)/([^/:]+):?%d*/')
-  if proj and host then
-    return proj .. '@' .. host
   end
   return ctx
 end

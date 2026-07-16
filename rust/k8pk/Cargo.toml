@@ -1,6 +1,6 @@
 [package]
 name = "k8pk"
-version = "1.15.1"
+version = "1.16.0"
 edition = "2021"
 license = "MIT"
 description = "Fast Kubernetes context and namespace switcher with session isolation"
@@ -10,7 +10,6 @@ keywords = ["kubernetes", "kubectl", "kubeconfig", "context", "namespace"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -23,11 +22,7 @@ globset = "0.4"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 clap_complete = "4.5"
 tempfile = "3.8"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-indicatif = "0.17"  # Progress spinners
 shell-words = "1.1"
-colored = "2.1"  # ANSI colors for prompts and status output
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

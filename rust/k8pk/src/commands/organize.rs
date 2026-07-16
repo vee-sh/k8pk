@@ -97,9 +97,9 @@ pub fn organize_by_cluster_type(
                 let has_cluster = cfg.clusters.iter().any(|c| c.name == cluster_name);
                 let has_user = cfg.users.iter().any(|u| u.name == user_name);
                 if !has_cluster || !has_user {
-                    tracing::warn!(
-                        context = ctx.name,
-                        "skipping context with missing cluster/user refs"
+                    eprintln!(
+                        "warning: skipping context {} with missing cluster/user refs",
+                        ctx.name
                     );
                     continue;
                 }
@@ -115,7 +115,7 @@ pub fn organize_by_cluster_type(
                     }
                 }
             } else {
-                tracing::warn!(context = ctx.name, "skipping context with invalid refs");
+                eprintln!("warning: skipping context {} with invalid refs", ctx.name);
             }
         }
 

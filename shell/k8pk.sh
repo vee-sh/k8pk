@@ -17,18 +17,20 @@ _k8pk_exit_cleanup() {
 }
 trap _k8pk_exit_cleanup EXIT
 
-# Build k8pk args with kubeconfig directories if set
-_k8pk_args() {
-  local args=""
-  if [ -n "$K8PK_CONFIG_DIRS" ]; then
-    IFS=':' read -ra DIRS <<< "$K8PK_CONFIG_DIRS"
+# Build --kubeconfig-dir args from K8PK_CONFIG_DIRS into _k8pk_extra_args (array).
+_k8pk_build_args() {
+  _k8pk_extra_args=()
+  if [ -n "${K8PK_CONFIG_DIRS:-}" ]; then
+    local IFS=':'
+    local -a DIRS
+    read -ra DIRS <<< "$K8PK_CONFIG_DIRS"
+    local dir
     for dir in "${DIRS[@]}"; do
       if [ -n "$dir" ]; then
-        args="$args --kubeconfig-dir $dir"
+        _k8pk_extra_args+=(--kubeconfig-dir "$dir")
       fi
     done
   fi
-  echo "$args"
 }
 
 # Check k8pk binary is installed
@@ -44,7 +46,8 @@ _k8pk_check() {
 _k8pk_eval_cmd() {
   local tmpfile exit_code=0
   tmpfile=$(mktemp) || { echo "k8pk: mktemp failed" >&2; return 1; }
-  if k8pk $(_k8pk_args) "$@" > "$tmpfile"; then
+  _k8pk_build_args
+  if k8pk "${_k8pk_extra_args[@]}" "$@" > "$tmpfile"; then
     eval "$(cat "$tmpfile")"
   else
     exit_code=$?
@@ -134,7 +137,7 @@ kswitch() {
 # Clean up k8pk session (unset all k8pk environment variables)
 kclean() {
   _k8pk_check || return $?
-  eval "$(k8pk $(_k8pk_args) clean)"
+  _k8pk_eval_cmd clean
 }
 
 # List active k8pk sessions across terminals
@@ -146,84 +149,54 @@ ksessions() {
 # ---------------------------------------------------------------------------
 # Session guards -- prevent accidental kubeconfig corruption from external
 # CLI tools (oc login, gcloud, aws eks) that write to KUBECONFIG globally.
-#
-# These wrappers are only active inside a k8pk session (K8PK_CONTEXT is set).
-# Outside a k8pk session they pass through transparently.
-#
-# To bypass a guard once:  command oc login ...
-# To disable guards:       export K8PK_NO_GUARDS=1
+# Active only when K8PK_CONTEXT is set. Bypass: K8PK_NO_GUARDS=1 or `command ...`
 # ---------------------------------------------------------------------------
 
-_k8pk_guard_oc() {
-  if [ -n "$K8PK_NO_GUARDS" ] || [ -z "$K8PK_CONTEXT" ]; then
-    command oc "$@"
-    return $?
+_k8pk_guard_warn() {
+  echo "k8pk guard: '$1' overwrites KUBECONFIG (context: $K8PK_CONTEXT). Use '$2' instead, or bypass with 'K8PK_NO_GUARDS=1'." >&2
+}
+
+_k8pk_guard_confirm() {
+  if [ -t 0 ]; then
+    printf "  Continue anyway? [y/N] " >&2
+    read -r _reply
+    case "$_reply" in [Yy]*) return 0 ;; *) return 1 ;; esac
+  else
+    return 1
   fi
+}
+
+_k8pk_guard_oc() {
+  if [ -n "$K8PK_NO_GUARDS" ] || [ -z "$K8PK_CONTEXT" ]; then command oc "$@"; return $?; fi
   if [ "$1" = "login" ]; then
-    echo "k8pk guard: 'oc login' overwrites KUBECONFIG (context: $K8PK_CONTEXT). Use 'k8pk login --type ocp <server>' instead, or bypass with 'K8PK_NO_GUARDS=1 oc login ...'." >&2
-    if [ -t 0 ]; then
-      printf "  Continue anyway? [y/N] " >&2
-      read -r _reply
-      case "$_reply" in
-        [Yy]*) command oc "$@"; return $? ;;
-        *) return 1 ;;
-      esac
-    else
-      return 1
-    fi
+    _k8pk_guard_warn "oc login" "k8pk login --type ocp <server>"
+    _k8pk_guard_confirm && { command oc "$@"; return $?; } || return 1
   fi
   command oc "$@"
 }
 
 _k8pk_guard_gcloud() {
-  if [ -n "$K8PK_NO_GUARDS" ] || [ -z "$K8PK_CONTEXT" ]; then
-    command gcloud "$@"
-    return $?
-  fi
+  if [ -n "$K8PK_NO_GUARDS" ] || [ -z "$K8PK_CONTEXT" ]; then command gcloud "$@"; return $?; fi
   case "$*" in
     *container*clusters*get-credentials*)
-      echo "k8pk guard: 'gcloud ... get-credentials' overwrites KUBECONFIG (context: $K8PK_CONTEXT). Use 'k8pk login --type gke <server>' instead, or bypass with 'K8PK_NO_GUARDS=1 gcloud ...'." >&2
-      if [ -t 0 ]; then
-        printf "  Continue anyway? [y/N] " >&2
-        read -r _reply
-        case "$_reply" in
-          [Yy]*) command gcloud "$@"; return $? ;;
-          *) return 1 ;;
-        esac
-      else
-        return 1
-      fi
+      _k8pk_guard_warn "gcloud ... get-credentials" "k8pk login --type gke <server>"
+      _k8pk_guard_confirm && { command gcloud "$@"; return $?; } || return 1
       ;;
   esac
   command gcloud "$@"
 }
 
 _k8pk_guard_aws() {
-  if [ -n "$K8PK_NO_GUARDS" ] || [ -z "$K8PK_CONTEXT" ]; then
-    command aws "$@"
-    return $?
-  fi
+  if [ -n "$K8PK_NO_GUARDS" ] || [ -z "$K8PK_CONTEXT" ]; then command aws "$@"; return $?; fi
   case "$*" in
     *eks*update-kubeconfig*)
-      echo "k8pk guard: 'aws eks update-kubeconfig' overwrites KUBECONFIG (context: $K8PK_CONTEXT). Use 'k8pk login --type k8s --exec-preset aws-eks --exec-cluster <name>' instead, or bypass with 'K8PK_NO_GUARDS=1 aws ...'." >&2
-      if [ -t 0 ]; then
-        printf "  Continue anyway? [y/N] " >&2
-        read -r _reply
-        case "$_reply" in
-          [Yy]*) command aws "$@"; return $? ;;
-          *) return 1 ;;
-        esac
-      else
-        return 1
-      fi
+      _k8pk_guard_warn "aws eks update-kubeconfig" "k8pk login --type k8s --exec-preset aws-eks --exec-cluster <name>"
+      _k8pk_guard_confirm && { command aws "$@"; return $?; } || return 1
       ;;
   esac
   command aws "$@"
 }
 
-# Install guards as shell functions (override the bare command names).
-# The functions check K8PK_CONTEXT at call time, so they are transparent
-# when not in a k8pk session.
 oc()     { _k8pk_guard_oc "$@"; }
 gcloud() { _k8pk_guard_gcloud "$@"; }
 aws()    { _k8pk_guard_aws "$@"; }

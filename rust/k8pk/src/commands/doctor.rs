@@ -3,10 +3,8 @@
 use crate::config;
 use crate::error::Result;
 use crate::kubeconfig::{self, KubeConfig};
-use colored::Colorize;
 use std::collections::HashSet;
 use std::fs;
-use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -55,23 +53,13 @@ impl DiagnosticResult {
 }
 
 pub fn run(fix: bool, json: bool) -> Result<()> {
-    // Respect NO_COLOR and non-TTY stdout (accessibility, CI, dumb terminals).
-    if std::env::var_os("NO_COLOR").is_some() || !std::io::stdout().is_terminal() {
-        colored::control::set_override(false);
-    }
+    let mut results = vec![check_kubectl(), check_oc(), check_k8pk_config()];
 
-    let mut results = vec![
-        // Check kubectl installation
-        check_kubectl(),
-        // Check oc installation (optional)
-        check_oc(),
-        // Check gcloud (optional)
-        check_gcloud(),
-        // Check GKE auth plugin (needed for GKE clusters)
-        check_gke_auth_plugin(),
-        // Check k8pk config
-        check_k8pk_config(),
-    ];
+    // ponytail: only probe gcloud/GKE plugin when relevant
+    if should_check_gke() {
+        results.push(check_gcloud());
+        results.push(check_gke_auth_plugin());
+    }
 
     // Check kubeconfig files
     results.extend(check_kubeconfig_files());
@@ -103,7 +91,7 @@ pub fn run(fix: bool, json: bool) -> Result<()> {
     if fix {
         let fixed = apply_fixes(&mut results);
         if !json && fixed > 0 {
-            println!("{}", format!("Applied {} fix(es)", fixed).bright_green());
+            println!("Applied {} fix(es)", fixed);
             println!();
         }
     }
@@ -173,6 +161,26 @@ fn check_oc() -> DiagnosticResult {
             ),
         ),
     }
+}
+
+fn should_check_gke() -> bool {
+    if which::which("gcloud").is_ok() {
+        return true;
+    }
+    // Any context that looks like GKE?
+    let Ok(config) = config::load() else {
+        return false;
+    };
+    let Ok(paths) = kubeconfig::resolve_paths(None, &[], &config) else {
+        return false;
+    };
+    let Ok(merged) = kubeconfig::load_merged(&paths) else {
+        return false;
+    };
+    merged
+        .context_names()
+        .iter()
+        .any(|n| n.starts_with("gke_") || n.starts_with("gke-") || n.to_lowercase().contains("gke"))
 }
 
 fn check_gcloud() -> DiagnosticResult {
@@ -479,13 +487,13 @@ fn check_shell_integration() -> DiagnosticResult {
     DiagnosticResult::warning(
         "shell integration",
         "k8pk shell integration not detected",
-        Some("Run 'k8pk alias --install' to set up shell aliases and eval integration"),
+        Some("Source shell/k8pk.sh in your shell rc, or set up eval wrappers manually"),
     )
 }
 
 fn print_results(results: &[DiagnosticResult], _fix: bool) {
-    println!("{}", "k8pk Doctor".bright_cyan().bold());
-    println!("{}", "===========".bright_cyan());
+    println!("k8pk Doctor");
+    println!("===========");
     println!();
 
     let mut ok_count = 0;
@@ -493,36 +501,26 @@ fn print_results(results: &[DiagnosticResult], _fix: bool) {
     let mut err_count = 0;
 
     for result in results {
-        let (icon, color) = match result.status {
+        let icon = match result.status {
             DiagStatus::Ok => {
                 ok_count += 1;
-                ("OK".bright_green(), "green")
+                "OK"
             }
             DiagStatus::Warning => {
                 warn_count += 1;
-                ("WARN".bright_yellow(), "yellow")
+                "WARN"
             }
             DiagStatus::Error => {
                 err_count += 1;
-                ("ERR".bright_red(), "red")
+                "ERR"
             }
         };
 
-        println!(
-            "[{}] {}: {}",
-            icon,
-            result.name.bright_white(),
-            match color {
-                "green" => result.message.bright_green().to_string(),
-                "yellow" => result.message.bright_yellow().to_string(),
-                "red" => result.message.bright_red().to_string(),
-                _ => result.message.clone(),
-            }
-        );
+        println!("[{}] {}: {}", icon, result.name, result.message);
 
         if let Some(hint) = &result.fix_hint {
             if result.status != DiagStatus::Ok {
-                println!("       {}", format!("Hint: {}", hint).dimmed());
+                println!("       Hint: {}", hint);
             }
         }
     }
@@ -530,26 +528,18 @@ fn print_results(results: &[DiagnosticResult], _fix: bool) {
     println!();
     println!(
         "Summary: {} OK, {} warnings, {} errors",
-        ok_count.to_string().bright_green(),
-        warn_count.to_string().bright_yellow(),
-        err_count.to_string().bright_red()
+        ok_count, warn_count, err_count
     );
 
     if err_count > 0 {
         println!();
-        println!(
-            "{}",
-            "Some issues need attention. Check the hints above.".bright_yellow()
-        );
+        println!("Some issues need attention. Check the hints above.");
     } else if warn_count > 0 {
         println!();
-        println!(
-            "{}",
-            "Everything looks good! Some optional improvements available.".bright_green()
-        );
+        println!("Everything looks good! Some optional improvements available.");
     } else {
         println!();
-        println!("{}", "All checks passed!".bright_green());
+        println!("All checks passed!");
     }
 }
 

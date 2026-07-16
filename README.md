@@ -231,7 +231,7 @@ k8pk info all      # JSON with session info + oc resolution
 k8pk env --context dev --namespace prod
 
 # Spawn a new shell with context set
-k8pk spawn --context dev --namespace prod
+k8pk ctx dev --namespace prod -r
 
 # List namespaces/projects (auto-detects oc or kubectl)
 k8pk namespaces --context dev
@@ -272,12 +272,6 @@ k8pk rm                           # Interactive multi-select (space to toggle, E
 k8pk rm 'staging-*'               # Pattern match; disambiguate if many matches
 k8pk rm my-cluster --yes          # Skip confirmation (scripts)
 k8pk rm --dry-run my-cluster      # Preview only
-
-# Advanced: remove from one file explicitly (same engine as `k8pk rm`)
-k8pk remove-context --from-file ~/.kube/config --interactive
-k8pk remove-context --from-file ~/.kube/config --context "my-context"
-k8pk remove-context --from-file ~/.kube/config --interactive --remove-orphaned
-k8pk remove-context --from-file ~/.kube/config --interactive --dry-run
 
 # Rename a context
 k8pk rename-context --from-file ~/.kube/config --context "old-name" --new-name "new-name"

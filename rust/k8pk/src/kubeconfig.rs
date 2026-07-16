@@ -8,26 +8,7 @@ use serde_yaml_ng::Value as Yaml;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::SystemTime;
-
-/// Cached merge result: (file-path, mtime) fingerprint + parsed config
-static MERGE_CACHE: Mutex<Option<MergeCache>> = Mutex::new(None);
-
-struct MergeCache {
-    fingerprint: Vec<(PathBuf, SystemTime)>,
-    config: KubeConfig,
-}
-
-/// Build a fingerprint of (path, mtime) for cache invalidation.
-fn file_fingerprint(paths: &[PathBuf]) -> Option<Vec<(PathBuf, SystemTime)>> {
-    let mut fp = Vec::with_capacity(paths.len());
-    for p in paths {
-        let mtime = fs::metadata(p).ok()?.modified().ok()?;
-        fp.push((p.clone(), mtime));
-    }
-    Some(fp)
-}
 
 /// Write file content with 0o600 permissions (owner read/write only).
 /// Use this for any file that may contain credentials (kubeconfigs, vault, etc.).
@@ -242,37 +223,8 @@ pub fn prune_to_context(cfg: &KubeConfig, name: &str) -> Result<KubeConfig> {
 
 /// Load and merge multiple kubeconfig files.
 /// Deduplicates by name (first occurrence wins, matching kubectl behavior).
-/// Results are cached by file path + mtime; subsequent calls with unchanged
-/// files return the cached config without re-parsing.
+/// ponytail: no merge cache; mtime fingerprint was more code than benefit for CLI lifetime
 pub fn load_merged(paths: &[PathBuf]) -> Result<KubeConfig> {
-    // Fast path: check mtime-based cache
-    if let Some(fp) = file_fingerprint(paths) {
-        if let Ok(guard) = MERGE_CACHE.lock() {
-            if let Some(ref cached) = *guard {
-                if cached.fingerprint == fp {
-                    return Ok(cached.config.clone());
-                }
-            }
-        }
-    }
-
-    let config = load_merged_uncached(paths)?;
-
-    // Store in cache
-    if let Some(fp) = file_fingerprint(paths) {
-        if let Ok(mut guard) = MERGE_CACHE.lock() {
-            *guard = Some(MergeCache {
-                fingerprint: fp,
-                config: config.clone(),
-            });
-        }
-    }
-
-    Ok(config)
-}
-
-/// Uncached implementation of load_merged.
-fn load_merged_uncached(paths: &[PathBuf]) -> Result<KubeConfig> {
     let mut merged = KubeConfig::default();
     let mut seen_clusters = std::collections::HashSet::new();
     let mut seen_contexts = std::collections::HashSet::new();
@@ -589,7 +541,7 @@ pub fn oc_cli_info_json() -> serde_json::Value {
     })
 }
 
-/// Find the kubernetes CLI (prefers `oc` over `kubectl`; honors **`K8PK_OC`** like [`oc_cli_path`])
+/// Find the Kubernetes CLI (prefers `oc` over `kubectl`; honors **`K8PK_OC`** like [`oc_cli_path`])
 pub fn find_k8s_cli() -> Result<String> {
     if std::env::var_os("K8PK_OC").is_some_and(|s| !s.is_empty()) {
         return Ok(oc_cli_path().to_string_lossy().into_owned());
@@ -603,49 +555,73 @@ pub fn find_k8s_cli() -> Result<String> {
     }
 }
 
-/// List namespaces via kubectl/oc (with timeout)
-pub fn list_namespaces(context: &str, kubeconfig_env: Option<&str>) -> Result<Vec<String>> {
-    use indicatif::{ProgressBar, ProgressStyle};
-    use std::io::IsTerminal;
-
-    let cli = find_k8s_cli()?;
-    let mut cmd = ProcCommand::new(&cli);
-    // Add timeout to prevent hanging on unreachable clusters
-    cmd.args([
-        "--context",
-        context,
-        "--request-timeout=10s",
-        "get",
-        "ns",
-        "-o",
-        "json",
-    ]);
-    if let Some(kc) = kubeconfig_env {
-        cmd.env("KUBECONFIG", kc);
-    }
-
-    // Show spinner if interactive
-    let spinner = if std::io::stderr().is_terminal() {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.cyan} {msg}")
-                .unwrap_or_else(|_| ProgressStyle::default_spinner()),
-        );
-        pb.set_message(format!("Fetching namespaces from {}...", context));
-        pb.enable_steady_tick(std::time::Duration::from_millis(100));
-        Some(pb)
+/// Fast CLI for probes / ns listing: prefer `kubectl` (faster startup than `oc`).
+pub fn find_fast_cli() -> Result<String> {
+    if which::which("kubectl").is_ok() {
+        Ok("kubectl".to_string())
     } else {
-        None
+        find_k8s_cli()
+    }
+}
+
+const NS_LIST_TIMEOUT_SECS: u64 = 5;
+const NS_CACHE_TTL_SECS: u64 = 60;
+
+fn ns_cache_path(context: &str) -> Option<PathBuf> {
+    let home = dirs_next::home_dir()?;
+    Some(
+        home.join(".local/share/k8pk/ns_cache")
+            .join(format!("{}.json", sanitize_filename(context))),
+    )
+}
+
+fn read_ns_cache(context: &str) -> Option<Vec<String>> {
+    let path = ns_cache_path(context)?;
+    let meta = fs::metadata(&path).ok()?;
+    let modified = meta.modified().ok()?;
+    let age = SystemTime::now().duration_since(modified).ok()?.as_secs();
+    if age > NS_CACHE_TTL_SECS {
+        return None;
+    }
+    let data = fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+fn write_ns_cache(context: &str, namespaces: &[String]) {
+    let Some(path) = ns_cache_path(context) else {
+        return;
     };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(namespaces) {
+        let _ = write_restricted(&path, &json);
+    }
+}
 
-    let output = cmd.output();
-
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
+/// List namespaces via kubectl. `kubeconfig` may be a single file path or a
+/// colon-separated KUBECONFIG list.
+pub fn list_namespaces(context: &str, kubeconfig: Option<&str>) -> Result<Vec<String>> {
+    if let Some(cached) = read_ns_cache(context) {
+        return Ok(cached);
     }
 
-    let output = output?;
+    let cli = find_fast_cli()?;
+    let timeout = format!("--request-timeout={}s", NS_LIST_TIMEOUT_SECS);
+    let mut cmd = ProcCommand::new(&cli);
+    // ponytail: -o name is lighter than full JSON
+    cmd.args(["--context", context, &timeout, "get", "ns", "-o", "name"]);
+
+    // ponytail: single-file --kubeconfig avoids parsing the mega merge list
+    if let Some(kc) = kubeconfig {
+        if !kc.contains(':') && Path::new(kc).is_file() {
+            cmd.arg("--kubeconfig").arg(kc);
+        } else {
+            cmd.env("KUBECONFIG", kc);
+        }
+    }
+
+    let output = cmd.output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(K8pkError::CommandFailed(format!(
@@ -655,22 +631,23 @@ pub fn list_namespaces(context: &str, kubeconfig_env: Option<&str>) -> Result<Ve
         )));
     }
 
-    let v: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    let mut namespaces = Vec::new();
-
-    if let Some(items) = v.get("items").and_then(|x| x.as_array()) {
-        for item in items {
-            if let Some(name) = item
-                .get("metadata")
-                .and_then(|m| m.get("name"))
-                .and_then(|n| n.as_str())
-            {
-                namespaces.push(name.to_string());
+    let mut namespaces: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let name = line
+                .trim()
+                .strip_prefix("namespace/")
+                .unwrap_or(line.trim());
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
             }
-        }
-    }
+        })
+        .collect();
 
     namespaces.sort();
+    write_ns_cache(context, &namespaces);
     Ok(namespaces)
 }
 
@@ -684,10 +661,31 @@ pub fn sanitize_filename(s: &str) -> String {
         .collect()
 }
 
+/// Distinctive URL heuristics shared with login type detection.
+/// Returns None when the URL alone is ambiguous (e.g. bare `:6443`).
+pub fn detect_cluster_type_from_url(url: &str) -> Option<&'static str> {
+    let lower = url.to_lowercase();
+    if lower.contains("/k8s/clusters/") || lower.contains("rancher") {
+        return Some("rancher");
+    }
+    if url.contains(".eks.amazonaws.com") {
+        return Some("eks");
+    }
+    if url.contains(".container.googleapis.com") || url.contains("gke.io") {
+        return Some("gke");
+    }
+    if url.contains(".azmk8s.io") || lower.contains("azure") {
+        return Some("aks");
+    }
+    if lower.contains("openshift") || lower.contains("ocp") {
+        return Some("ocp");
+    }
+    None
+}
+
 /// Detect cluster type from context name or server URL
 pub fn detect_cluster_type(context_name: &str, server_url: Option<&str>) -> &'static str {
     let ctx_lower = context_name.to_lowercase();
-    // Check context name patterns
     if context_name.starts_with("arn:aws:eks:") {
         return "eks";
     }
@@ -704,23 +702,13 @@ pub fn detect_cluster_type(context_name: &str, server_url: Option<&str>) -> &'st
         return "ocp";
     }
 
-    // Check server URL if available
     if let Some(url) = server_url {
-        let url_lower = url.to_lowercase();
-        if url_lower.contains("/k8s/clusters/") || url_lower.contains("rancher") {
-            return "rancher";
+        if let Some(t) = detect_cluster_type_from_url(url) {
+            return t;
         }
-        if url.contains(".eks.amazonaws.com") {
-            return "eks";
-        }
-        if url.contains(".container.googleapis.com") || url.contains("gke.io") {
-            return "gke";
-        }
-        if url.contains(":6443") || url.contains("openshift") || url.contains("ocp") {
+        // ponytail: :6443 alone is a weak OCP signal for organize/which; login ignores it
+        if url.contains(":6443") {
             return "ocp";
-        }
-        if url.contains(".azmk8s.io") || url.contains("azure") {
-            return "aks";
         }
     }
 

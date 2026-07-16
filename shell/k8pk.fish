@@ -15,44 +15,64 @@ function _k8pk_exit_cleanup --on-event fish_exit
   end
 end
 
-# Build k8pk args with kubeconfig directories if set
+# Build k8pk args with kubeconfig directories if set.
+# One argv per line so `set args (_k8pk_args)` keeps --kubeconfig-dir pairs intact.
 function _k8pk_args
-  set -l args
   if test -n "$K8PK_CONFIG_DIRS"
-    for dir in (string split ':' $K8PK_CONFIG_DIRS)
+    for dir in (string split ':' -- $K8PK_CONFIG_DIRS)
       if test -n "$dir"
-        set -a args --kubeconfig-dir $dir
+        printf '%s\n' --kubeconfig-dir
+        printf '%s\n' $dir
       end
     end
   end
-  echo $args
 end
 
-function kpick
+function _k8pk_check
   if not command -v k8pk >/dev/null 2>&1
     echo "k8pk not found. Install it first." >&2
     return 1
   end
+end
+
+# Run k8pk, source stdout on success; preserve exit status (mirrors bash _k8pk_eval_cmd).
+function _k8pk_eval_cmd
+  _k8pk_check; or return $status
+  set -l args (_k8pk_args)
+  set -l tmpfile (mktemp); or begin
+    echo "k8pk: mktemp failed" >&2
+    return 1
+  end
+  if k8pk $args $argv >$tmpfile
+    source $tmpfile
+    set -l ec $status
+    rm -f $tmpfile
+    return $ec
+  else
+    set -l ec $status
+    cat $tmpfile >&2
+    rm -f $tmpfile
+    return $ec
+  end
+end
+
+function _k8pk_verbose_switched
+  if test -n "$K8PK_VERBOSE"
+    set -l display_ctx (test -n "$K8PK_CONTEXT_DISPLAY"; and echo "$K8PK_CONTEXT_DISPLAY"; or echo "$K8PK_CONTEXT")
+    echo "Switched to $display_ctx"(test -n "$K8PK_NAMESPACE"; and echo " ($K8PK_NAMESPACE)"; or echo "") >&2
+  end
+end
+
+# Interactive picker - evals exports in current shell.
+# Optional filter: kpick prod
+function kpick
+  _k8pk_check; or return $status
   if not isatty stdin; or not isatty stderr
     echo "Error: kpick requires an interactive terminal" >&2
     return 1
   end
-  set -l args (_k8pk_args)
-  # Capture exports to a temp file so we can check exit status
-  set -l tmpfile (mktemp)
-  if k8pk $args pick --output env > $tmpfile 2>/dev/stderr
-    source $tmpfile
-    rm -f $tmpfile
-    if test -n "$K8PK_VERBOSE"
-      set -l display_ctx (test -n "$K8PK_CONTEXT_DISPLAY"; and echo "$K8PK_CONTEXT_DISPLAY"; or echo "$K8PK_CONTEXT")
-      echo "Switched to $display_ctx"(test -n "$K8PK_NAMESPACE"; and echo " ($K8PK_NAMESPACE)"; or echo "") >&2
-    end
-  else
-    set -l exit_code $status
-    cat $tmpfile >&2
-    rm -f $tmpfile
-    return $exit_code
-  end
+  _k8pk_eval_cmd pick --output env $argv; or return $status
+  _k8pk_verbose_switched
 end
 
 function kswitch
@@ -60,61 +80,39 @@ function kswitch
     echo "Usage: kswitch <context> [namespace]" >&2
     return 1
   end
-  set -l args (_k8pk_args)
-  set ctx $argv[1]
-  set ns ""
+  set -l ctx $argv[1]
   if test (count $argv) -ge 2
-    set ns $argv[2]
-  end
-  # Exports go to stdout (for source)
-  if test -n "$ns"
-    k8pk $args env --context "$ctx" --namespace "$ns" --shell fish | source
+    _k8pk_eval_cmd env --context $ctx --namespace $argv[2] --shell fish; or return $status
   else
-    k8pk $args env --context "$ctx" --shell fish | source
+    _k8pk_eval_cmd env --context $ctx --shell fish; or return $status
   end
-  # Only print confirmation if K8PK_VERBOSE is set
-  if test -n "$K8PK_VERBOSE"
-    set -l display_ctx (test -n "$K8PK_CONTEXT_DISPLAY"; and echo "$K8PK_CONTEXT_DISPLAY"; or echo "$K8PK_CONTEXT")
-    echo "Switched to $display_ctx"(test -n "$K8PK_NAMESPACE"; and echo " ($K8PK_NAMESPACE)"; or echo "") >&2
-  end
+  _k8pk_verbose_switched
 end
 
 function kctx
-  if not command -v k8pk >/dev/null 2>&1
-    echo "k8pk not found. Install it first." >&2
-    return 1
-  end
-  set -l args (_k8pk_args)
   if test (count $argv) -eq 0
-    k8pk $args ctx | source
+    _k8pk_eval_cmd ctx; or return $status
   else if test (count $argv) -eq 1
-    k8pk $args ctx $argv[1] | source
+    _k8pk_eval_cmd ctx $argv[1]; or return $status
   else
-    k8pk $args ctx $argv[1] --namespace $argv[2] | source
+    _k8pk_eval_cmd ctx $argv[1] --namespace $argv[2]; or return $status
   end
 end
 
 function kns
-  if not command -v k8pk >/dev/null 2>&1
-    echo "k8pk not found. Install it first." >&2
-    return 1
-  end
-  set -l args (_k8pk_args)
   if test (count $argv) -eq 0
-    k8pk $args ns | source
+    _k8pk_eval_cmd ns; or return $status
   else
-    k8pk $args ns $argv[1] | source
+    _k8pk_eval_cmd ns $argv[1]; or return $status
   end
 end
 
+function kprev
+  _k8pk_eval_cmd ctx -
+end
+
 function kclean
-  if not command -v k8pk >/dev/null 2>&1
-    echo "k8pk not found. Install it first." >&2
-    return 1
-  end
-  set -l args (_k8pk_args)
-  # Execute the cleanup commands automatically
-  k8pk $args clean | source
+  _k8pk_eval_cmd clean
 end
 
 function _k8pk_prompt
@@ -133,21 +131,34 @@ function _k8pk_prompt
 end
 
 function ksessions
-  if not command -v k8pk >/dev/null 2>&1
-    echo "k8pk not found. Install it first." >&2
-    return 1
-  end
+  _k8pk_check; or return $status
   k8pk sessions $argv
 end
 
 # ---------------------------------------------------------------------------
 # Session guards -- prevent accidental kubeconfig corruption from external
 # CLI tools (oc login, gcloud, aws eks) that write to KUBECONFIG globally.
-#
-# Only active inside a k8pk session (K8PK_CONTEXT is set).
-# To bypass once:   command oc login ...
-# To disable:       set -gx K8PK_NO_GUARDS 1
+# Active only when K8PK_CONTEXT is set. Bypass: K8PK_NO_GUARDS=1 or `command ...`
+# Message wording mirrors shell/k8pk.sh.
 # ---------------------------------------------------------------------------
+
+function _k8pk_guard_warn
+  echo "k8pk guard: '$argv[1]' overwrites KUBECONFIG (context: $K8PK_CONTEXT). Use '$argv[2]' instead, or bypass with 'K8PK_NO_GUARDS=1'." >&2
+end
+
+function _k8pk_guard_confirm
+  if isatty stdin
+    read -l -P "  Continue anyway? [y/N] " _reply
+    switch $_reply
+      case Y y
+        return 0
+      case '*'
+        return 1
+    end
+  else
+    return 1
+  end
+end
 
 function oc
   if test -n "$K8PK_NO_GUARDS"; or test -z "$K8PK_CONTEXT"
@@ -155,26 +166,12 @@ function oc
     return $status
   end
   if test (count $argv) -ge 1; and test "$argv[1]" = "login"
-    echo "k8pk: 'oc login' rewrites KUBECONFIG and may corrupt your isolated session." >&2
-    echo "  Current context: $K8PK_CONTEXT" >&2
-    echo "  KUBECONFIG:      $KUBECONFIG" >&2
-    echo "" >&2
-    echo "  Recommended: k8pk login --type ocp <server>" >&2
-    echo "  To proceed anyway: command oc login ..." >&2
-    echo "" >&2
-    if isatty stdin
-      read -l -P "  Continue? [y/N] " _reply
-      switch $_reply
-        case Y y
-          command oc $argv
-          return $status
-        case '*'
-          return 1
-      end
-    else
-      echo "  (non-interactive -- blocked)" >&2
-      return 1
+    _k8pk_guard_warn "oc login" "k8pk login --type ocp <server>"
+    if _k8pk_guard_confirm
+      command oc $argv
+      return $status
     end
+    return 1
   end
   command oc $argv
 end
@@ -184,29 +181,14 @@ function gcloud
     command gcloud $argv
     return $status
   end
-  # Detect "gcloud container clusters get-credentials"
   set -l joined (string join " " -- $argv)
   if string match -q "*container*clusters*get-credentials*" "$joined"
-    echo "k8pk: 'gcloud container clusters get-credentials' writes to KUBECONFIG." >&2
-    echo "  This will add a new context to your isolated kubeconfig." >&2
-    echo "  Current context: $K8PK_CONTEXT" >&2
-    echo "" >&2
-    echo "  Recommended: k8pk login --type gke <server>" >&2
-    echo "  To proceed anyway: command gcloud container clusters get-credentials ..." >&2
-    echo "" >&2
-    if isatty stdin
-      read -l -P "  Continue? [y/N] " _reply
-      switch $_reply
-        case Y y
-          command gcloud $argv
-          return $status
-        case '*'
-          return 1
-      end
-    else
-      echo "  (non-interactive -- blocked)" >&2
-      return 1
+    _k8pk_guard_warn "gcloud ... get-credentials" "k8pk login --type gke <server>"
+    if _k8pk_guard_confirm
+      command gcloud $argv
+      return $status
     end
+    return 1
   end
   command gcloud $argv
 end
@@ -216,29 +198,14 @@ function aws
     command aws $argv
     return $status
   end
-  # Detect "aws eks update-kubeconfig"
   set -l joined (string join " " -- $argv)
   if string match -q "*eks*update-kubeconfig*" "$joined"
-    echo "k8pk: 'aws eks update-kubeconfig' writes to KUBECONFIG." >&2
-    echo "  This will modify your isolated kubeconfig." >&2
-    echo "  Current context: $K8PK_CONTEXT" >&2
-    echo "" >&2
-    echo "  Recommended: k8pk login --type k8s --exec-preset aws-eks --exec-cluster <name>" >&2
-    echo "  To proceed anyway: command aws eks update-kubeconfig ..." >&2
-    echo "" >&2
-    if isatty stdin
-      read -l -P "  Continue? [y/N] " _reply
-      switch $_reply
-        case Y y
-          command aws $argv
-          return $status
-        case '*'
-          return 1
-      end
-    else
-      echo "  (non-interactive -- blocked)" >&2
-      return 1
+    _k8pk_guard_warn "aws eks update-kubeconfig" "k8pk login --type k8s --exec-preset aws-eks --exec-cluster <name>"
+    if _k8pk_guard_confirm
+      command aws $argv
+      return $status
     end
+    return 1
   end
   command aws $argv
 end

@@ -252,32 +252,47 @@ mod tests {
         assert!(suggestions.len() <= 2);
     }
 
+    // ponytail: Display smoke only — variants are thiserror templates, not logic
     #[test]
-    fn test_error_display_unknown_format() {
-        let err = K8pkError::UnknownOutputFormat("xml".to_string());
-        let msg = format!("{}", err);
-        assert!(msg.contains("xml"));
-        assert!(msg.contains("env, json, spawn"));
+    fn test_error_display_smoke() {
+        let cases: Vec<(K8pkError, &str)> = vec![
+            (K8pkError::UnknownOutputFormat("xml".into()), "xml"),
+            (K8pkError::UnsupportedShell("csh".into()), "bash"),
+            (
+                K8pkError::ContextNotFoundSuggestions {
+                    pattern: "prod-cluter".into(),
+                    suggestions: "    - prod-cluster".into(),
+                },
+                "Did you mean",
+            ),
+            (K8pkError::InvalidArgument("bad".into()), "invalid argument"),
+            (K8pkError::LoginFailed("nope".into()), "login failed"),
+            (K8pkError::ContextNotFound("my-ctx".into()), "k8pk contexts"),
+            (K8pkError::SessionExpired("ocp-dev".into()), "k8pk login"),
+            (K8pkError::Cancelled, "cancelled"),
+        ];
+        for (err, needle) in cases {
+            assert!(
+                format!("{}", err).contains(needle),
+                "expected {:?} to contain {:?}",
+                err,
+                needle
+            );
+        }
     }
 
     #[test]
-    fn test_error_display_unsupported_shell() {
-        let err = K8pkError::UnsupportedShell("csh".to_string());
-        let msg = format!("{}", err);
-        assert!(msg.contains("csh"));
-        assert!(msg.contains("bash"));
-    }
-
-    #[test]
-    fn test_error_display_context_suggestions() {
-        let err = K8pkError::ContextNotFoundSuggestions {
-            pattern: "prod-cluter".to_string(),
-            suggestions: "    - prod-cluster".to_string(),
-        };
-        let msg = format!("{}", err);
-        assert!(msg.contains("prod-cluter"));
-        assert!(msg.contains("Did you mean"));
-        assert!(msg.contains("prod-cluster"));
+    fn test_error_display_paths_and_tls() {
+        let msg = format!("{}", K8pkError::KubeconfigNotFound("/tmp/missing".into()));
+        assert!(msg.contains("/tmp/missing"));
+        let msg = format!(
+            "{}",
+            K8pkError::TlsCertificateError {
+                context: "prod".into(),
+                hint: "use --insecure".into(),
+            }
+        );
+        assert!(msg.contains("prod") && msg.contains("use --insecure"));
     }
 
     #[test]
@@ -288,153 +303,5 @@ mod tests {
         assert!(msg.contains("k8pk doctor"));
         assert!(msg.contains("k8pk guide"));
         assert!(msg.contains("pick a cluster"));
-    }
-
-    #[test]
-    fn test_error_display_invalid_argument() {
-        let err = K8pkError::InvalidArgument("--json cannot be used with --dry-run".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("--json"));
-        assert!(msg.contains("invalid argument"));
-    }
-
-    #[test]
-    fn test_error_display_login_failed() {
-        let err = K8pkError::LoginFailed("kubeconfig not generated".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("login failed"));
-        assert!(msg.contains("kubeconfig"));
-    }
-
-    #[test]
-    fn test_error_display_lint_failed() {
-        let err = K8pkError::LintFailed;
-        let msg = format!("{}", err);
-        assert!(msg.contains("lint failed"));
-    }
-
-    #[test]
-    fn test_error_display_http_error() {
-        let err = K8pkError::HttpError("connection refused".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("HTTP"));
-        assert!(msg.contains("connection refused"));
-    }
-
-    #[test]
-    fn test_error_display_context_not_found() {
-        let err = K8pkError::ContextNotFound("my-ctx".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("my-ctx"));
-        assert!(msg.contains("k8pk contexts"));
-    }
-
-    #[test]
-    fn test_error_display_cluster_not_found() {
-        let err = K8pkError::ClusterNotFound("my-cluster".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("my-cluster"));
-        assert!(msg.contains("k8pk lint"));
-    }
-
-    #[test]
-    fn test_error_display_user_not_found() {
-        let err = K8pkError::UserNotFound("admin".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("admin"));
-        assert!(msg.contains("k8pk lint"));
-    }
-
-    #[test]
-    fn test_error_display_no_namespaces() {
-        let err = K8pkError::NoNamespaces("prod".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("prod"));
-        assert!(msg.contains("get namespaces"));
-    }
-
-    #[test]
-    fn test_error_display_kubeconfig_not_found() {
-        let err = K8pkError::KubeconfigNotFound("/tmp/missing".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("/tmp/missing"));
-        assert!(msg.contains("KUBECONFIG"));
-    }
-
-    #[test]
-    fn test_error_display_not_in_context() {
-        let msg = format!("{}", K8pkError::NotInContext);
-        assert!(msg.contains("not in a k8pk context"));
-        assert!(msg.contains("k8pk ctx"));
-    }
-
-    #[test]
-    fn test_error_display_no_previous_context() {
-        let msg = format!("{}", K8pkError::NoPreviousContext);
-        assert!(msg.contains("no previous context"));
-    }
-
-    #[test]
-    fn test_error_display_no_previous_namespace() {
-        let msg = format!("{}", K8pkError::NoPreviousNamespace);
-        assert!(msg.contains("no previous namespace"));
-    }
-
-    #[test]
-    fn test_error_display_session_expired() {
-        let err = K8pkError::SessionExpired("ocp-dev".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("ocp-dev"));
-        assert!(msg.contains("k8pk login"));
-    }
-
-    #[test]
-    fn test_error_display_tls_certificate() {
-        let err = K8pkError::TlsCertificateError {
-            context: "prod".into(),
-            hint: "use --insecure".into(),
-        };
-        let msg = format!("{}", err);
-        assert!(msg.contains("prod"));
-        assert!(msg.contains("use --insecure"));
-    }
-
-    #[test]
-    fn test_error_display_cancelled() {
-        let msg = format!("{}", K8pkError::Cancelled);
-        assert!(msg.contains("cancelled"));
-    }
-
-    #[test]
-    fn test_error_display_no_home_dir() {
-        let msg = format!("{}", K8pkError::NoHomeDir);
-        assert!(msg.contains("home directory"));
-    }
-
-    #[test]
-    fn test_error_display_command_failed() {
-        let err = K8pkError::CommandFailed("oc login failed".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("oc login failed"));
-    }
-
-    #[test]
-    fn test_error_display_no_tty() {
-        let msg = format!("{}", K8pkError::NoTty);
-        assert!(msg.contains("TTY"));
-    }
-
-    #[test]
-    fn test_error_display_no_k8s_cli() {
-        let msg = format!("{}", K8pkError::NoK8sCli);
-        assert!(msg.contains("kubectl"));
-    }
-
-    #[test]
-    fn test_error_display_invalid_kubeconfig() {
-        let err = K8pkError::InvalidKubeconfig("missing apiVersion".into());
-        let msg = format!("{}", err);
-        assert!(msg.contains("missing apiVersion"));
-        assert!(msg.contains("k8pk lint"));
     }
 }

@@ -1,6 +1,5 @@
 //! Interactive picker commands
 
-use crate::config;
 use crate::error::{K8pkError, Result};
 use crate::kubeconfig::{self, KubeConfig};
 use inquire::Select;
@@ -11,18 +10,14 @@ use std::io::{self, IsTerminal};
 pub fn pick_context_namespace(
     cfg: &KubeConfig,
     kubeconfig_env: Option<&str>,
+    filter: Option<&str>,
+    clusters_only: bool,
 ) -> Result<(String, Option<String>)> {
-    // Check if clusters_only mode is enabled
-    let clusters_only = config::load()
-        .ok()
-        .and_then(|c| c.pick.map(|p| p.clusters_only))
-        .unwrap_or(false);
-
     if clusters_only {
-        pick_cluster_with_namespace(cfg, kubeconfig_env)
+        pick_cluster_with_namespace(cfg, kubeconfig_env, filter)
     } else {
         // Just pick context, no namespace
-        let context = pick_context(cfg)?;
+        let context = pick_context(cfg, filter)?;
         Ok((context, None))
     }
 }
@@ -31,6 +26,7 @@ pub fn pick_context_namespace(
 fn pick_cluster_with_namespace(
     cfg: &KubeConfig,
     _kubeconfig_env: Option<&str>,
+    filter: Option<&str>,
 ) -> Result<(String, Option<String>)> {
     if !io::stdin().is_terminal() {
         return Err(K8pkError::NoTty);
@@ -43,9 +39,21 @@ fn pick_cluster_with_namespace(
     let mut cluster_groups: HashMap<String, Vec<(&str, Option<String>)>> = HashMap::new();
     let mut seen_contexts = HashSet::new();
 
+    let allowed: Option<HashSet<String>> = filter.map(|f| {
+        let names = cfg.context_names();
+        super::context::match_pattern(f, &names)
+            .into_iter()
+            .collect()
+    });
+
     for ctx in &cfg.contexts {
         if !seen_contexts.insert(ctx.name.clone()) {
             continue; // Skip duplicates
+        }
+        if let Some(ref allow) = allowed {
+            if !allow.contains(&ctx.name) {
+                continue;
+            }
         }
 
         // Get server URL for better cluster detection
@@ -87,6 +95,10 @@ fn pick_cluster_with_namespace(
     }
 
     if cluster_groups.is_empty() {
+        if let Some(f) = filter {
+            let all = cfg.context_names();
+            return Err(filter_not_found(f, &all));
+        }
         return Err(K8pkError::NoContexts);
     }
 
@@ -100,6 +112,22 @@ fn pick_cluster_with_namespace(
 
     // Sort by display name
     cluster_choices.sort_by(|a, b| a.1.cmp(&b.1));
+
+    // Auto-select when filter leaves one cluster
+    if cluster_choices.len() == 1 {
+        let selected_key = cluster_choices[0].0.clone();
+        let cluster_contexts = &cluster_groups[&selected_key];
+        let default_ns = cluster_contexts
+            .iter()
+            .find_map(|(_, ns)| ns.clone())
+            .or(Some("default".to_string()));
+        let selected_context = cluster_contexts
+            .first()
+            .map(|(name, _)| (*name).to_string())
+            .ok_or_else(|| K8pkError::Other("No contexts found for cluster".into()))?;
+        eprintln!("Auto-selected the only matching cluster: {}", selected_key);
+        return Ok((selected_context, default_ns));
+    }
 
     // Mark current cluster if any (use same logic as grouping)
     let current_cluster_key = current.map(|ctx| kubeconfig::extract_base_cluster_name(ctx, None));
@@ -173,10 +201,27 @@ pub fn pick_namespace(context: &str, kubeconfig_env: Option<&str>) -> Result<Str
         .map_err(|_| K8pkError::Cancelled)
 }
 
+fn filter_not_found(filter: &str, all: &[String]) -> K8pkError {
+    let suggestions = crate::error::closest_matches(filter, all, 3);
+    if suggestions.is_empty() {
+        K8pkError::ContextNotFound(filter.to_string())
+    } else {
+        K8pkError::ContextNotFoundSuggestions {
+            pattern: filter.to_string(),
+            suggestions: suggestions
+                .iter()
+                .map(|s| format!("    - {}", s))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+}
+
 /// Pick a context interactively (without namespace selection)
 /// Returns the selected context name (without the " *" marker).
 /// Recent contexts from history are shown at the top for quick access.
-pub fn pick_context(cfg: &KubeConfig) -> Result<String> {
+/// Optional `filter` pre-filters via `match_pattern` (exact / glob / substring).
+pub fn pick_context(cfg: &KubeConfig, filter: Option<&str>) -> Result<String> {
     if !io::stdin().is_terminal() {
         return Err(K8pkError::NoTty);
     }
@@ -205,6 +250,21 @@ pub fn pick_context(cfg: &KubeConfig) -> Result<String> {
     if all_names.is_empty() {
         return Err(K8pkError::NoContexts);
     }
+
+    let all_names = if let Some(f) = filter {
+        let matched = super::context::match_pattern(f, &all_names);
+        match matched.len() {
+            0 => return Err(filter_not_found(f, &all_names)),
+            1 => {
+                let name = matched.into_iter().next().unwrap();
+                eprintln!("Auto-selected the only matching context: {}", name);
+                return Ok(name);
+            }
+            _ => matched,
+        }
+    } else {
+        all_names
+    };
 
     // Auto-select when there is only one context.
     if all_names.len() == 1 {

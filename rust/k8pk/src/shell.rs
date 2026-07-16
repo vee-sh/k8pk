@@ -196,7 +196,7 @@ pub fn exec_command_in_context(
     let kubeconfig = if no_session_check {
         initial
     } else {
-        commands::ensure_session_alive(&initial, context, namespace, paths)?
+        commands::ensure_session_alive(&initial, context, namespace, paths, no_session_check, None)?
     };
     let cache_dir = commands::isolated_cache_dir(&kubeconfig, context);
 
@@ -251,7 +251,7 @@ pub fn exec_command_in_context_captured(
     let kubeconfig = if no_session_check {
         initial
     } else {
-        commands::ensure_session_alive(&initial, context, namespace, paths)?
+        commands::ensure_session_alive(&initial, context, namespace, paths, no_session_check, None)?
     };
     let cache_dir = commands::isolated_cache_dir(&kubeconfig, context);
 

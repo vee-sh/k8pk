@@ -37,9 +37,15 @@ hooks:
   # Ghostty supports OSC sequences for window titles (OSC 1)
   # The above start_ctx hook works automatically with Ghostty
 
+# Picker / speed
+# pick:
+#   clusters_only: false
+#   # Trust last session check for N seconds (default 300). 0 = always probe API.
+#   session_check_ttl: 300
+# Also: --no-session-check, K8PK_NO_SESSION_CHECK=1, K8PK_SESSION_CHECK_TTL=0
+
 # Context aliases (short names for long context names)
-# Use short names in commands: k8pk ctx prod
-aliases:
-  # prod: "arn:aws:eks:us-east-1:123456:cluster/production"
-  # dev: "dev-cluster"
-  # staging: "arn:aws:eks:us-west-2:123456:cluster/staging"
+# aliases:
+#   prod: "arn:aws:eks:us-east-1:123456:cluster/production"
+#   dev: "dev-cluster"
+

@@ -5,7 +5,6 @@ use std::fs;
 use std::io::Write;
 use std::process::Command;
 use std::time::Duration;
-use tracing::info;
 
 #[derive(Debug, serde::Serialize)]
 pub struct UpdateResult {
@@ -121,7 +120,7 @@ pub fn check_and_update(check_only: bool, force: bool, quiet: bool) -> Result<Up
         .and_then(|v| v.as_str())
         .unwrap_or("k8pk.tar.gz");
 
-    info!(asset = %asset_name, "downloading");
+    eprintln!("downloading {}", asset_name);
 
     // Download
     let bytes = client
@@ -138,7 +137,7 @@ pub fn check_and_update(check_only: bool, force: bool, quiet: bool) -> Result<Up
     let mut file = fs::File::create(&archive_path)?;
     file.write_all(&bytes)?;
 
-    info!("extracting archive");
+    eprintln!("extracting archive");
 
     // Extract using tar
     let status = Command::new("tar")
@@ -162,7 +161,7 @@ pub fn check_and_update(check_only: bool, force: bool, quiet: bool) -> Result<Up
     let install_path =
         std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/k8pk"));
 
-    info!(path = %install_path.display(), "installing");
+    eprintln!("installing to {}", install_path.display());
 
     // Copy with proper permissions
     fs::copy(&binary_path, &install_path)?;

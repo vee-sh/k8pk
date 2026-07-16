@@ -6,7 +6,10 @@ use inquire::Password;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::{test_k8s_auth, LoginResult, Vault, VaultEntry};
+use super::{
+    assemble_kubeconfig, prepare_login_output, prompt_save_vault, resolve_vault_userpass,
+    write_login_kubeconfig, LoginRequest, LoginResult,
+};
 
 pub(super) fn rancher_proxy_url_if_cluster_url(server: &str) -> Option<String> {
     let needle = "/k8s/clusters/";
@@ -204,11 +207,6 @@ pub struct PulledCluster {
     pub kubeconfig_path: PathBuf,
 }
 
-/// Build and write a kubeconfig for every downstream cluster reachable through
-/// the Rancher server, using the Rancher proxy endpoint plus the shared bearer
-/// token. Returns the clusters that were written.
-///
-/// `pattern`, if set, filters clusters by name (exact, glob, or substring).
 #[allow(clippy::too_many_arguments)]
 pub fn rancher_pull_all(
     rancher_server: &str,
@@ -299,68 +297,12 @@ pub(super) fn build_rancher_kubeconfig(
     token: &str,
     insecure: bool,
 ) -> KubeConfig {
-    let mut cfg = KubeConfig::default();
-    cfg.ensure_defaults(Some(context_name));
-
-    let cluster_name = format!("{}-cluster", context_name);
-    let mut cluster_map = serde_yaml_ng::Mapping::new();
-    cluster_map.insert(
-        serde_yaml_ng::Value::String("server".to_string()),
-        serde_yaml_ng::Value::String(proxy_url.to_string()),
-    );
-    if insecure {
-        cluster_map.insert(
-            serde_yaml_ng::Value::String("insecure-skip-tls-verify".to_string()),
-            serde_yaml_ng::Value::Bool(true),
-        );
-    }
-    let mut cluster_rest = serde_yaml_ng::Mapping::new();
-    cluster_rest.insert(
-        serde_yaml_ng::Value::String("cluster".to_string()),
-        serde_yaml_ng::Value::Mapping(cluster_map),
-    );
-    cfg.clusters.push(kubeconfig::NamedItem {
-        name: cluster_name.clone(),
-        rest: serde_yaml_ng::Value::Mapping(cluster_rest),
-    });
-
-    let user_name = format!("{}-user", context_name);
     let mut user_map = serde_yaml_ng::Mapping::new();
     user_map.insert(
         serde_yaml_ng::Value::String("token".to_string()),
         serde_yaml_ng::Value::String(token.to_string()),
     );
-    let mut user_rest = serde_yaml_ng::Mapping::new();
-    user_rest.insert(
-        serde_yaml_ng::Value::String("user".to_string()),
-        serde_yaml_ng::Value::Mapping(user_map),
-    );
-    cfg.users.push(kubeconfig::NamedItem {
-        name: user_name.clone(),
-        rest: serde_yaml_ng::Value::Mapping(user_rest),
-    });
-
-    let mut ctx_map = serde_yaml_ng::Mapping::new();
-    ctx_map.insert(
-        serde_yaml_ng::Value::String("cluster".to_string()),
-        serde_yaml_ng::Value::String(cluster_name),
-    );
-    ctx_map.insert(
-        serde_yaml_ng::Value::String("user".to_string()),
-        serde_yaml_ng::Value::String(user_name),
-    );
-    let mut ctx_rest = serde_yaml_ng::Mapping::new();
-    ctx_rest.insert(
-        serde_yaml_ng::Value::String("context".to_string()),
-        serde_yaml_ng::Value::Mapping(ctx_map),
-    );
-    cfg.contexts.push(kubeconfig::NamedItem {
-        name: context_name.to_string(),
-        rest: serde_yaml_ng::Value::Mapping(ctx_rest),
-    });
-
-    cfg.current_context = Some(context_name.to_string());
-    cfg
+    assemble_kubeconfig(context_name, proxy_url, user_map, insecure, None)
 }
 
 pub(super) fn rancher_get_token_single(
@@ -522,49 +464,24 @@ pub(super) fn rancher_get_token(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn rancher_login(
-    server: &str,
-    token: Option<&str>,
-    username: Option<&str>,
-    password: Option<&str>,
-    name: Option<&str>,
-    output_dir: Option<&Path>,
-    insecure: bool,
-    use_vault: bool,
-    certificate_authority: Option<&Path>,
-    rancher_auth_provider: &str,
-    dry_run: bool,
-    test: bool,
-    test_timeout: u64,
-    quiet: bool,
-    cluster_server_override: Option<&str>,
-) -> Result<LoginResult> {
-    let cluster_server_initial = cluster_server_override.unwrap_or(server).to_string();
+pub(super) fn rancher_login(req: &LoginRequest) -> Result<LoginResult> {
+    let cluster_server_initial = req
+        .rancher_cluster_server
+        .as_deref()
+        .unwrap_or(&req.server)
+        .to_string();
 
-    let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
-    let out_dir = output_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".kube/rancher"));
+    let (context_name, kubeconfig_path) = prepare_login_output(
+        "rancher",
+        &cluster_server_initial,
+        req.name.as_deref(),
+        req.output_dir.as_deref(),
+    )?;
 
-    fs::create_dir_all(&out_dir)?;
-
-    let context_name = name.map(String::from).unwrap_or_else(|| {
-        let sanitized = cluster_server_initial
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .replace(['/', ':'], "-");
-        format!("rancher-{}", sanitized)
-    });
-
-    let kubeconfig_path = out_dir.join(format!(
-        "{}.yaml",
-        kubeconfig::sanitize_filename(&context_name)
-    ));
-
-    let mut final_username = username.map(String::from);
-    let mut final_password = password.map(String::from);
-    let mut final_token = token.map(String::from);
+    let mut final_username = req.username.clone();
+    let mut final_password = req.password.clone();
+    let mut final_token = req.token.clone();
+    let mut rancher_provider_used = req.rancher_auth_provider.clone();
 
     if final_token.is_some() {
         // Token auth - proceed
@@ -585,7 +502,7 @@ pub(super) fn rancher_login(
             );
         }
 
-        if !quiet {
+        if !req.quiet {
             eprintln!("Authenticating with Rancher API...");
         }
         let u = final_username.as_deref().ok_or_else(|| {
@@ -595,111 +512,61 @@ pub(super) fn rancher_login(
             K8pkError::InvalidArgument("password is required for Rancher login".into())
         })?;
         final_token = Some(rancher_get_token(
-            server,
+            &req.server,
             u,
             p,
-            insecure,
-            rancher_auth_provider,
-            quiet,
+            req.insecure,
+            &rancher_provider_used,
+            req.quiet,
         )?);
     } else {
         let vault_key_primary = format!("rancher:{}", cluster_server_initial);
-        let vault_key_legacy = format!("{}:{}", server, context_name);
-        let mut vault = if use_vault { Vault::new().ok() } else { None };
-        let mut rancher_provider_used = rancher_auth_provider.to_string();
-
-        if let Some(ref v) = vault {
-            if let Some(entry) = v
-                .get(&vault_key_primary)
-                .or_else(|| v.get(&vault_key_legacy))
-            {
-                rancher_provider_used = entry
-                    .rancher_auth_provider
-                    .clone()
-                    .unwrap_or_else(|| rancher_auth_provider.to_string());
-                if !quiet {
-                    eprintln!(
-                        "Using credentials from vault for {}",
-                        cluster_server_initial
-                    );
-                }
-                final_username = Some(entry.username.clone());
-                final_password = Some(entry.password.clone());
-                final_token = Some(rancher_get_token(
-                    server,
-                    &entry.username,
-                    &entry.password,
-                    insecure,
-                    &rancher_provider_used,
-                    quiet,
-                )?);
-            }
+        let vault_key_legacy = format!("{}:{}", req.server, context_name);
+        let (u, p, provider, from_vault) = resolve_vault_userpass(
+            &[&vault_key_primary, &vault_key_legacy],
+            req.use_vault,
+            req.quiet,
+            "Rancher username:",
+            "Rancher password:",
+        )?;
+        if let Some(prov) = provider {
+            rancher_provider_used = prov;
         }
-
-        if final_token.is_none() {
-            rancher_provider_used = rancher_auth_provider.to_string();
-            final_username = Some(
-                inquire::Text::new("Rancher username:")
-                    .prompt()
-                    .map_err(|_| K8pkError::Cancelled)?,
-            );
-            final_password = Some(
-                Password::new("Rancher password:")
-                    .without_confirmation()
-                    .prompt()
-                    .map_err(|_| K8pkError::Cancelled)?,
-            );
-            let u = final_username
-                .as_deref()
-                .ok_or_else(|| K8pkError::InvalidArgument("username is required".into()))?;
-            let p = final_password
-                .as_deref()
-                .ok_or_else(|| K8pkError::InvalidArgument("password is required".into()))?;
-            final_token = Some(rancher_get_token(
-                server,
-                u,
-                p,
-                insecure,
-                &rancher_provider_used,
-                quiet,
-            )?);
-        }
-
-        if use_vault {
-            if let Some(ref mut v) = vault {
-                let save = inquire::Confirm::new("Save credentials to vault?")
-                    .with_default(true)
-                    .prompt()
-                    .unwrap_or(false);
-                if save {
-                    v.set(
-                        vault_key_primary,
-                        VaultEntry {
-                            username: final_username.clone().unwrap_or_default(),
-                            password: final_password.clone().unwrap_or_default(),
-                            rancher_auth_provider: Some(rancher_provider_used),
-                        },
-                    )?;
-                }
-            }
+        final_token = Some(rancher_get_token(
+            &req.server,
+            &u,
+            &p,
+            req.insecure,
+            &rancher_provider_used,
+            req.quiet,
+        )?);
+        if req.use_vault && !from_vault {
+            prompt_save_vault(&vault_key_primary, &u, &p, Some(&rancher_provider_used))?;
         }
     }
 
     let cluster_server = {
         let (_, is_proxy) = rancher_server_base_url(&cluster_server_initial);
-        if !is_proxy && cluster_server_override.is_some() {
+        if !is_proxy && req.rancher_cluster_server.is_some() {
             if let Some(ref tok) = final_token {
-                match rancher_find_cluster_proxy_url(server, &cluster_server_initial, tok, insecure)
-                {
+                match rancher_find_cluster_proxy_url(
+                    &req.server,
+                    &cluster_server_initial,
+                    tok,
+                    req.insecure,
+                ) {
                     Some(proxy_url) => {
-                        if !quiet {
+                        if !req.quiet {
                             eprintln!("Resolved Rancher proxy URL: {}", proxy_url);
                         }
                         proxy_url
                     }
                     None => {
-                        if !quiet {
-                            eprintln!("Warning: could not resolve Rancher proxy URL for {}; kubeconfig may not work", cluster_server_initial);
+                        if !req.quiet {
+                            eprintln!(
+                                "Warning: could not resolve Rancher proxy URL for {}; kubeconfig may not work",
+                                cluster_server_initial
+                            );
                         }
                         cluster_server_initial.clone()
                     }
@@ -712,11 +579,11 @@ pub(super) fn rancher_login(
         }
     };
 
-    if !quiet {
+    if !req.quiet {
         eprintln!("Creating Rancher kubeconfig for {}...", cluster_server);
     }
 
-    if dry_run {
+    if req.dry_run {
         return Ok(LoginResult {
             context_name,
             namespace: None,
@@ -724,96 +591,27 @@ pub(super) fn rancher_login(
         });
     }
 
-    let mut cfg = KubeConfig::default();
-    cfg.ensure_defaults(Some(&context_name));
+    let token = final_token
+        .ok_or_else(|| K8pkError::LoginFailed("Rancher authentication token is missing".into()))?;
+    let mut user_map = serde_yaml_ng::Mapping::new();
+    user_map.insert(
+        serde_yaml_ng::Value::String("token".to_string()),
+        serde_yaml_ng::Value::String(token),
+    );
+    let cfg = assemble_kubeconfig(
+        &context_name,
+        &cluster_server,
+        user_map,
+        req.insecure,
+        req.certificate_authority.as_deref(),
+    );
 
-    let cluster_name = format!("{}-cluster", context_name);
-    let mut cluster_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
-    if let serde_yaml_ng::Value::Mapping(ref mut map) = cluster_rest {
-        let mut cluster_map = serde_yaml_ng::Mapping::new();
-        cluster_map.insert(
-            serde_yaml_ng::Value::String("server".to_string()),
-            serde_yaml_ng::Value::String(cluster_server.to_string()),
-        );
-        if let Some(ca) = certificate_authority {
-            cluster_map.insert(
-                serde_yaml_ng::Value::String("certificate-authority".to_string()),
-                serde_yaml_ng::Value::String(ca.to_string_lossy().to_string()),
-            );
-        } else if insecure {
-            cluster_map.insert(
-                serde_yaml_ng::Value::String("insecure-skip-tls-verify".to_string()),
-                serde_yaml_ng::Value::Bool(true),
-            );
-        }
-        map.insert(
-            serde_yaml_ng::Value::String("cluster".to_string()),
-            serde_yaml_ng::Value::Mapping(cluster_map),
-        );
-    }
-    cfg.clusters.push(kubeconfig::NamedItem {
-        name: cluster_name.clone(),
-        rest: cluster_rest,
-    });
-
-    let user_name = format!("{}-user", context_name);
-    let mut user_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
-    if let serde_yaml_ng::Value::Mapping(ref mut map) = user_rest {
-        let mut user_map = serde_yaml_ng::Mapping::new();
-        user_map.insert(
-            serde_yaml_ng::Value::String("token".to_string()),
-            serde_yaml_ng::Value::String(
-                final_token
-                    .as_ref()
-                    .ok_or_else(|| {
-                        K8pkError::LoginFailed("Rancher authentication token is missing".into())
-                    })?
-                    .clone(),
-            ),
-        );
-        map.insert(
-            serde_yaml_ng::Value::String("user".to_string()),
-            serde_yaml_ng::Value::Mapping(user_map),
-        );
-    }
-    cfg.users.push(kubeconfig::NamedItem {
-        name: user_name.clone(),
-        rest: user_rest,
-    });
-
-    let mut context_rest = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
-    if let serde_yaml_ng::Value::Mapping(ref mut map) = context_rest {
-        let mut ctx_map = serde_yaml_ng::Mapping::new();
-        ctx_map.insert(
-            serde_yaml_ng::Value::String("cluster".to_string()),
-            serde_yaml_ng::Value::String(cluster_name),
-        );
-        ctx_map.insert(
-            serde_yaml_ng::Value::String("user".to_string()),
-            serde_yaml_ng::Value::String(user_name),
-        );
-        map.insert(
-            serde_yaml_ng::Value::String("context".to_string()),
-            serde_yaml_ng::Value::Mapping(ctx_map),
-        );
-    }
-    cfg.contexts.push(kubeconfig::NamedItem {
-        name: context_name.clone(),
-        rest: context_rest,
-    });
-
-    cfg.current_context = Some(context_name.clone());
-
-    let yaml = serde_yaml_ng::to_string(&cfg)?;
-    kubeconfig::write_restricted(&kubeconfig_path, &yaml)?;
-
-    if test {
-        test_k8s_auth(&kubeconfig_path, &context_name, test_timeout)?;
-    }
-
-    Ok(LoginResult {
-        context_name,
-        namespace: None,
-        kubeconfig_path: Some(kubeconfig_path),
-    })
+    write_login_kubeconfig(
+        &kubeconfig_path,
+        &cfg,
+        &context_name,
+        false,
+        req.test,
+        req.test_timeout,
+    )
 }

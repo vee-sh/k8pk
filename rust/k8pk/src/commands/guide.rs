@@ -23,7 +23,7 @@ Common tasks
   Login / wizard                               k8pk login --wizard
   Diagnose PATH, kubeconfig, shell hooks       k8pk doctor
   Clean old generated files in ~/.local/...    k8pk cleanup
-  Advanced: edit one file by hand              k8pk remove-context --from-file PATH ...
+  Edit config                                  k8pk config edit   (opens $EDITOR)
 
   k8pk vs kubie (mental model)
 ----------------------------
@@ -50,7 +50,6 @@ When to use which command
   ctx                    Switch context (history, patterns, tmux).
   ns                     Switch namespace in current k8pk context.
   rm                     Remove a context from the right kubeconfig (preferred).
-  remove-context         Same removal logic, but you must pass --from-file explicitly.
   cleanup                Deletes stale files under ~/.local/share/k8pk (not cluster entries).
   sessions               List or jump between k8pk/tmux sessions.
   login                  Add new clusters; use --wizard to start.
@@ -58,11 +57,12 @@ When to use which command
 Tips
 ----
   Run `k8pk` from a script with stdout redirected: use `k8pk ctx NAME -o json` or `-o env`.
-  `k8pk exec` runs the same session check as `k8pk ctx` (re-login when needed). Use
-  `k8pk exec ... --no-session-check` for fast fail if the token is expired.
+  `k8pk ctx` / `k8pk` run a fast session check (3s; skipped for 5m after success).
+  Use `--no-session-check` or `K8PK_NO_SESSION_CHECK=1` to skip. Tune with
+  `pick.session_check_ttl` / `K8PK_SESSION_CHECK_TTL`. `k8pk exec` same flags.
   Config hooks: stop_ctx runs when leaving a context; start_ctx when entering (eval path).
-  After `k8pk config init`, edit the file to set include globs, aliases, tmux, insecure_contexts.
-  Set NO_COLOR=1 if terminal colors are unreadable (e.g. `k8pk doctor`).
+  After `k8pk config init`, use `k8pk config edit` ($EDITOR) to set include globs, aliases, tmux, insecure_contexts.
+  Set NO_COLOR=1 if terminal colors are unreadable.
   Fish: `k8pk ctx` / `k8pk pick` emit fish syntax when FISH_VERSION is set or SHELL is fish.
 
 "#;

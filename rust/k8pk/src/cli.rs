@@ -1,6 +1,6 @@
 //! Command line interface definitions
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -115,6 +115,9 @@ pub enum Command {
 
     /// Pick context (and namespace if configured), then open a shell — same as running `k8pk` with no subcommand
     Pick {
+        /// Optional filter: pre-filter contexts (substring/glob), e.g. `k8pk pick prod`
+        #[arg(value_name = "FILTER")]
+        filter: Option<String>,
         /// Output format: env, json, spawn (default: env)
         #[arg(
             long,
@@ -135,16 +138,12 @@ pub enum Command {
             help = "Skip TLS certificate verification"
         )]
         insecure_skip_tls: bool,
-    },
-
-    /// Spawn a new shell with isolated context/namespace
-    Spawn {
-        /// Context to use in new shell
-        #[arg(long, value_name = "NAME")]
-        context: String,
-        /// Namespace to use (defaults to context's default)
-        #[arg(long, value_name = "NS")]
-        namespace: Option<String>,
+        /// Skip session check (also: K8PK_NO_SESSION_CHECK=1)
+        #[arg(
+            long,
+            help = "Skip API session check (fail fast if credentials expired later)"
+        )]
+        no_session_check: bool,
     },
 
     /// Clean up old generated kubeconfig files
@@ -202,38 +201,6 @@ pub enum Command {
         /// Output as JSON
         #[arg(long)]
         json: bool,
-    },
-
-    /// Remove contexts from a kubeconfig file (advanced; most users should use `k8pk rm`)
-    #[command(
-        after_help = "Prefer `k8pk rm` — it finds the source file automatically.\n\n\
-        Examples:\n  \
-        k8pk remove-context --context old-cluster\n  \
-        k8pk remove-context --interactive     # Pick contexts to remove\n  \
-        k8pk remove-context --remove-orphaned # Clean up broken refs"
-    )]
-    RemoveContext {
-        /// Kubeconfig file to modify (default: ~/.kube/config)
-        #[arg(long, value_name = "PATH")]
-        from_file: Option<PathBuf>,
-        /// Context name to remove
-        #[arg(long, value_name = "NAME")]
-        context: Option<String>,
-        /// Interactively select contexts to remove
-        #[arg(long, short = 'i', help = "Interactively select contexts to remove")]
-        interactive: bool,
-        /// Remove contexts with missing cluster/user refs
-        #[arg(long, help = "Remove contexts with missing cluster/user refs")]
-        remove_orphaned: bool,
-        /// Preview changes without making them
-        #[arg(long, help = "Preview changes without making them")]
-        dry_run: bool,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-        /// Suppress non-essential output
-        #[arg(long)]
-        quiet: bool,
     },
 
     /// Rename a context in a kubeconfig file
@@ -415,6 +382,9 @@ pub enum Command {
             help = "Skip TLS certificate verification"
         )]
         insecure_skip_tls: bool,
+        /// Skip session check (also: K8PK_NO_SESSION_CHECK=1)
+        #[arg(long, help = "Skip API session check")]
+        no_session_check: bool,
     },
 
     /// Switch to namespace (with history support, use '-' for previous)
@@ -541,7 +511,7 @@ pub enum Command {
     /// Manage k8pk configuration
     #[command(after_help = "Examples:\n  \
         k8pk config init          # Create default config file\n  \
-        k8pk config edit          # Interactive config editor\n  \
+        k8pk config edit          # Open config in $EDITOR\n  \
         k8pk config show          # Show current config\n  \
         k8pk config path          # Show config file path")]
     #[command(subcommand)]
@@ -577,117 +547,7 @@ pub enum Command {
         k8pk login --wizard\n  \
         k8pk login --auth-help"
     )]
-    Login {
-        /// Cluster type: 'ocp', 'k8s', 'gke', or 'rancher' (default: auto-detect from server URL)
-        #[arg(long = "type", value_name = "TYPE", default_value = "auto")]
-        login_type: String,
-        /// Authentication mode: auto | token | userpass | client-cert | exec
-        #[arg(long, value_name = "MODE", default_value = "auto")]
-        auth: String,
-        /// Show auth examples and exit
-        #[arg(long)]
-        auth_help: bool,
-        /// Use guided login wizard
-        #[arg(long)]
-        wizard: bool,
-        /// Server URL
-        #[arg(long, value_name = "SERVER")]
-        server: Option<String>,
-        /// Server URL (positional argument, alternative to --server)
-        #[arg(value_name = "SERVER_URL", last = true)]
-        server_pos: Option<String>,
-        /// Bearer token for authentication
-        #[arg(long, value_name = "TOKEN")]
-        token: Option<String>,
-        /// Username for basic auth
-        #[arg(short = 'u', long, value_name = "USER")]
-        username: Option<String>,
-        /// Password for basic auth
-        #[arg(short = 'p', long, value_name = "PASS")]
-        password: Option<String>,
-        /// Read credentials from pass (password-store) entry.
-        /// Entry format: first line is password/token, additional lines are key:value pairs.
-        /// Supported keys: token, username (or user), password; for Rancher also rancher_auth_provider (or rancher_provider).
-        /// Example: 'pass show k8pk/dev' returns:
-        ///   sha256~abc123...
-        ///   token: sha256~abc123...
-        #[arg(long, value_name = "ENTRY")]
-        pass_entry: Option<String>,
-        /// Exec auth command (k8s only)
-        #[arg(long, value_name = "CMD")]
-        exec_command: Option<String>,
-        /// Exec auth argument (repeatable)
-        #[arg(long, action = clap::ArgAction::Append, value_name = "ARG")]
-        exec_arg: Vec<String>,
-        /// Exec auth environment variable (KEY=VALUE, repeatable)
-        #[arg(long, action = clap::ArgAction::Append, value_name = "KV")]
-        exec_env: Vec<String>,
-        /// Exec auth API version (k8s only)
-        #[arg(long, value_name = "VERSION")]
-        exec_api_version: Option<String>,
-        /// Exec auth preset: aws-eks | gke | aks
-        #[arg(long, value_name = "NAME")]
-        exec_preset: Option<String>,
-        /// Exec auth cluster name (aws-eks)
-        #[arg(long, value_name = "NAME")]
-        exec_cluster: Option<String>,
-        /// Exec auth server ID (aks)
-        #[arg(long, value_name = "ID")]
-        exec_server_id: Option<String>,
-        /// Exec auth region (aws-eks)
-        #[arg(long, value_name = "REGION")]
-        exec_region: Option<String>,
-        /// Custom name for this context
-        #[arg(
-            long,
-            value_name = "NAME",
-            help = "Custom name for context (default: derived from server)"
-        )]
-        name: Option<String>,
-        /// Directory to save kubeconfig (default: ~/.kube/ocp or ~/.kube/k8s)
-        #[arg(long, value_name = "DIR")]
-        output_dir: Option<PathBuf>,
-        /// Skip TLS certificate verification
-        #[arg(
-            long,
-            visible_alias = "insecure",
-            help = "Skip TLS certificate verification (insecure)"
-        )]
-        insecure_skip_tls_verify: bool,
-        /// Use vault to store/retrieve credentials (OpenShift and Rancher userpass)
-        #[arg(
-            long,
-            help = "Store/retrieve credentials from vault (OCP and Rancher userpass)"
-        )]
-        use_vault: bool,
-        /// Certificate authority file
-        #[arg(long, value_name = "PATH")]
-        certificate_authority: Option<PathBuf>,
-        /// Client certificate file (k8s only)
-        #[arg(long, value_name = "PATH")]
-        client_certificate: Option<PathBuf>,
-        /// Client key file (k8s only)
-        #[arg(long, value_name = "PATH")]
-        client_key: Option<PathBuf>,
-        /// Print kubeconfig and exit without writing or switching
-        #[arg(long)]
-        dry_run: bool,
-        /// Validate credentials after login
-        #[arg(long)]
-        test: bool,
-        /// Timeout for credential test (seconds)
-        #[arg(long, default_value = "10", value_name = "SECS")]
-        test_timeout: u64,
-        /// Rancher auth provider (rancher only): local, activedirectory, openldap, freeipa, azuread, github, auto, or v3-public path (e.g. activeDirectoryProviders/my-ad). Default local; auto tries common providers. RKE1/RKE2 use the same Rancher login API.
-        #[arg(long, value_name = "PROVIDER", default_value = "local")]
-        rancher_auth_provider: String,
-        /// Suppress non-essential output
-        #[arg(long)]
-        quiet: bool,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Login(LoginArgs),
 
     /// Rancher (Prime) operations
     #[command(after_help = "Examples:\n  \
@@ -742,23 +602,6 @@ pub enum Command {
         /// Output as JSON
         #[arg(long, help = "Output as JSON")]
         json: bool,
-    },
-
-    /// Set up shell aliases for k8pk (kk, kctx, kns)
-    #[command(after_help = "Examples:\n  \
-        k8pk alias                # Show alias setup instructions\n  \
-        k8pk alias --install      # Add aliases to your shell config\n  \
-        k8pk alias --uninstall    # Remove aliases from shell config")]
-    Alias {
-        /// Add aliases to shell config file
-        #[arg(long, help = "Add aliases to shell config")]
-        install: bool,
-        /// Remove aliases from shell config file
-        #[arg(long, help = "Remove aliases from shell config")]
-        uninstall: bool,
-        /// Shell type: bash, zsh, fish (auto-detect if not specified)
-        #[arg(long, value_name = "SHELL")]
-        shell: Option<String>,
     },
 
     /// Manage stored credentials vault
@@ -827,6 +670,120 @@ pub enum Command {
     },
 }
 
+/// CLI fields for `k8pk login` (passed through to `run_login_cli`).
+#[derive(Args, Debug)]
+pub struct LoginArgs {
+    /// Cluster type: 'ocp', 'k8s', 'gke', or 'rancher' (default: auto-detect from server URL)
+    #[arg(long = "type", value_name = "TYPE", default_value = "auto")]
+    pub login_type: String,
+    /// Authentication mode: auto | token | userpass | client-cert | exec
+    #[arg(long, value_name = "MODE", default_value = "auto")]
+    pub auth: String,
+    /// Show auth examples and exit
+    #[arg(long)]
+    pub auth_help: bool,
+    /// Use guided login wizard
+    #[arg(long)]
+    pub wizard: bool,
+    /// Server URL
+    #[arg(long, value_name = "SERVER")]
+    pub server: Option<String>,
+    /// Server URL (positional argument, alternative to --server)
+    #[arg(value_name = "SERVER_URL", last = true)]
+    pub server_pos: Option<String>,
+    /// Bearer token for authentication
+    #[arg(long, value_name = "TOKEN")]
+    pub token: Option<String>,
+    /// Username for basic auth
+    #[arg(short = 'u', long, value_name = "USER")]
+    pub username: Option<String>,
+    /// Password for basic auth
+    #[arg(short = 'p', long, value_name = "PASS")]
+    pub password: Option<String>,
+    /// Read credentials from pass (password-store) entry.
+    /// Entry format: first line is password/token, additional lines are key:value pairs.
+    /// Supported keys: token, username (or user), password; for Rancher also rancher_auth_provider (or rancher_provider).
+    /// Example: 'pass show k8pk/dev' returns:
+    ///   sha256~abc123...
+    ///   token: sha256~abc123...
+    #[arg(long, value_name = "ENTRY")]
+    pub pass_entry: Option<String>,
+    /// Exec auth command (k8s only)
+    #[arg(long, value_name = "CMD")]
+    pub exec_command: Option<String>,
+    /// Exec auth argument (repeatable)
+    #[arg(long, action = clap::ArgAction::Append, value_name = "ARG")]
+    pub exec_arg: Vec<String>,
+    /// Exec auth environment variable (KEY=VALUE, repeatable)
+    #[arg(long, action = clap::ArgAction::Append, value_name = "KV")]
+    pub exec_env: Vec<String>,
+    /// Exec auth API version (k8s only)
+    #[arg(long, value_name = "VERSION")]
+    pub exec_api_version: Option<String>,
+    /// Exec auth preset: aws-eks | gke | aks
+    #[arg(long, value_name = "NAME")]
+    pub exec_preset: Option<String>,
+    /// Exec auth cluster name (aws-eks)
+    #[arg(long, value_name = "NAME")]
+    pub exec_cluster: Option<String>,
+    /// Exec auth server ID (aks)
+    #[arg(long, value_name = "ID")]
+    pub exec_server_id: Option<String>,
+    /// Exec auth region (aws-eks)
+    #[arg(long, value_name = "REGION")]
+    pub exec_region: Option<String>,
+    /// Custom name for this context
+    #[arg(
+        long,
+        value_name = "NAME",
+        help = "Custom name for context (default: derived from server)"
+    )]
+    pub name: Option<String>,
+    /// Directory to save kubeconfig (default: ~/.kube/ocp or ~/.kube/k8s)
+    #[arg(long, value_name = "DIR")]
+    pub output_dir: Option<PathBuf>,
+    /// Skip TLS certificate verification
+    #[arg(
+        long,
+        visible_alias = "insecure",
+        help = "Skip TLS certificate verification (insecure)"
+    )]
+    pub insecure_skip_tls_verify: bool,
+    /// Use vault to store/retrieve credentials (OpenShift and Rancher userpass)
+    #[arg(
+        long,
+        help = "Store/retrieve credentials from vault (OCP and Rancher userpass)"
+    )]
+    pub use_vault: bool,
+    /// Certificate authority file
+    #[arg(long, value_name = "PATH")]
+    pub certificate_authority: Option<PathBuf>,
+    /// Client certificate file (k8s only)
+    #[arg(long, value_name = "PATH")]
+    pub client_certificate: Option<PathBuf>,
+    /// Client key file (k8s only)
+    #[arg(long, value_name = "PATH")]
+    pub client_key: Option<PathBuf>,
+    /// Print kubeconfig and exit without writing or switching
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Validate credentials after login
+    #[arg(long)]
+    pub test: bool,
+    /// Timeout for credential test (seconds)
+    #[arg(long, default_value = "10", value_name = "SECS")]
+    pub test_timeout: u64,
+    /// Rancher auth provider (rancher only): local, activedirectory, openldap, freeipa, azuread, github, auto, or v3-public path (e.g. activeDirectoryProviders/my-ad). Default local; auto tries common providers. RKE1/RKE2 use the same Rancher login API.
+    #[arg(long, value_name = "PROVIDER", default_value = "local")]
+    pub rancher_auth_provider: String,
+    /// Suppress non-essential output
+    #[arg(long)]
+    pub quiet: bool,
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
 #[derive(Subcommand)]
 pub enum ConfigCommand {
     /// Create default config file if it doesn't exist
@@ -847,7 +804,7 @@ pub enum ConfigCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Open interactive config editor
+    /// Open config in $EDITOR
     Edit,
 }
 

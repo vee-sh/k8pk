@@ -8,14 +8,18 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CurrentState {
     /// Current Kubernetes context name
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
     /// Display-friendly context name
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_display: Option<String>,
     /// Current namespace
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
     /// Recursive shell depth (0 = not in a k8pk shell)
     pub depth: u32,
     /// Path to the active kubeconfig file
+    #[serde(rename = "config", skip_serializing_if = "Option::is_none")]
     pub config_path: Option<PathBuf>,
 }
 
@@ -49,36 +53,7 @@ impl CurrentState {
 
     /// Convert to JSON for `info all` command
     pub fn to_json(&self) -> serde_json::Value {
-        let mut map = serde_json::Map::new();
-        if let Some(ref ctx) = self.context {
-            map.insert(
-                "context".to_string(),
-                serde_json::Value::String(ctx.clone()),
-            );
-        }
-        if let Some(ref ctx) = self.context_display {
-            map.insert(
-                "context_display".to_string(),
-                serde_json::Value::String(ctx.clone()),
-            );
-        }
-        if let Some(ref ns) = self.namespace {
-            map.insert(
-                "namespace".to_string(),
-                serde_json::Value::String(ns.clone()),
-            );
-        }
-        map.insert(
-            "depth".to_string(),
-            serde_json::Value::Number(self.depth.into()),
-        );
-        if let Some(ref p) = self.config_path {
-            map.insert(
-                "config".to_string(),
-                serde_json::Value::String(p.to_string_lossy().to_string()),
-            );
-        }
-        serde_json::Value::Object(map)
+        serde_json::to_value(self).unwrap_or_default()
     }
 }
 

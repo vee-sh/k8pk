@@ -1,4 +1,4 @@
-//! K8pk configuration file handling with caching
+//! K8pk configuration file handling
 
 use crate::error::{K8pkError, Result};
 use crate::kubeconfig;
@@ -6,10 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
-
-/// Global cached config (stores Result, can be invalidated after writes)
-static CONFIG_CACHE: Mutex<Option<std::result::Result<K8pkConfig, String>>> = Mutex::new(None);
 
 /// K8pk configuration structure
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
@@ -42,11 +38,28 @@ pub struct HooksSection {
 }
 
 /// Pick configuration section
-#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct PickSection {
     /// Show only clusters (group contexts by base cluster name)
     #[serde(default)]
     pub clusters_only: bool,
+    /// Trust a successful session check for this many seconds (default 300).
+    /// Set 0 to probe the API on every pick/ctx. Override: K8PK_SESSION_CHECK_TTL.
+    #[serde(default = "default_session_check_ttl")]
+    pub session_check_ttl: u64,
+}
+
+impl Default for PickSection {
+    fn default() -> Self {
+        Self {
+            clusters_only: false,
+            session_check_ttl: default_session_check_ttl(),
+        }
+    }
+}
+
+fn default_session_check_ttl() -> u64 {
+    300
 }
 
 /// Tmux integration configuration
@@ -136,26 +149,9 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(xdg_path)
 }
 
-/// Load k8pk configuration (cached; invalidated by `invalidate_cache`).
+/// Load k8pk configuration from disk.
+/// ponytail: no process-lifetime cache; CLI runs are short
 pub fn load() -> Result<K8pkConfig> {
-    let mut guard = CONFIG_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(ref cached) = *guard {
-        return cached.clone().map_err(K8pkError::Other);
-    }
-    let result = load_uncached().map_err(|e| e.to_string());
-    let ret = result.clone().map_err(K8pkError::Other);
-    *guard = Some(result);
-    ret
-}
-
-/// Invalidate the cached config so the next `load()` re-reads from disk.
-pub fn invalidate_cache() {
-    let mut guard = CONFIG_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = None;
-}
-
-/// Load k8pk configuration without caching (for tests or force reload)
-pub fn load_uncached() -> Result<K8pkConfig> {
     let path = config_path()?;
 
     if !path.exists() {
@@ -165,6 +161,11 @@ pub fn load_uncached() -> Result<K8pkConfig> {
     let content = fs::read_to_string(&path)?;
     let config: K8pkConfig = serde_yaml_ng::from_str(&content)?;
     Ok(config)
+}
+
+/// Alias kept for tests / call sites that previously forced a disk re-read.
+pub fn load_uncached() -> Result<K8pkConfig> {
+    load()
 }
 
 /// Resolve a context alias to its full name
@@ -185,44 +186,25 @@ pub fn is_context_insecure(ctx: &str) -> bool {
     let Ok(config) = load() else {
         return false;
     };
+    is_context_insecure_with(&config, ctx)
+}
+
+/// Same as [`is_context_insecure`] but uses an already-loaded config (hot path).
+pub fn is_context_insecure_with(config: &K8pkConfig, ctx: &str) -> bool {
     config
         .insecure_contexts
         .iter()
         .any(|pat| glob_match(pat, ctx))
 }
 
-/// Simple glob matcher (only `*` and `?` wildcards).
+/// Simple glob matcher via globset (already a dep).
 fn glob_match(pattern: &str, text: &str) -> bool {
-    let pat: Vec<char> = pattern.chars().collect();
-    let txt: Vec<char> = text.chars().collect();
-    glob_match_inner(&pat, &txt, 0, 0)
-}
-
-fn glob_match_inner(pat: &[char], txt: &[char], mut pi: usize, mut ti: usize) -> bool {
-    while pi < pat.len() {
-        if pat[pi] == '*' {
-            pi += 1;
-            // '*' matches zero or more characters
-            while pi < pat.len() && pat[pi] == '*' {
-                pi += 1;
-            }
-            if pi == pat.len() {
-                return true;
-            }
-            for start in ti..=txt.len() {
-                if glob_match_inner(pat, txt, pi, start) {
-                    return true;
-                }
-            }
-            return false;
-        } else if ti < txt.len() && (pat[pi] == '?' || pat[pi] == txt[ti]) {
-            pi += 1;
-            ti += 1;
-        } else {
-            return false;
-        }
-    }
-    ti == txt.len()
+    // ponytail: globset `*` is path-segment aware in some modes; Glob::new is fine for our patterns
+    use globset::Glob;
+    Glob::new(pattern)
+        .ok()
+        .map(|g| g.compile_matcher().is_match(text))
+        .unwrap_or(false)
 }
 
 /// Append a context pattern to `insecure_contexts` in the config file and save it.
@@ -242,7 +224,6 @@ pub fn add_to_insecure_contexts(context: &str) -> Result<()> {
     }
     let yaml = serde_yaml_ng::to_string(&config)?;
     kubeconfig::write_restricted(&path, &yaml)?;
-    invalidate_cache();
     Ok(())
 }
 
@@ -302,6 +283,9 @@ configs:
 #   # instead of showing all namespace-specific contexts
 #   # Useful when you have thousands of namespace contexts
 #   clusters_only: false
+#   # Trust a successful session check for N seconds (default 300). 0 = always probe.
+#   # Override: K8PK_SESSION_CHECK_TTL / --no-session-check / K8PK_NO_SESSION_CHECK=1
+#   session_check_ttl: 300
 
 # Insecure contexts (skip TLS verification for matching patterns)
 # Glob patterns: * matches any sequence, ? matches a single character.
@@ -565,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalidate_cache_allows_reload() {
+    fn test_load_rereads_after_write() {
         let _lock = ENV_MUTEX.lock().unwrap();
 
         let dir = tempfile::tempdir().unwrap();
@@ -582,9 +566,6 @@ mod tests {
 
         std::fs::write(&cfg_path, "insecure_contexts:\n  - \"before\"\n").unwrap();
 
-        let first = load_uncached().unwrap();
-        assert_eq!(first.insecure_contexts, vec!["before".to_string()]);
-
         assert_eq!(
             load().unwrap().insecure_contexts,
             vec!["before".to_string()]
@@ -594,15 +575,9 @@ mod tests {
 
         assert_eq!(
             load().unwrap().insecure_contexts,
-            vec!["before".to_string()],
-            "load() should return cached config until invalidate_cache()"
+            vec!["after".to_string()],
+            "load() always re-reads from disk"
         );
-
-        invalidate_cache();
-
-        let second = load_uncached().unwrap();
-        assert_eq!(second.insecure_contexts, vec!["after".to_string()]);
-        assert_eq!(load().unwrap().insecure_contexts, vec!["after".to_string()]);
 
         if let Some(v) = saved_xdg {
             std::env::set_var("XDG_CONFIG_HOME", v);
@@ -614,8 +589,6 @@ mod tests {
         } else {
             std::env::remove_var("HOME");
         }
-
-        invalidate_cache();
     }
 
     #[cfg(unix)]
@@ -653,7 +626,5 @@ mod tests {
         } else {
             std::env::remove_var("HOME");
         }
-
-        invalidate_cache();
     }
 }

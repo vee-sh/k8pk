@@ -77,7 +77,7 @@ k8pk login <server> --token $TOKEN  # Safe OCP login
 - [ ] `k8pk contexts` lists all contexts
 - [ ] `k8pk pick` works interactively
 - [ ] `k8pk env` outputs correct shell exports
-- [ ] `k8pk spawn` execs shell with correct env
+- [ ] `k8pk ctx NAME -r` execs shell with correct env
 - [ ] `k8pk gen` creates valid kubeconfig files
 - [ ] Shell functions (`kpick`, `kswitch`) work
 - [ ] WezTerm plugin loads and works

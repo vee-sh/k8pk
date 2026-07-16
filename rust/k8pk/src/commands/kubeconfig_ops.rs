@@ -1,12 +1,15 @@
 //! Kubeconfig file operations: merge, diff, lint, cleanup
 
+use crate::config;
 use crate::error::{K8pkError, Result};
 use crate::kubeconfig::{self, KubeConfig};
+use inquire::{Confirm, MultiSelect, Select};
 use std::collections::HashSet;
+use std::env;
 use std::fs;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
-use tracing::warn;
 
 #[derive(Debug, serde::Serialize)]
 pub struct MergeResult {
@@ -70,7 +73,7 @@ pub fn merge_files(
 
     for file in files {
         if !file.exists() {
-            warn!(path = %file.display(), "file not found, skipping");
+            eprintln!("warning: file not found, skipping: {}", file.display());
             continue;
         }
 
@@ -216,7 +219,7 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
 
         // Check for empty contexts
         if cfg.contexts.is_empty() {
-            warn!(path = %path.display(), "file has no contexts");
+            eprintln!("warning: {} has no contexts", path.display());
             issues.push(LintIssue {
                 path: path.to_path_buf(),
                 level: "warning".into(),
@@ -248,10 +251,10 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
 
         for cluster in &cfg.clusters {
             if !referenced_clusters.contains(&cluster.name) {
-                warn!(
-                    path = %path.display(),
-                    cluster = %cluster.name,
-                    "orphaned cluster"
+                eprintln!(
+                    "warning: {} orphaned cluster: {}",
+                    path.display(),
+                    cluster.name
                 );
                 issues.push(LintIssue {
                     path: path.to_path_buf(),
@@ -264,11 +267,7 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
 
         for user in &cfg.users {
             if !referenced_users.contains(&user.name) {
-                warn!(
-                    path = %path.display(),
-                    user = %user.name,
-                    "orphaned user"
-                );
+                eprintln!("warning: {} orphaned user: {}", path.display(), user.name);
                 issues.push(LintIssue {
                     path: path.to_path_buf(),
                     level: "warning".into(),
@@ -281,10 +280,10 @@ pub fn lint(file: Option<&Path>, all_paths: &[PathBuf], strict: bool) -> Result<
         // Check for current-context reference
         if let Some(ref current) = cfg.current_context {
             if !cfg.contexts.iter().any(|c| c.name == *current) {
-                warn!(
-                    path = %path.display(),
-                    context = %current,
-                    "current-context not found in contexts"
+                eprintln!(
+                    "warning: {} current-context not found: {}",
+                    path.display(),
+                    current
                 );
                 issues.push(LintIssue {
                     path: path.to_path_buf(),
@@ -472,9 +471,6 @@ pub fn print_diff_summary(result: &DiffResult, diff_only: bool) {
 }
 
 // --- Context manipulation operations (moved from main.rs) ---
-
-use inquire::{MultiSelect, Select};
-use std::env;
 
 /// Create a timestamped backup of a kubeconfig file before destructive operations.
 /// Returns the backup path, or None if the source file doesn't exist.
@@ -828,6 +824,30 @@ pub fn edit_kubeconfig(
     Ok(())
 }
 
+/// Open k8pk config in $EDITOR (falls back to vim).
+pub fn edit_config() -> Result<()> {
+    let (path, _) = crate::config::init_config()?;
+    let editor_cmd = env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+    let mut parts = shell_words::split(&editor_cmd).map_err(|e| {
+        K8pkError::InvalidArgument(format!("invalid editor command '{}': {}", editor_cmd, e))
+    })?;
+    if parts.is_empty() {
+        return Err(K8pkError::InvalidArgument("editor command is empty".into()));
+    }
+    let cmd = parts.remove(0);
+    let status = std::process::Command::new(&cmd)
+        .args(parts)
+        .arg(&path)
+        .status()?;
+    if !status.success() {
+        return Err(K8pkError::CommandFailed(format!(
+            "{} exited with error",
+            editor_cmd
+        )));
+    }
+    Ok(())
+}
+
 pub fn print_remove_context_summary(result: &RemoveContextResult) {
     if result.dry_run {
         for name in &result.removed_contexts {
@@ -1175,4 +1195,138 @@ users: []
         assert_eq!(result.warnings, 0);
         assert!(!result.failed);
     }
+}
+
+/// Remove one or more contexts from kubeconfig files (and isolated caches).
+pub fn run_rm(
+    paths: &[PathBuf],
+    context: Option<String>,
+    dry_run: bool,
+    yes: bool,
+    json: bool,
+) -> Result<()> {
+    let ctx_paths = kubeconfig::list_contexts_with_paths(paths)?;
+    if ctx_paths.is_empty() {
+        return Err(K8pkError::NoContexts);
+    }
+
+    let contexts_to_remove: Vec<String> = if let Some(ref c) = context {
+        let resolved = config::resolve_alias(c);
+        let all: Vec<String> = ctx_paths.keys().cloned().collect();
+        let matches = crate::commands::context::match_pattern(&resolved, &all);
+        if matches.is_empty() {
+            let suggestions = crate::error::closest_matches(&resolved, &all, 3);
+            if suggestions.is_empty() {
+                return Err(K8pkError::ContextNotFound(resolved));
+            }
+            return Err(K8pkError::ContextNotFoundSuggestions {
+                pattern: resolved,
+                suggestions: suggestions
+                    .iter()
+                    .map(|s| format!("    - {}", s))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            });
+        }
+        if matches.len() == 1 {
+            matches
+        } else if io::stdin().is_terminal() {
+            eprintln!("'{}' matched {} contexts:", c, matches.len());
+            let selected = MultiSelect::new("Select contexts to remove:", matches)
+                .prompt()
+                .map_err(|_| K8pkError::Cancelled)?;
+            if selected.is_empty() {
+                return Err(K8pkError::Cancelled);
+            }
+            selected
+        } else {
+            return Err(K8pkError::InvalidArgument(format!(
+                "'{}' matches multiple contexts: {}. Be more specific.",
+                c,
+                matches.join(", ")
+            )));
+        }
+    } else if io::stdin().is_terminal() {
+        let mut names: Vec<String> = ctx_paths.keys().cloned().collect();
+        names.sort();
+        let selected = MultiSelect::new("Select contexts to remove:", names)
+            .prompt()
+            .map_err(|_| K8pkError::Cancelled)?;
+        if selected.is_empty() {
+            return Err(K8pkError::Cancelled);
+        }
+        selected
+    } else {
+        return Err(K8pkError::InvalidArgument(
+            "specify a context name, or run interactively".into(),
+        ));
+    };
+
+    if !dry_run && io::stdin().is_terminal() && !yes {
+        eprintln!("Will remove {} context(s):", contexts_to_remove.len());
+        for c in &contexts_to_remove {
+            let file = ctx_paths
+                .get(c)
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            eprintln!("  {} (from {})", c, file);
+        }
+        let confirm = Confirm::new("Proceed?")
+            .with_default(false)
+            .prompt()
+            .map_err(|_| K8pkError::Cancelled)?;
+        if !confirm {
+            return Err(K8pkError::Cancelled);
+        }
+    }
+
+    let mut by_file: std::collections::HashMap<PathBuf, Vec<String>> =
+        std::collections::HashMap::new();
+    for c in &contexts_to_remove {
+        if let Some(file) = ctx_paths.get(c) {
+            by_file.entry(file.clone()).or_default().push(c.clone());
+        }
+    }
+
+    let mut total_removed = Vec::new();
+    let mut json_results = Vec::new();
+    for (file, ctxs) in &by_file {
+        for ctx_name in ctxs {
+            let result =
+                remove_contexts_from_file(file, Some(ctx_name.as_str()), false, false, dry_run)?;
+            if json {
+                json_results.push(serde_json::to_value(&result)?);
+            } else {
+                print_remove_context_summary(&result);
+            }
+            total_removed.push(ctx_name.clone());
+        }
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&json_results)?);
+    }
+
+    if !dry_run {
+        let home = dirs_next::home_dir().ok_or(K8pkError::NoHomeDir)?;
+        let base = home.join(".local/share/k8pk");
+        for c in &total_removed {
+            let sanitized = kubeconfig::sanitize_filename(c);
+            if let Ok(entries) = fs::read_dir(&base) {
+                for entry in entries.flatten() {
+                    let fname = entry.file_name();
+                    let name = fname.to_string_lossy();
+                    if name.starts_with(&sanitized) && name.ends_with(".yaml") {
+                        if let Err(e) = fs::remove_file(entry.path()) {
+                            eprintln!(
+                                "warning: failed to remove {}: {}",
+                                entry.path().display(),
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
