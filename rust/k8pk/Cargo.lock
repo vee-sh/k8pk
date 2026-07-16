@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "k8pk"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "clap",
  "clap_complete",
